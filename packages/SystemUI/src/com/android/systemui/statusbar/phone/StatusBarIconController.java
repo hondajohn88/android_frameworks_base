@@ -47,7 +47,6 @@ import com.android.systemui.statusbar.NotificationData;
 import com.android.systemui.statusbar.SignalClusterView;
 import com.android.systemui.statusbar.StatusBarIconView;
 import com.android.systemui.statusbar.policy.Clock;
-import com.android.systemui.statusbar.policy.NetworkTraffic;
 import com.android.systemui.tuner.TunerService;
 import com.android.systemui.tuner.TunerService.Tunable;
 
@@ -89,7 +88,6 @@ public class StatusBarIconController implements Tunable {
     private boolean mShowClock;
     private int mClockLocation;
     private TextView mCarrier;
-    private NetworkTraffic mNetworkTraffic;
 
     private int mIconSize;
     private int mIconHPadding;
@@ -140,7 +138,6 @@ public class StatusBarIconController implements Tunable {
         mCclock = (Clock) statusBar.findViewById(R.id.center_clock);
         mLeftClock = (Clock) statusBar.findViewById(R.id.left_clock);
         mCarrier = (TextView) statusBar.findViewById(R.id.statusbar_carrier_text);
-        mNetworkTraffic = (NetworkTraffic) statusBar.findViewById(R.id.networkTraffic);
         mLinearOutSlowIn = AnimationUtils.loadInterpolator(mContext,
                 android.R.interpolator.linear_out_slow_in);
         mFastOutSlowIn = AnimationUtils.loadInterpolator(mContext,
@@ -447,7 +444,6 @@ public class StatusBarIconController implements Tunable {
         mBatteryMeterView.setDarkIntensity(mDarkIntensity);
         mClock.setTextColor(mIconTint);
         mCarrier.setTextColor(mIconTint);
-        mNetworkTraffic.setDarkIntensity(mDarkIntensity);
         applyNotificationIconsTint();
     }
 

@@ -277,8 +277,7 @@ public interface MetricsConstants {
     public static final int NAVBAR_SETTINGS = 247;
     public static final int STATUSBAR_SETTINGS = 248;
     public static final int VOLUME_SETTINGS = 249;
-    public static final int NETWORK_TRAFFIC_SETTINGS = 250;
-    public static final int CARRIER_OPTIONS = 251;
+    public static final int CARRIER_OPTIONS = 250;
 
     // These constants must match those in the analytic pipeline, do not edit.
     // Add temporary values to the top of MetricsLogger instead.
