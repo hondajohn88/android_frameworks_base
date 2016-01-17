@@ -279,7 +279,6 @@ public class QSTileHost implements QSTile.Host {
                 return new LocationTile(this);
             case QSConstants.TILE_CAST:
                 return new CastTile(this);
-            case QSConstants.TILE_HOTSPOT:
             default:
                 throw new IllegalArgumentException("Bad tile spec: " + tileSpec);
         }

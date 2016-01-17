@@ -59,9 +59,6 @@ public class QSUtils {
                 boolean removeTile = false;
                 switch (tileKey) {
                     case QSConstants.TILE_CELLULAR:
-                    case QSConstants.TILE_HOTSPOT:
-                        removeTile = !deviceSupportsMobile;
-                        break;
                     case QSConstants.TILE_FLASHLIGHT:
                         removeTile = !deviceSupportsFlashLight(context);
                         break;
