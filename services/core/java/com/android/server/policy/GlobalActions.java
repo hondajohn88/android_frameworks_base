@@ -291,16 +291,10 @@ class GlobalActions implements DialogInterface.OnDismissListener, DialogInterfac
                 mItems.add(new RebootAction());
             } else if (GLOBAL_ACTION_KEY_SCREENSHOT.equals(actionKey)) {
                 mItems.add(getScreenshotAction());
-            } else if (GLOBAL_ACTION_KEY_AIRPLANE.equals(actionKey)) {
-                mItems.add(mAirplaneModeOn);
             } else if (GLOBAL_ACTION_KEY_BUGREPORT.equals(actionKey)) {
                 if (Settings.Global.getInt(mContext.getContentResolver(),
                         Settings.Global.BUGREPORT_IN_POWER_MENU, 0) != 0 && isCurrentUserOwner()) {
                     mItems.add(getBugReportAction());
-                }
-            } else if (GLOBAL_ACTION_KEY_SILENT.equals(actionKey)) {
-                if (mShowSilentToggle) {
-                    mItems.add(mSilentModeAction);
                 }
             } else if (GLOBAL_ACTION_KEY_USERS.equals(actionKey)) {
                 List<UserInfo> users = ((UserManager) mContext.getSystemService(
@@ -308,14 +302,6 @@ class GlobalActions implements DialogInterface.OnDismissListener, DialogInterfac
                 if (users.size() > 1) {
                     addUsersToMenu(mItems);
                 }
-            } else if (GLOBAL_ACTION_KEY_SETTINGS.equals(actionKey)) {
-                mItems.add(getSettingsAction());
-            } else if (GLOBAL_ACTION_KEY_LOCKDOWN.equals(actionKey)) {
-                mItems.add(getLockdownAction());
-            } else if (GLOBAL_ACTION_KEY_VOICEASSIST.equals(actionKey)) {
-                mItems.add(getVoiceAssistAction());
-            } else if (GLOBAL_ACTION_KEY_ASSIST.equals(actionKey)) {
-                mItems.add(getAssistAction());
             } else {
                 Log.e(TAG, "Invalid global action key " + actionKey);
             }
@@ -485,99 +471,6 @@ class GlobalActions implements DialogInterface.OnDismissListener, DialogInterfac
                         com.android.internal.R.string.bugreport_status,
                         Build.VERSION.RELEASE,
                         Build.ID);
-            }
-        };
-    }
-
-    private Action getSettingsAction() {
-        return new SinglePressAction(com.android.internal.R.drawable.ic_lock_settings,
-                R.string.global_action_settings) {
-
-            @Override
-            public void onPress() {
-                Intent intent = new Intent(Settings.ACTION_SETTINGS);
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-                mContext.startActivity(intent);
-            }
-
-            @Override
-            public boolean showDuringKeyguard() {
-                return true;
-            }
-
-            @Override
-            public boolean showBeforeProvisioning() {
-                return true;
-            }
-        };
-    }
-
-    private Action getAssistAction() {
-        return new SinglePressAction(com.android.internal.R.drawable.ic_lock_assist,
-                R.string.global_action_search) {
-            @Override
-            public void onPress() {
-                Intent intent = new Intent(Intent.ACTION_ASSIST);
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-                mContext.startActivity(intent);
-            }
-
-            @Override
-            public boolean showDuringKeyguard() {
-                return true;
-            }
-
-            @Override
-            public boolean showBeforeProvisioning() {
-                return true;
-            }
-        };
-    }
-
-    private Action getVoiceAssistAction() {
-        return new SinglePressAction(com.android.internal.R.drawable.ic_lock_voice,
-                R.string.global_action_voicesearch) {
-            @Override
-            public void onPress() {
-                Intent intent = new Intent(Intent.ACTION_VOICE_ASSIST);
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-                mContext.startActivity(intent);
-            }
-
-            @Override
-            public boolean showDuringKeyguard() {
-                return true;
-            }
-
-            @Override
-            public boolean showBeforeProvisioning() {
-                return true;
-            }
-        };
-    }
-
-    private Action getLockdownAction() {
-        return new SinglePressAction(com.android.internal.R.drawable.ic_lock_lock,
-                R.string.global_action_lockdown) {
-
-            @Override
-            public void onPress() {
-                new LockPatternUtils(mContext).requireCredentialEntry(UserHandle.USER_ALL);
-                try {
-                    WindowManagerGlobal.getWindowManagerService().lockNow(null);
-                } catch (RemoteException e) {
-                    Log.e(TAG, "Error while trying to lock device.", e);
-                }
-            }
-
-            @Override
-            public boolean showDuringKeyguard() {
-                return true;
-            }
-
-            @Override
-            public boolean showBeforeProvisioning() {
-                return false;
             }
         };
     }
