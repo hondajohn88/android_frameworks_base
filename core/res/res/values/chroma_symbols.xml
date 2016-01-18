@@ -61,8 +61,8 @@
   <java-symbol type="string" name="system_error_vendorprint" />
 
   <!-- Starting symbols -->
-  <java-symbol type="string" name="chroma_start_title" />
-  <java-symbol type="string" name="chroma_upgrading_title" />
+  <java-symbol type="string" name="chromajohn_start_title" />
+  <java-symbol type="string" name="chromajohn_upgrading_title" />
 
   <!-- WiFi turn off notification -->
   <java-symbol type="string" name="notify_turn_wifi_off_title" />
