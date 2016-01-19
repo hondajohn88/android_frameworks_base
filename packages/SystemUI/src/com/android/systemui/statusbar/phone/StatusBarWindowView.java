@@ -69,21 +69,11 @@ public class StatusBarWindowView extends FrameLayout {
     private PhoneStatusBar mService;
     private final Paint mTransparentSrcPaint = new Paint();
 
-    private int mStatusBarHeaderHeight;
-
-    private boolean mDoubleTapToSleepEnabled;
-    private GestureDetector mDoubleTapGesture;
-    private Handler mHandler = new Handler();
-    private SettingsObserver mSettingsObserver;
-
     public StatusBarWindowView(Context context, AttributeSet attrs) {
         super(context, attrs);
         setMotionEventSplittingEnabled(false);
         mTransparentSrcPaint.setColor(0);
         mTransparentSrcPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.SRC));
-        mStatusBarHeaderHeight = context
-                .getResources().getDimensionPixelSize(R.dimen.status_bar_header_height);
-        mSettingsObserver = new SettingsObserver(mHandler);
     }
 
     @Override
@@ -164,21 +154,6 @@ public class StatusBarWindowView extends FrameLayout {
     protected void onAttachedToWindow () {
         super.onAttachedToWindow();
 
-        mSettingsObserver.observe();
-        mDoubleTapGesture = new GestureDetector(mContext, new GestureDetector.SimpleOnGestureListener() {
-            @Override
-            public boolean onDoubleTap(MotionEvent e) {
-                PowerManager pm = (PowerManager) mContext.getSystemService(Context.POWER_SERVICE);
-                Log.d(TAG, "Gesture!!");
-                if(pm != null)
-                    pm.goToSleep(e.getEventTime());
-                else
-                    Log.d(TAG, "getSystemService returned null PowerManager");
-
-                return true;
-            }
-        });
-
         // We really need to be able to animate while window animations are going on
         // so that activities may be started asynchronously from panel animations
         final ViewRootImpl root = getViewRootImpl();
@@ -199,12 +174,6 @@ public class StatusBarWindowView extends FrameLayout {
         } else {
             setWillNotDraw(!DEBUG);
         }
-    }
-
-    @Override
-    protected void onDetachedFromWindow() {
-        super.onDetachedFromWindow();
-        mSettingsObserver.unobserve();
     }
 
     @Override
@@ -255,14 +224,6 @@ public class StatusBarWindowView extends FrameLayout {
     @Override
     public boolean onInterceptTouchEvent(MotionEvent ev) {
         boolean intercept = false;
-        if (mDoubleTapToSleepEnabled) {
-            if (mService.getBarState() == StatusBarState.SHADE
-                    && ev.getY() < mStatusBarHeaderHeight) {
-                if (DEBUG) Log.w(TAG, "logging double tap gesture");
-                mDoubleTapGesture.onTouchEvent(ev);
-                }
-            }
-
         if (mNotificationPanel.isFullyExpanded()
                 && mStackScrollLayout.getVisibility() == View.VISIBLE
                 && mService.getBarState() == StatusBarState.KEYGUARD
@@ -355,40 +316,6 @@ public class StatusBarWindowView extends FrameLayout {
             ignoreRightInset = a.getBoolean(
                     R.styleable.StatusBarWindowView_Layout_ignoreRightInset, false);
             a.recycle();
-        }
-    }
-
-    class SettingsObserver extends ContentObserver {
-        SettingsObserver(Handler handler) {
-            super(handler);
-        }
-
-        void observe() {
-            ContentResolver resolver = mContext.getContentResolver();
-            resolver.registerContentObserver(Settings.System.getUriFor(
-                    Settings.System.DOUBLE_TAP_SLEEP_GESTURE), false, this);
-            update();
-        }
-
-        void unobserve() {
-            ContentResolver resolver = mContext.getContentResolver();
-            resolver.unregisterContentObserver(this);
-        }
-
-        @Override
-        public void onChange(boolean selfChange) {
-            update();
-        }
-
-        @Override
-        public void onChange(boolean selfChange, Uri uri) {
-            update();
-        }
-
-        public void update() {
-            ContentResolver resolver = mContext.getContentResolver();
-            mDoubleTapToSleepEnabled = Settings.System.getInt(
-                    resolver, Settings.System.DOUBLE_TAP_SLEEP_GESTURE, 0) == 1;
         }
     }
 }
