@@ -13,25 +13,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package com.android.systemui.statusbar.phone;
-
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.Resources;
-import android.database.ContentObserver;
-import android.net.Uri;
-import android.os.Process;
-import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
-import android.os.UserHandle;
-import android.provider.Settings;
+import android.os.Process;
 import android.util.Log;
-
-import com.android.internal.util.cm.QSConstants;
-import com.android.internal.util.cm.QSUtils;
 import com.android.systemui.R;
 import com.android.systemui.qs.QSTile;
 import com.android.systemui.qs.tiles.AirplaneModeTile;
@@ -41,11 +31,11 @@ import com.android.systemui.qs.tiles.CellularTile;
 import com.android.systemui.qs.tiles.ColorInversionTile;
 import com.android.systemui.qs.tiles.DndTile;
 import com.android.systemui.qs.tiles.FlashlightTile;
+import com.android.systemui.qs.tiles.HotspotTile;
 import com.android.systemui.qs.tiles.IntentTile;
 import com.android.systemui.qs.tiles.LocationTile;
 import com.android.systemui.qs.tiles.RotationLockTile;
 import com.android.systemui.qs.tiles.WifiTile;
-import com.android.systemui.settings.CurrentUserTracker;
 import com.android.systemui.statusbar.policy.BluetoothController;
 import com.android.systemui.statusbar.policy.CastController;
 import com.android.systemui.statusbar.policy.FlashlightController;
@@ -57,23 +47,23 @@ import com.android.systemui.statusbar.policy.RotationLockController;
 import com.android.systemui.statusbar.policy.SecurityController;
 import com.android.systemui.statusbar.policy.UserSwitcherController;
 import com.android.systemui.statusbar.policy.ZenModeController;
-
+import com.android.systemui.tuner.TunerService;
+import com.android.systemui.tuner.TunerService.Tunable;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-
 /** Platform implementation of the quick settings tile host **/
-public class QSTileHost implements QSTile.Host {
+public class QSTileHost implements QSTile.Host, Tunable {
     private static final String TAG = "QSTileHost";
     private static final boolean DEBUG = Log.isLoggable(TAG, Log.DEBUG);
-
+    protected static final String TILES_SETTING = "sysui_qs_tiles";
     private final Context mContext;
     private final PhoneStatusBar mStatusBar;
     private final LinkedHashMap<String, QSTile<?>> mTiles = new LinkedHashMap<>();
-    private final Observer mObserver = new Observer();
+    protected final ArrayList<String> mTileSpecs = new ArrayList<>();
     private final BluetoothController mBluetooth;
     private final LocationController mLocation;
     private final RotationLockController mRotation;
@@ -82,14 +72,11 @@ public class QSTileHost implements QSTile.Host {
     private final HotspotController mHotspot;
     private final CastController mCast;
     private final Looper mLooper;
-    private final CurrentUserTracker mUserTracker;
     private final FlashlightController mFlashlight;
     private final UserSwitcherController mUserSwitcherController;
     private final KeyguardMonitor mKeyguard;
     private final SecurityController mSecurity;
-
     private Callback mCallback;
-
     public QSTileHost(Context context, PhoneStatusBar statusBar,
             BluetoothController bluetooth, LocationController location,
             RotationLockController rotation, NetworkController network,
@@ -110,186 +97,143 @@ public class QSTileHost implements QSTile.Host {
         mUserSwitcherController = userSwitcher;
         mKeyguard = keyguard;
         mSecurity = security;
-
         final HandlerThread ht = new HandlerThread(QSTileHost.class.getSimpleName(),
                 Process.THREAD_PRIORITY_BACKGROUND);
         ht.start();
         mLooper = ht.getLooper();
-
-        mUserTracker = new CurrentUserTracker(mContext) {
-            @Override
-            public void onUserSwitched(int newUserId) {
-                recreateTiles();
-                for (QSTile<?> tile : mTiles.values()) {
-                    tile.userSwitch(newUserId);
-                }
-                mSecurity.onUserSwitched(newUserId);
-                mNetwork.onUserSwitched(newUserId);
-                mObserver.register();
-            }
-        };
-        recreateTiles();
-
-        mUserTracker.startTracking();
-        mObserver.register();
+        TunerService.get(mContext).addTunable(this, TILES_SETTING);
     }
-
+    public void destroy() {
+        TunerService.get(mContext).removeTunable(this);
+    }
     @Override
     public void setCallback(Callback callback) {
         mCallback = callback;
     }
-
     @Override
     public Collection<QSTile<?>> getTiles() {
         return mTiles.values();
     }
-
     @Override
     public void startActivityDismissingKeyguard(final Intent intent) {
         mStatusBar.postStartActivityDismissingKeyguard(intent, 0);
     }
-
     @Override
     public void startActivityDismissingKeyguard(PendingIntent intent) {
         mStatusBar.postStartActivityDismissingKeyguard(intent);
     }
-
     @Override
     public void warn(String message, Throwable t) {
         // already logged
     }
-
     @Override
     public void collapsePanels() {
         mStatusBar.postAnimateCollapsePanels();
     }
-
     @Override
     public Looper getLooper() {
         return mLooper;
     }
-
     @Override
     public Context getContext() {
         return mContext;
     }
-
     @Override
     public BluetoothController getBluetoothController() {
         return mBluetooth;
     }
-
     @Override
     public LocationController getLocationController() {
         return mLocation;
     }
-
     @Override
     public RotationLockController getRotationLockController() {
         return mRotation;
     }
-
     @Override
     public NetworkController getNetworkController() {
         return mNetwork;
     }
-
     @Override
     public ZenModeController getZenModeController() {
         return mZen;
     }
-
     @Override
     public HotspotController getHotspotController() {
         return mHotspot;
     }
-
     @Override
     public CastController getCastController() {
         return mCast;
     }
-
     @Override
     public FlashlightController getFlashlightController() {
         return mFlashlight;
     }
-
     @Override
     public KeyguardMonitor getKeyguardMonitor() {
         return mKeyguard;
     }
-
     public UserSwitcherController getUserSwitcherController() {
         return mUserSwitcherController;
     }
-
     public SecurityController getSecurityController() {
         return mSecurity;
     }
-
-    private void recreateTiles() {
+    
+    @Override
+    public void onTuningChanged(String key, String newValue) {
+        if (!TILES_SETTING.equals(key)) {
+            return;
+        }
         if (DEBUG) Log.d(TAG, "Recreating tiles");
-        final List<String> tileSpecs = loadTileSpecs();
-        for (QSTile oldTile : mTiles.values()) {
-            oldTile.destroy();
+        final List<String> tileSpecs = loadTileSpecs(newValue);
+        if (tileSpecs.equals(mTileSpecs)) return;
+        for (Map.Entry<String, QSTile<?>> tile : mTiles.entrySet()) {
+            if (!tileSpecs.contains(tile.getKey())) {
+                if (DEBUG) Log.d(TAG, "Destroying tile: " + tile.getKey());
+                tile.getValue().destroy();
+            }
         }
         final LinkedHashMap<String, QSTile<?>> newTiles = new LinkedHashMap<>();
         for (String tileSpec : tileSpecs) {
-            QSTile<?> t = createTile(tileSpec);
-            if (t != null) {
-                newTiles.put(tileSpec, t);
+            if (mTiles.containsKey(tileSpec)) {
+                newTiles.put(tileSpec, mTiles.get(tileSpec));
+            } else {
+                if (DEBUG) Log.d(TAG, "Creating tile: " + tileSpec);
+                try {
+                    newTiles.put(tileSpec, createTile(tileSpec));
+                } catch (Throwable t) {
+                    Log.w(TAG, "Error creating tile for spec: " + tileSpec, t);
+                }
             }
         }
-
+        mTileSpecs.clear();
+        mTileSpecs.addAll(tileSpecs);
         mTiles.clear();
         mTiles.putAll(newTiles);
         if (mCallback != null) {
             mCallback.onTilesChanged();
         }
     }
-
-    private QSTile<?> createTile(String tileSpec) {
-        if (tileSpec.startsWith(IntentTile.PREFIX)) {
-            return IntentTile.create(this, tileSpec);
-        }
-
-        // Ensure tile is supported on this device
-        if (!QSUtils.getAvailableTiles(mContext).contains(tileSpec)) {
-            return null;
-        }
-
-        switch (tileSpec) {
-            case QSConstants.TILE_WIFI:
-                return new WifiTile(this);
-            case QSConstants.TILE_BLUETOOTH:
-                return new BluetoothTile(this);
-            case QSConstants.TILE_INVERSION:
-                return new ColorInversionTile(this);
-            case QSConstants.TILE_DND:
-                return new DndTile(this);
-            case QSConstants.TILE_CELLULAR:
-                return new CellularTile(this);
-            case QSConstants.TILE_AIRPLANE:
-                return new AirplaneModeTile(this);
-            case QSConstants.TILE_ROTATION:
-                return new RotationLockTile(this);
-            case QSConstants.TILE_FLASHLIGHT:
-                return new FlashlightTile(this);
-            case QSConstants.TILE_LOCATION:
-                return new LocationTile(this);
-            case QSConstants.TILE_CAST:
-                return new CastTile(this);
-            default:
-                throw new IllegalArgumentException("Bad tile spec: " + tileSpec);
-        }
+    protected QSTile<?> createTile(String tileSpec) {
+        if (tileSpec.equals("wifi")) return new WifiTile(this);
+        else if (tileSpec.equals("bt")) return new BluetoothTile(this);
+        else if (tileSpec.equals("inversion")) return new ColorInversionTile(this);
+        else if (tileSpec.equals("cell")) return new CellularTile(this);
+        else if (tileSpec.equals("airplane")) return new AirplaneModeTile(this);
+        else if (tileSpec.equals("dnd")) return new DndTile(this);
+        else if (tileSpec.equals("rotation")) return new RotationLockTile(this);
+        else if (tileSpec.equals("flashlight")) return new FlashlightTile(this);
+        else if (tileSpec.equals("location")) return new LocationTile(this);
+        else if (tileSpec.equals("cast")) return new CastTile(this);
+        else if (tileSpec.equals("hotspot")) return new HotspotTile(this);
+        else if (tileSpec.startsWith(IntentTile.PREFIX)) return IntentTile.create(this,tileSpec);
+        else throw new IllegalArgumentException("Bad tile spec: " + tileSpec);
     }
-
-    private List<String> loadTileSpecs() {
+    protected List<String> loadTileSpecs(String tileList) {
         final Resources res = mContext.getResources();
         final String defaultTileList = res.getString(R.string.quick_settings_tiles_default);
-        String tileList = Settings.Secure.getStringForUser(mContext.getContentResolver(),
-                Settings.Secure.QS_TILES, UserHandle.USER_CURRENT);
-        if (DEBUG) Log.d(TAG, "Config string: "+tileList);
         if (tileList == null) {
             tileList = res.getString(R.string.quick_settings_tiles);
             if (DEBUG) Log.d(TAG, "Loaded tile specs from config: " + tileList);
@@ -311,31 +255,5 @@ public class QSTileHost implements QSTile.Host {
             }
         }
         return tiles;
-    }
-
-    private class Observer extends ContentObserver {
-        private boolean mRegistered;
-
-        public Observer() {
-            super(new Handler(Looper.getMainLooper()));
-        }
-
-        public void register() {
-            if (mRegistered) {
-                mContext.getContentResolver().unregisterContentObserver(this);
-            }
-            mContext.getContentResolver().registerContentObserver(
-                    Settings.Secure.getUriFor(Settings.Secure.QS_TILES),
-                    false, this, mUserTracker.getCurrentUserId());
-            mContext.getContentResolver().registerContentObserver(
-                    Settings.Secure.getUriFor(Settings.Secure.QS_USE_MAIN_TILES),
-                    false, this, mUserTracker.getCurrentUserId());
-            mRegistered = true;
-        }
-
-        @Override
-        public void onChange(boolean selfChange, Uri uri) {
-            recreateTiles();
-        }
     }
 }
