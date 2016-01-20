@@ -3573,12 +3573,6 @@ public final class Settings {
          * the setting value. See an example above.
          */
 
-        /**
-         *  Enable navigation bar double tap gesture on to put device to sleep
-         * @hide
-         */
-        public static final String DOUBLE_TAP_SLEEP_NAVBAR = "double_tap_sleep_navbar";
-
          /**
          * Enable vibration when double tapping the power button for camera
          * @hide

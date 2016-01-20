@@ -138,8 +138,6 @@ public class NavigationBarView extends LinearLayout {
     private boolean mLayoutTransitionsEnabled = true;
     private boolean mWakeAndUnlocking;
 
-    private GestureDetector mDoubleTapGesture;
-
     private class NavTransitionListener implements TransitionListener {
         private boolean mBackTransitioning;
         private boolean mHomeAppearing;
@@ -235,16 +233,6 @@ public class NavigationBarView extends LinearLayout {
         mNavBarReceiver = new NavBarReceiver();
         getContext().registerReceiver(mNavBarReceiver, new IntentFilter(NAVBAR_EDIT_ACTION));
 
-        mDoubleTapGesture = new GestureDetector(mContext,
-                new GestureDetector.SimpleOnGestureListener() {
-            @Override
-            public boolean onDoubleTap(MotionEvent e) {
-                PowerManager pm = (PowerManager) mContext.getSystemService(Context.POWER_SERVICE);
-                if (pm != null) pm.goToSleep(e.getEventTime());
-                return true;
-            }
-        });
-
         mSettingsObserver = new SettingsObserver(new Handler());
     }
 
@@ -285,9 +273,6 @@ public class NavigationBarView extends LinearLayout {
         if (mDeadZone != null && event.getAction() == MotionEvent.ACTION_OUTSIDE) {
             mDeadZone.poke(event);
         }
-        if (Settings.System.getInt(mContext.getContentResolver(),
-                    Settings.System.DOUBLE_TAP_SLEEP_NAVBAR, 1) == 1)
-            mDoubleTapGesture.onTouchEvent(event);
 
         return super.onTouchEvent(event);
     }
