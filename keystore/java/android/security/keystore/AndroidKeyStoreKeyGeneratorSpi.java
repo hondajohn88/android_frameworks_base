@@ -17,6 +17,7 @@
 package android.security.keystore;
 
 import android.security.Credentials;
+import android.security.GateKeeper;
 import android.security.KeyStore;
 import android.security.keymaster.KeyCharacteristics;
 import android.security.keymaster.KeymasterArguments;
@@ -199,6 +200,11 @@ public abstract class AndroidKeyStoreKeyGeneratorSpi extends KeyGeneratorSpi {
                 }
 
                 if (mKeymasterAlgorithm == KeymasterDefs.KM_ALGORITHM_HMAC) {
+                    if (mKeySizeBits < 64) {
+                        throw new InvalidAlgorithmParameterException(
+                            "HMAC key size must be at least 64 bits.");
+                    }
+
                     // JCA HMAC key algorithm implies a digest (e.g., HmacSHA256 key algorithm
                     // implies SHA-256 digest). Because keymaster HMAC key is authorized only for
                     // one digest, we don't let algorithm parameter spec override the digest implied
@@ -233,7 +239,10 @@ public abstract class AndroidKeyStoreKeyGeneratorSpi extends KeyGeneratorSpi {
                 // not set up).
                 KeymasterUtils.addUserAuthArgs(new KeymasterArguments(),
                         spec.isUserAuthenticationRequired(),
-                        spec.getUserAuthenticationValidityDurationSeconds());
+                        spec.getUserAuthenticationValidityDurationSeconds(),
+                        spec.isUserAuthenticationValidWhileOnBody(),
+                        spec.isInvalidatedByBiometricEnrollment(),
+                        GateKeeper.INVALID_SECURE_USER_ID /* boundToSpecificSecureUserId */);
             } catch (IllegalStateException | IllegalArgumentException e) {
                 throw new InvalidAlgorithmParameterException(e);
             }
@@ -271,7 +280,10 @@ public abstract class AndroidKeyStoreKeyGeneratorSpi extends KeyGeneratorSpi {
         args.addEnums(KeymasterDefs.KM_TAG_DIGEST, mKeymasterDigests);
         KeymasterUtils.addUserAuthArgs(args,
                 spec.isUserAuthenticationRequired(),
-                spec.getUserAuthenticationValidityDurationSeconds());
+                spec.getUserAuthenticationValidityDurationSeconds(),
+                spec.isUserAuthenticationValidWhileOnBody(),
+                spec.isInvalidatedByBiometricEnrollment(),
+                GateKeeper.INVALID_SECURE_USER_ID /* boundToSpecificSecureUserId */);
         KeymasterUtils.addMinMacLengthAuthorizationIfNecessary(
                 args,
                 mKeymasterAlgorithm,
@@ -297,11 +309,12 @@ public abstract class AndroidKeyStoreKeyGeneratorSpi extends KeyGeneratorSpi {
         KeyCharacteristics resultingKeyCharacteristics = new KeyCharacteristics();
         boolean success = false;
         try {
-            Credentials.deleteAllTypesForAlias(mKeyStore, spec.getKeystoreAlias());
+            Credentials.deleteAllTypesForAlias(mKeyStore, spec.getKeystoreAlias(), spec.getUid());
             int errorCode = mKeyStore.generateKey(
                     keyAliasInKeystore,
                     args,
                     additionalEntropy,
+                    spec.getUid(),
                     flags,
                     resultingKeyCharacteristics);
             if (errorCode != KeyStore.NO_ERROR) {
@@ -315,12 +328,14 @@ public abstract class AndroidKeyStoreKeyGeneratorSpi extends KeyGeneratorSpi {
             } catch (IllegalArgumentException e) {
                 throw new ProviderException("Failed to obtain JCA secret key algorithm name", e);
             }
-            SecretKey result = new AndroidKeyStoreSecretKey(keyAliasInKeystore, keyAlgorithmJCA);
+            SecretKey result = new AndroidKeyStoreSecretKey(
+                    keyAliasInKeystore, spec.getUid(), keyAlgorithmJCA);
             success = true;
             return result;
         } finally {
             if (!success) {
-                Credentials.deleteAllTypesForAlias(mKeyStore, spec.getKeystoreAlias());
+                Credentials.deleteAllTypesForAlias(
+                        mKeyStore, spec.getKeystoreAlias(), spec.getUid());
             }
         }
     }

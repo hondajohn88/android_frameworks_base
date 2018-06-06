@@ -16,7 +16,10 @@
 
 package android.bluetooth;
 
+import android.bluetooth.BluetoothAvrcpPlayerSettings;
 import android.bluetooth.BluetoothDevice;
+import android.media.MediaMetadata;
+import android.media.session.PlaybackState;
 
 /**
  * APIs for Bluetooth AVRCP controller service
@@ -27,5 +30,7 @@ interface IBluetoothAvrcpController {
     List<BluetoothDevice> getConnectedDevices();
     List<BluetoothDevice> getDevicesMatchingConnectionStates(in int[] states);
     int getConnectionState(in BluetoothDevice device);
-    void sendPassThroughCmd(in BluetoothDevice device, int keyCode, int keyState);
+    BluetoothAvrcpPlayerSettings getPlayerSettings(in BluetoothDevice device);
+    boolean setPlayerApplicationSetting(in BluetoothAvrcpPlayerSettings plAppSetting);
+    void sendGroupNavigationCmd(in BluetoothDevice device, int keyCode, int keyState);
 }

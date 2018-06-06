@@ -43,11 +43,13 @@ public class ListMenuItemView extends LinearLayout implements MenuView.ItemView 
     private TextView mTitleView;
     private CheckBox mCheckBox;
     private TextView mShortcutView;
+    private ImageView mSubMenuArrowView;
     
     private Drawable mBackground;
     private int mTextAppearance;
     private Context mTextAppearanceContext;
     private boolean mPreserveIconSpacing;
+    private Drawable mSubMenuArrow;
     
     private int mMenuType;
     
@@ -68,6 +70,7 @@ public class ListMenuItemView extends LinearLayout implements MenuView.ItemView 
         mPreserveIconSpacing = a.getBoolean(
                 com.android.internal.R.styleable.MenuView_preserveIconSpacing, false);
         mTextAppearanceContext = context;
+        mSubMenuArrow = a.getDrawable(com.android.internal.R.styleable.MenuView_subMenuArrow);
         
         a.recycle();
     }
@@ -77,7 +80,7 @@ public class ListMenuItemView extends LinearLayout implements MenuView.ItemView 
     }
 
     public ListMenuItemView(Context context, AttributeSet attrs) {
-        this(context, attrs, 0);
+        this(context, attrs, com.android.internal.R.attr.listMenuViewStyle);
     }
 
     @Override
@@ -86,13 +89,17 @@ public class ListMenuItemView extends LinearLayout implements MenuView.ItemView 
         
         setBackgroundDrawable(mBackground);
         
-        mTitleView = (TextView) findViewById(com.android.internal.R.id.title);
+        mTitleView = findViewById(com.android.internal.R.id.title);
         if (mTextAppearance != -1) {
             mTitleView.setTextAppearance(mTextAppearanceContext,
                                          mTextAppearance);
         }
         
-        mShortcutView = (TextView) findViewById(com.android.internal.R.id.shortcut);
+        mShortcutView = findViewById(com.android.internal.R.id.shortcut);
+        mSubMenuArrowView = findViewById(com.android.internal.R.id.submenuarrow);
+        if (mSubMenuArrowView != null) {
+            mSubMenuArrowView.setImageDrawable(mSubMenuArrow);
+        }
     }
 
     public void initialize(MenuItemImpl itemData, int menuType) {
@@ -100,12 +107,14 @@ public class ListMenuItemView extends LinearLayout implements MenuView.ItemView 
         mMenuType = menuType;
 
         setVisibility(itemData.isVisible() ? View.VISIBLE : View.GONE);
-        
+
         setTitle(itemData.getTitleForItemView(this));
         setCheckable(itemData.isCheckable());
         setShortcut(itemData.shouldShowShortcut(), itemData.getShortcut());
         setIcon(itemData.getIcon());
         setEnabled(itemData.isEnabled());
+        setSubMenuArrowVisible(itemData.hasSubMenu());
+        setContentDescription(itemData.getContentDescription());
     }
 
     public void setForceShowIcon(boolean forceShow) {
@@ -184,6 +193,12 @@ public class ListMenuItemView extends LinearLayout implements MenuView.ItemView 
         }
         
         compoundButton.setChecked(checked);
+    }
+
+    private void setSubMenuArrowVisible(boolean hasSubmenu) {
+        if (mSubMenuArrowView != null) {
+            mSubMenuArrowView.setVisibility(hasSubmenu ? View.VISIBLE : View.GONE);
+        }
     }
 
     public void setShortcut(boolean showShortcut, char shortcutKey) {

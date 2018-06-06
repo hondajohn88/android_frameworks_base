@@ -28,6 +28,7 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.StringDef;
 import android.annotation.SystemApi;
+import android.app.ActivityThread;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
@@ -213,7 +214,7 @@ public final class MediaDrm {
          * It's easier to create it here than in C++.
          */
         native_setup(new WeakReference<MediaDrm>(this),
-                getByteArrayFromUUID(uuid));
+                getByteArrayFromUUID(uuid),  ActivityThread.currentOpPackageName());
     }
 
     /**
@@ -473,6 +474,9 @@ public final class MediaDrm {
     /**
      * This event type indicates that the licensed usage duration for keys in a session
      * has expired.  The keys are no longer valid.
+     * @deprecated Use {@link OnKeyStatusChangeListener#onKeyStatusChange}
+     * and check for {@link MediaDrm.KeyStatus#STATUS_EXPIRED} in the {@link MediaDrm.KeyStatus}
+     * instead.
      */
     public static final int EVENT_KEY_EXPIRED = 3;
 
@@ -752,9 +756,12 @@ public final class MediaDrm {
      * @param init container-specific data, its meaning is interpreted based on the
      * mime type provided in the mimeType parameter.  It could contain, for example,
      * the content ID, key ID or other data obtained from the content metadata that is
-     * required in generating the key request. init may be null when keyType is
-     * KEY_TYPE_RELEASE.
-     * @param mimeType identifies the mime type of the content
+     * required in generating the key request. May be null when keyType is
+     * KEY_TYPE_RELEASE or if the request is a renewal, i.e. not the first key
+     * request for the session.
+     * @param mimeType identifies the mime type of the content. May be null if the
+     * keyType is KEY_TYPE_RELEASE or if the request is a renewal, i.e. not the
+     * first key request for the session.
      * @param keyType specifes the type of the request. The request may be to acquire
      * keys for streaming or offline content, or to release previously acquired
      * keys, which are identified by a keySetId.
@@ -778,13 +785,17 @@ public final class MediaDrm {
      * response is for an offline key request, a keySetId is returned that can be
      * used to later restore the keys to a new session with the method
      * {@link #restoreKeys}.
-     * When the response is for a streaming or release request, null is returned.
+     * When the response is for a streaming or release request, an empty byte array
+     * is returned.
      *
      * @param scope may be a sessionId or keySetId depending on the type of the
      * response.  Scope should be set to the sessionId when the response is for either
      * streaming or offline key requests.  Scope should be set to the keySetId when
      * the response is for a release request.
      * @param response the byte array response from the server
+     * @return If the response is for an offline request, the keySetId for the offline
+     * keys will be returned. If the response is for a streaming or release request
+     * an empty byte array will be returned.
      *
      * @throws NotProvisionedException if the response indicates that
      * reprovisioning is required
@@ -906,18 +917,6 @@ public final class MediaDrm {
             throws DeniedByServerException;
 
     /**
-     * Remove provisioning from a device.  Only system apps may unprovision a
-     * device.  Note that removing provisioning will invalidate any keys saved
-     * for offline use (KEY_TYPE_OFFLINE), which may render downloaded content
-     * unplayable until new licenses are acquired.  Since provisioning is global
-     * to the device, license invalidation will apply to all content downloaded
-     * by any app, so appropriate warnings should be given to the user.
-     * @hide
-     */
-    @SystemApi
-    public native void unprovisionDevice();
-
-    /**
      * A means of enforcing limits on the number of concurrent streams per subscriber
      * across devices is provided via SecureStop. This is achieved by securely
      * monitoring the lifetime of sessions.
@@ -1025,13 +1024,13 @@ public final class MediaDrm {
      * Set a DRM engine plugin String property value.
      */
     public native void setPropertyString(
-            @StringProperty String propertyName, @NonNull String value);
+            String propertyName, @NonNull String value);
 
     /**
      * Set a DRM engine plugin byte array property value.
      */
     public native void setPropertyByteArray(
-            @ArrayProperty String propertyName, @NonNull byte[] value);
+            String propertyName, @NonNull byte[] value);
 
     private static final native void setCipherAlgorithmNative(
             @NonNull MediaDrm drm, @NonNull byte[] sessionId, @NonNull String algorithm);
@@ -1082,16 +1081,15 @@ public final class MediaDrm {
      * A CryptoSession is obtained using {@link #getCryptoSession}
      */
     public final class CryptoSession {
-        private MediaDrm mDrm;
         private byte[] mSessionId;
 
-        CryptoSession(@NonNull MediaDrm drm, @NonNull byte[] sessionId,
-                @NonNull String cipherAlgorithm, @NonNull String macAlgorithm)
+        CryptoSession(@NonNull byte[] sessionId,
+                      @NonNull String cipherAlgorithm,
+                      @NonNull String macAlgorithm)
         {
             mSessionId = sessionId;
-            mDrm = drm;
-            setCipherAlgorithmNative(drm, sessionId, cipherAlgorithm);
-            setMacAlgorithmNative(drm, sessionId, macAlgorithm);
+            setCipherAlgorithmNative(MediaDrm.this, sessionId, cipherAlgorithm);
+            setMacAlgorithmNative(MediaDrm.this, sessionId, macAlgorithm);
         }
 
         /**
@@ -1104,7 +1102,7 @@ public final class MediaDrm {
         @NonNull
         public byte[] encrypt(
                 @NonNull byte[] keyid, @NonNull byte[] input, @NonNull byte[] iv) {
-            return encryptNative(mDrm, mSessionId, keyid, input, iv);
+            return encryptNative(MediaDrm.this, mSessionId, keyid, input, iv);
         }
 
         /**
@@ -1117,7 +1115,7 @@ public final class MediaDrm {
         @NonNull
         public byte[] decrypt(
                 @NonNull byte[] keyid, @NonNull byte[] input, @NonNull byte[] iv) {
-            return decryptNative(mDrm, mSessionId, keyid, input, iv);
+            return decryptNative(MediaDrm.this, mSessionId, keyid, input, iv);
         }
 
         /**
@@ -1128,7 +1126,7 @@ public final class MediaDrm {
          */
         @NonNull
         public byte[] sign(@NonNull byte[] keyid, @NonNull byte[] message) {
-            return signNative(mDrm, mSessionId, keyid, message);
+            return signNative(MediaDrm.this, mSessionId, keyid, message);
         }
 
         /**
@@ -1142,7 +1140,7 @@ public final class MediaDrm {
          */
         public boolean verify(
                 @NonNull byte[] keyid, @NonNull byte[] message, @NonNull byte[] signature) {
-            return verifyNative(mDrm, mSessionId, keyid, message, signature);
+            return verifyNative(MediaDrm.this, mSessionId, keyid, message, signature);
         }
     };
 
@@ -1170,7 +1168,7 @@ public final class MediaDrm {
             @NonNull byte[] sessionId,
             @NonNull String cipherAlgorithm, @NonNull String macAlgorithm)
     {
-        return new CryptoSession(this, sessionId, cipherAlgorithm, macAlgorithm);
+        return new CryptoSession(sessionId, cipherAlgorithm, macAlgorithm);
     }
 
     /**
@@ -1320,7 +1318,8 @@ public final class MediaDrm {
     public native final void release();
     private static native final void native_init();
 
-    private native final void native_setup(Object mediadrm_this, byte[] uuid);
+    private native final void native_setup(Object mediadrm_this, byte[] uuid,
+            String appPackageName);
 
     private native final void native_finalize();
 

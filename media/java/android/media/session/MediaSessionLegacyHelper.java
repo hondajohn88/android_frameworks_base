@@ -18,7 +18,6 @@ package android.media.session;
 
 import android.app.PendingIntent;
 import android.app.PendingIntent.CanceledException;
-import android.content.res.Configuration;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -34,14 +33,9 @@ import android.media.Rating;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.UserHandle;
-import android.provider.Settings;
 import android.util.ArrayMap;
 import android.util.Log;
 import android.view.KeyEvent;
-import android.view.Surface;
-import android.view.View;
-import android.view.WindowManager;
 
 /**
  * Helper for connecting existing APIs up to the new session APIs. This can be
@@ -160,8 +154,8 @@ public class MediaSessionLegacyHelper {
                     metadata.getString(MediaMetadata.METADATA_KEY_WRITER));
         }
         if (metadata.containsKey(MediaMetadata.METADATA_KEY_YEAR)) {
-            oldMetadata.putString(String.valueOf(MediaMetadataRetriever.METADATA_KEY_YEAR),
-                    metadata.getString(MediaMetadata.METADATA_KEY_YEAR));
+            oldMetadata.putLong(String.valueOf(MediaMetadataRetriever.METADATA_KEY_YEAR),
+                    metadata.getLong(MediaMetadata.METADATA_KEY_YEAR));
         }
         return oldMetadata;
     }
@@ -182,69 +176,12 @@ public class MediaSessionLegacyHelper {
         }
     }
 
-    public void sendVolumeKeyEvent(KeyEvent keyEvent, boolean musicOnly) {
+    public void sendVolumeKeyEvent(KeyEvent keyEvent, int stream, boolean musicOnly) {
         if (keyEvent == null) {
             Log.w(TAG, "Tried to send a null key event. Ignoring.");
             return;
         }
-        boolean down = keyEvent.getAction() == KeyEvent.ACTION_DOWN;
-        boolean up = keyEvent.getAction() == KeyEvent.ACTION_UP;
-        int direction = 0;
-        boolean isMute = false;
-        switch (keyEvent.getKeyCode()) {
-            case KeyEvent.KEYCODE_VOLUME_UP:
-                direction = AudioManager.ADJUST_RAISE;
-                break;
-            case KeyEvent.KEYCODE_VOLUME_DOWN:
-                direction = AudioManager.ADJUST_LOWER;
-                break;
-            case KeyEvent.KEYCODE_VOLUME_MUTE:
-                isMute = true;
-                break;
-        }
-        if (down || up) {
-            final WindowManager windowService = (WindowManager) mContext.getSystemService(Context.WINDOW_SERVICE);
-            if (windowService != null) {
-                final int rotation = windowService.getDefaultDisplay().getRotation();
-                final Configuration config = mContext.getResources().getConfiguration();
-                final boolean swapKeys = Settings.System.getIntForUser(mContext.getContentResolver(),
-                        Settings.System.SWAP_VOLUME_BUTTONS, 0, UserHandle.USER_CURRENT) == 1;
-
-                if (swapKeys
-                        && (rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_180)
-                        && config.getLayoutDirection() == View.LAYOUT_DIRECTION_LTR) {
-                    direction = keyEvent.getKeyCode() == KeyEvent.KEYCODE_VOLUME_UP
-                            ? AudioManager.ADJUST_LOWER
-                            : AudioManager.ADJUST_RAISE;
-                }
-            }
-            int flags = AudioManager.FLAG_FROM_KEY;
-            if (musicOnly) {
-                // This flag is used when the screen is off to only affect
-                // active media
-                flags |= AudioManager.FLAG_ACTIVE_MEDIA_ONLY;
-            } else {
-                // These flags are consistent with the home screen
-                if (up) {
-                    flags |= AudioManager.FLAG_PLAY_SOUND | AudioManager.FLAG_VIBRATE;
-                } else {
-                    flags |= AudioManager.FLAG_SHOW_UI | AudioManager.FLAG_VIBRATE;
-                }
-            }
-            if (direction != 0) {
-                // If this is action up we want to send a beep for non-music events
-                if (up) {
-                    direction = 0;
-                }
-                mSessionManager.dispatchAdjustVolume(AudioManager.USE_DEFAULT_STREAM_TYPE,
-                        direction, flags);
-            } else if (isMute) {
-                if (down && keyEvent.getRepeatCount() == 0) {
-                    mSessionManager.dispatchAdjustVolume(AudioManager.USE_DEFAULT_STREAM_TYPE,
-                            AudioManager.ADJUST_TOGGLE_MUTE, flags);
-                }
-            }
-        }
+        mSessionManager.dispatchVolumeKeyEvent(keyEvent, stream, musicOnly);
     }
 
     public void sendAdjustVolumeBy(int suggestedStream, int delta, int flags) {

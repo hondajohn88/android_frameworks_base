@@ -22,6 +22,12 @@ import android.graphics.Matrix;
 import android.graphics.Outline;
 import android.graphics.Paint;
 import android.graphics.Rect;
+import android.graphics.drawable.AnimatedVectorDrawable;
+
+import dalvik.annotation.optimization.CriticalNative;
+import dalvik.annotation.optimization.FastNative;
+
+import libcore.util.NativeAllocationRegistry;
 
 /**
  * <p>A display list records a series of graphics related operations and can replay
@@ -50,7 +56,7 @@ import android.graphics.Rect;
  *
  * <h3>Creating a display list</h3>
  * <pre class="prettyprint">
- *     HardwareRenderer renderer = myView.getHardwareRenderer();
+ *     ThreadedRenderer renderer = myView.getThreadedRenderer();
  *     if (renderer != null) {
  *         DisplayList displayList = renderer.createDisplayList();
  *         DisplayListCanvas canvas = displayList.start(width, height);
@@ -126,53 +132,20 @@ import android.graphics.Rect;
  * @hide
  */
 public class RenderNode {
-    /**
-     * Flag used when calling
-     * {@link DisplayListCanvas#drawRenderNode
-     * When this flag is set, draw operations lying outside of the bounds of the
-     * display list will be culled early. It is recommeneded to always set this
-     * flag.
-     */
-    public static final int FLAG_CLIP_CHILDREN = 0x1;
 
-    // NOTE: The STATUS_* values *must* match the enum in DrawGlInfo.h
+    // Use a Holder to allow static initialization in the boot image.
+    private static class NoImagePreloadHolder {
+        public static final NativeAllocationRegistry sRegistry = new NativeAllocationRegistry(
+                RenderNode.class.getClassLoader(), nGetNativeFinalizer(), 1024);
+    }
 
-    /**
-     * Indicates that the display list is done drawing.
-     *
-     * @see DisplayListCanvas#drawRenderNode(RenderNode, int)
-     */
-    public static final int STATUS_DONE = 0x0;
-
-    /**
-     * Indicates that the display list needs another drawing pass.
-     *
-     * @see DisplayListCanvas#drawRenderNode(RenderNode, int)
-     */
-    public static final int STATUS_DRAW = 0x1;
-
-    /**
-     * Indicates that the display list needs to re-execute its GL functors.
-     *
-     * @see DisplayListCanvas#drawRenderNode(RenderNode, int)
-     * @see DisplayListCanvas#callDrawGLFunction2(long)
-     */
-    public static final int STATUS_INVOKE = 0x2;
-
-    /**
-     * Indicates that the display list performed GL drawing operations.
-     *
-     * @see DisplayListCanvas#drawRenderNode(RenderNode, int)
-     */
-    public static final int STATUS_DREW = 0x4;
-
-    private boolean mValid;
     // Do not access directly unless you are ThreadedRenderer
     final long mNativeRenderNode;
     private final View mOwningView;
 
     private RenderNode(String name, View owningView) {
         mNativeRenderNode = nCreate(name);
+        NoImagePreloadHolder.sRegistry.registerNativeAllocation(this, mNativeRenderNode);
         mOwningView = owningView;
     }
 
@@ -181,7 +154,17 @@ public class RenderNode {
      */
     private RenderNode(long nativePtr) {
         mNativeRenderNode = nativePtr;
+        NoImagePreloadHolder.sRegistry.registerNativeAllocation(this, mNativeRenderNode);
         mOwningView = null;
+    }
+
+    /**
+     * Immediately destroys the RenderNode
+     * Only suitable for testing/benchmarking where waiting for the GC/finalizer
+     * is not feasible.
+     */
+    public void destroy() {
+        // TODO: Removed temporarily
     }
 
     /**
@@ -206,6 +189,13 @@ public class RenderNode {
         return new RenderNode(nativePtr);
     }
 
+    /**
+     * Enable callbacks for position changes.
+     */
+    public void requestPositionUpdates(SurfaceView view) {
+        nRequestPositionUpdates(mNativeRenderNode, view);
+    }
+
 
     /**
      * Starts recording a display list for the render node. All
@@ -225,11 +215,7 @@ public class RenderNode {
      * @see #isValid()
      */
     public DisplayListCanvas start(int width, int height) {
-        DisplayListCanvas canvas = DisplayListCanvas.obtain(this);
-        canvas.setViewport(width, height);
-        // The dirty rect should always be null for a display list
-        canvas.onPreDraw(null);
-        return canvas;
+        return DisplayListCanvas.obtain(this, width, height);
     }
 
     /**
@@ -241,11 +227,9 @@ public class RenderNode {
      * @see #isValid()
      */
     public void end(DisplayListCanvas canvas) {
-        canvas.onPostDraw();
-        long renderNodeData = canvas.finishRecording();
-        nSetDisplayListData(mNativeRenderNode, renderNodeData);
+        long displayList = canvas.finishRecording();
+        nSetDisplayList(mNativeRenderNode, displayList);
         canvas.recycle();
-        mValid = true;
     }
 
     /**
@@ -253,11 +237,8 @@ public class RenderNode {
      * during destruction of hardware resources, to ensure that we do not hold onto
      * obsolete resources after related resources are gone.
      */
-    public void destroyDisplayListData() {
-        if (!mValid) return;
-
-        nSetDisplayListData(mNativeRenderNode, 0);
-        mValid = false;
+    public void discardDisplayList() {
+        nSetDisplayList(mNativeRenderNode, 0);
     }
 
     /**
@@ -266,10 +247,12 @@ public class RenderNode {
      *
      * @return boolean true if the display list is able to be replayed, false otherwise.
      */
-    public boolean isValid() { return mValid; }
+    public boolean isValid() {
+        return nIsValid(mNativeRenderNode);
+    }
 
     long getNativeDisplayList() {
-        if (!mValid) {
+        if (!isValid()) {
             throw new IllegalStateException("The display list is not valid.");
         }
         return mNativeRenderNode;
@@ -299,7 +282,7 @@ public class RenderNode {
         return nSetLayerType(mNativeRenderNode, layerType);
     }
 
-    public boolean setLayerPaint(Paint paint) {
+    public boolean setLayerPaint(@Nullable Paint paint) {
         return nSetLayerPaint(mNativeRenderNode, paint != null ? paint.getNativeInstance() : 0);
     }
 
@@ -347,18 +330,22 @@ public class RenderNode {
      *
      * Deep copies the data into native to simplify reference ownership.
      */
-    public boolean setOutline(Outline outline) {
+    public boolean setOutline(@Nullable Outline outline) {
         if (outline == null) {
             return nSetOutlineNone(mNativeRenderNode);
-        } else if (outline.isEmpty()) {
-            return nSetOutlineEmpty(mNativeRenderNode);
-        } else if (outline.mRect != null) {
-            return nSetOutlineRoundRect(mNativeRenderNode, outline.mRect.left, outline.mRect.top,
-                    outline.mRect.right, outline.mRect.bottom, outline.mRadius, outline.mAlpha);
-        } else if (outline.mPath != null) {
-            return nSetOutlineConvexPath(mNativeRenderNode, outline.mPath.mNativePath,
-                    outline.mAlpha);
         }
+
+        switch(outline.mMode) {
+            case Outline.MODE_EMPTY:
+                return nSetOutlineEmpty(mNativeRenderNode);
+            case Outline.MODE_ROUND_RECT:
+                return nSetOutlineRoundRect(mNativeRenderNode, outline.mRect.left, outline.mRect.top,
+                        outline.mRect.right, outline.mRect.bottom, outline.mRadius, outline.mAlpha);
+            case Outline.MODE_CONVEX_PATH:
+                return nSetOutlineConvexPath(mNativeRenderNode, outline.mPath.mNativePath,
+                        outline.mAlpha);
+        }
+
         throw new IllegalArgumentException("Unrecognized outline?");
     }
 
@@ -815,106 +802,176 @@ public class RenderNode {
         mOwningView.mAttachInfo.mViewRootImpl.registerAnimatingRenderNode(this);
     }
 
+    public boolean isAttached() {
+        return mOwningView != null && mOwningView.mAttachInfo != null;
+    }
+
+    public void registerVectorDrawableAnimator(
+            AnimatedVectorDrawable.VectorDrawableAnimatorRT animatorSet) {
+        if (mOwningView == null || mOwningView.mAttachInfo == null) {
+            throw new IllegalStateException("Cannot start this animator on a detached view!");
+        }
+        mOwningView.mAttachInfo.mViewRootImpl.registerVectorDrawableAnimator(animatorSet);
+    }
+
     public void endAllAnimators() {
         nEndAllAnimators(mNativeRenderNode);
     }
 
     ///////////////////////////////////////////////////////////////////////////
-    // Native methods
+    // Regular JNI methods
     ///////////////////////////////////////////////////////////////////////////
 
     private static native long nCreate(String name);
-    private static native void nDestroyRenderNode(long renderNode);
-    private static native void nSetDisplayListData(long renderNode, long newData);
 
-    // Matrix
-
-    private static native void nGetTransformMatrix(long renderNode, long nativeMatrix);
-    private static native void nGetInverseTransformMatrix(long renderNode, long nativeMatrix);
-    private static native boolean nHasIdentityMatrix(long renderNode);
-
-    // Properties
-
-    private static native boolean nOffsetTopAndBottom(long renderNode, int offset);
-    private static native boolean nOffsetLeftAndRight(long renderNode, int offset);
-    private static native boolean nSetLeftTopRightBottom(long renderNode, int left, int top,
-            int right, int bottom);
-    private static native boolean nSetBottom(long renderNode, int bottom);
-    private static native boolean nSetRight(long renderNode, int right);
-    private static native boolean nSetTop(long renderNode, int top);
-    private static native boolean nSetLeft(long renderNode, int left);
-    private static native boolean nSetCameraDistance(long renderNode, float distance);
-    private static native boolean nSetPivotY(long renderNode, float pivotY);
-    private static native boolean nSetPivotX(long renderNode, float pivotX);
-    private static native boolean nSetLayerType(long renderNode, int layerType);
-    private static native boolean nSetLayerPaint(long renderNode, long paint);
-    private static native boolean nSetClipToBounds(long renderNode, boolean clipToBounds);
-    private static native boolean nSetClipBounds(long renderNode, int left, int top,
-            int right, int bottom);
-    private static native boolean nSetClipBoundsEmpty(long renderNode);
-    private static native boolean nSetProjectBackwards(long renderNode, boolean shouldProject);
-    private static native boolean nSetProjectionReceiver(long renderNode, boolean shouldRecieve);
-    private static native boolean nSetOutlineRoundRect(long renderNode, int left, int top,
-            int right, int bottom, float radius, float alpha);
-    private static native boolean nSetOutlineConvexPath(long renderNode, long nativePath,
-            float alpha);
-    private static native boolean nSetOutlineEmpty(long renderNode);
-    private static native boolean nSetOutlineNone(long renderNode);
-    private static native boolean nHasShadow(long renderNode);
-    private static native boolean nSetClipToOutline(long renderNode, boolean clipToOutline);
-    private static native boolean nSetRevealClip(long renderNode,
-            boolean shouldClip, float x, float y, float radius);
-    private static native boolean nSetAlpha(long renderNode, float alpha);
-    private static native boolean nSetHasOverlappingRendering(long renderNode,
-            boolean hasOverlappingRendering);
-    private static native boolean nSetElevation(long renderNode, float lift);
-    private static native boolean nSetTranslationX(long renderNode, float translationX);
-    private static native boolean nSetTranslationY(long renderNode, float translationY);
-    private static native boolean nSetTranslationZ(long renderNode, float translationZ);
-    private static native boolean nSetRotation(long renderNode, float rotation);
-    private static native boolean nSetRotationX(long renderNode, float rotationX);
-    private static native boolean nSetRotationY(long renderNode, float rotationY);
-    private static native boolean nSetScaleX(long renderNode, float scaleX);
-    private static native boolean nSetScaleY(long renderNode, float scaleY);
-    private static native boolean nSetStaticMatrix(long renderNode, long nativeMatrix);
-    private static native boolean nSetAnimationMatrix(long renderNode, long animationMatrix);
-
-    private static native boolean nHasOverlappingRendering(long renderNode);
-    private static native boolean nGetClipToOutline(long renderNode);
-    private static native float nGetAlpha(long renderNode);
-    private static native float nGetCameraDistance(long renderNode);
-    private static native float nGetScaleX(long renderNode);
-    private static native float nGetScaleY(long renderNode);
-    private static native float nGetElevation(long renderNode);
-    private static native float nGetTranslationX(long renderNode);
-    private static native float nGetTranslationY(long renderNode);
-    private static native float nGetTranslationZ(long renderNode);
-    private static native float nGetRotation(long renderNode);
-    private static native float nGetRotationX(long renderNode);
-    private static native float nGetRotationY(long renderNode);
-    private static native boolean nIsPivotExplicitlySet(long renderNode);
-    private static native float nGetPivotX(long renderNode);
-    private static native float nGetPivotY(long renderNode);
+    private static native long nGetNativeFinalizer();
     private static native void nOutput(long renderNode);
     private static native int nGetDebugSize(long renderNode);
+    private static native void nRequestPositionUpdates(long renderNode, SurfaceView callback);
 
-    ///////////////////////////////////////////////////////////////////////////
     // Animations
-    ///////////////////////////////////////////////////////////////////////////
 
     private static native void nAddAnimator(long renderNode, long animatorPtr);
     private static native void nEndAllAnimators(long renderNode);
 
+
     ///////////////////////////////////////////////////////////////////////////
-    // Finalization
+    // @FastNative methods
     ///////////////////////////////////////////////////////////////////////////
 
-    @Override
-    protected void finalize() throws Throwable {
-        try {
-            nDestroyRenderNode(mNativeRenderNode);
-        } finally {
-            super.finalize();
-        }
-    }
+    @FastNative
+    private static native void nSetDisplayList(long renderNode, long newData);
+
+
+    ///////////////////////////////////////////////////////////////////////////
+    // @CriticalNative methods
+    ///////////////////////////////////////////////////////////////////////////
+
+    @CriticalNative
+    private static native boolean nIsValid(long renderNode);
+
+    // Matrix
+
+    @CriticalNative
+    private static native void nGetTransformMatrix(long renderNode, long nativeMatrix);
+    @CriticalNative
+    private static native void nGetInverseTransformMatrix(long renderNode, long nativeMatrix);
+    @CriticalNative
+    private static native boolean nHasIdentityMatrix(long renderNode);
+
+    // Properties
+
+    @CriticalNative
+    private static native boolean nOffsetTopAndBottom(long renderNode, int offset);
+    @CriticalNative
+    private static native boolean nOffsetLeftAndRight(long renderNode, int offset);
+    @CriticalNative
+    private static native boolean nSetLeftTopRightBottom(long renderNode, int left, int top,
+            int right, int bottom);
+    @CriticalNative
+    private static native boolean nSetBottom(long renderNode, int bottom);
+    @CriticalNative
+    private static native boolean nSetRight(long renderNode, int right);
+    @CriticalNative
+    private static native boolean nSetTop(long renderNode, int top);
+    @CriticalNative
+    private static native boolean nSetLeft(long renderNode, int left);
+    @CriticalNative
+    private static native boolean nSetCameraDistance(long renderNode, float distance);
+    @CriticalNative
+    private static native boolean nSetPivotY(long renderNode, float pivotY);
+    @CriticalNative
+    private static native boolean nSetPivotX(long renderNode, float pivotX);
+    @CriticalNative
+    private static native boolean nSetLayerType(long renderNode, int layerType);
+    @CriticalNative
+    private static native boolean nSetLayerPaint(long renderNode, long paint);
+    @CriticalNative
+    private static native boolean nSetClipToBounds(long renderNode, boolean clipToBounds);
+    @CriticalNative
+    private static native boolean nSetClipBounds(long renderNode, int left, int top,
+            int right, int bottom);
+    @CriticalNative
+    private static native boolean nSetClipBoundsEmpty(long renderNode);
+    @CriticalNative
+    private static native boolean nSetProjectBackwards(long renderNode, boolean shouldProject);
+    @CriticalNative
+    private static native boolean nSetProjectionReceiver(long renderNode, boolean shouldRecieve);
+    @CriticalNative
+    private static native boolean nSetOutlineRoundRect(long renderNode, int left, int top,
+            int right, int bottom, float radius, float alpha);
+    @CriticalNative
+    private static native boolean nSetOutlineConvexPath(long renderNode, long nativePath,
+            float alpha);
+    @CriticalNative
+    private static native boolean nSetOutlineEmpty(long renderNode);
+    @CriticalNative
+    private static native boolean nSetOutlineNone(long renderNode);
+    @CriticalNative
+    private static native boolean nHasShadow(long renderNode);
+    @CriticalNative
+    private static native boolean nSetClipToOutline(long renderNode, boolean clipToOutline);
+    @CriticalNative
+    private static native boolean nSetRevealClip(long renderNode,
+            boolean shouldClip, float x, float y, float radius);
+    @CriticalNative
+    private static native boolean nSetAlpha(long renderNode, float alpha);
+    @CriticalNative
+    private static native boolean nSetHasOverlappingRendering(long renderNode,
+            boolean hasOverlappingRendering);
+    @CriticalNative
+    private static native boolean nSetElevation(long renderNode, float lift);
+    @CriticalNative
+    private static native boolean nSetTranslationX(long renderNode, float translationX);
+    @CriticalNative
+    private static native boolean nSetTranslationY(long renderNode, float translationY);
+    @CriticalNative
+    private static native boolean nSetTranslationZ(long renderNode, float translationZ);
+    @CriticalNative
+    private static native boolean nSetRotation(long renderNode, float rotation);
+    @CriticalNative
+    private static native boolean nSetRotationX(long renderNode, float rotationX);
+    @CriticalNative
+    private static native boolean nSetRotationY(long renderNode, float rotationY);
+    @CriticalNative
+    private static native boolean nSetScaleX(long renderNode, float scaleX);
+    @CriticalNative
+    private static native boolean nSetScaleY(long renderNode, float scaleY);
+    @CriticalNative
+    private static native boolean nSetStaticMatrix(long renderNode, long nativeMatrix);
+    @CriticalNative
+    private static native boolean nSetAnimationMatrix(long renderNode, long animationMatrix);
+
+    @CriticalNative
+    private static native boolean nHasOverlappingRendering(long renderNode);
+    @CriticalNative
+    private static native boolean nGetClipToOutline(long renderNode);
+    @CriticalNative
+    private static native float nGetAlpha(long renderNode);
+    @CriticalNative
+    private static native float nGetCameraDistance(long renderNode);
+    @CriticalNative
+    private static native float nGetScaleX(long renderNode);
+    @CriticalNative
+    private static native float nGetScaleY(long renderNode);
+    @CriticalNative
+    private static native float nGetElevation(long renderNode);
+    @CriticalNative
+    private static native float nGetTranslationX(long renderNode);
+    @CriticalNative
+    private static native float nGetTranslationY(long renderNode);
+    @CriticalNative
+    private static native float nGetTranslationZ(long renderNode);
+    @CriticalNative
+    private static native float nGetRotation(long renderNode);
+    @CriticalNative
+    private static native float nGetRotationX(long renderNode);
+    @CriticalNative
+    private static native float nGetRotationY(long renderNode);
+    @CriticalNative
+    private static native boolean nIsPivotExplicitlySet(long renderNode);
+    @CriticalNative
+    private static native float nGetPivotX(long renderNode);
+    @CriticalNative
+    private static native float nGetPivotY(long renderNode);
 }

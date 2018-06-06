@@ -200,8 +200,7 @@ public class RenderNodeAnimator extends Animator {
         // in mTransformationInfo instead of in RenderNode, so we need to update
         // it with the final value here.
         if (mRenderProperty == RenderNodeAnimator.ALPHA) {
-            // Don't need null check because ViewPropertyAnimator's
-            // ctor calls ensureTransformationInfo()
+            mViewTarget.ensureTransformationInfo();
             mViewTarget.mTransformationInfo.mAlpha = mFinalValue;
         }
 
@@ -334,6 +333,11 @@ public class RenderNodeAnimator extends Animator {
     @Override
     public long getDuration() {
         return mUnscaledDuration;
+    }
+
+    @Override
+    public long getTotalDuration() {
+        return mUnscaledDuration + mUnscaledStartDelay;
     }
 
     @Override

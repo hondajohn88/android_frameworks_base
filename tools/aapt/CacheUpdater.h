@@ -12,7 +12,7 @@
 #include <sys/stat.h>
 #include <stdio.h>
 #include "Images.h"
-#ifdef HAVE_MS_C_RUNTIME
+#ifdef _WIN32
 #include <direct.h>
 #endif
 
@@ -51,7 +51,7 @@ private:
 class SystemCacheUpdater : public CacheUpdater {
 public:
     // Constructor to set bundle to pass to preProcessImage
-    SystemCacheUpdater (Bundle* b)
+    explicit SystemCacheUpdater (Bundle* b)
         : bundle(b) { };
 
     // Make sure all the directories along this path exist
@@ -81,7 +81,7 @@ public:
                 // Advance to the next segment of the path
                 existsPath.appendPath(toCreate.walkPath(&remains));
                 toCreate = remains;
-#ifdef HAVE_MS_C_RUNTIME
+#ifdef _WIN32
                 _mkdir(existsPath.string());
 #else
                 mkdir(existsPath.string(), S_IRUSR|S_IWUSR|S_IXUSR|S_IRGRP|S_IXGRP);

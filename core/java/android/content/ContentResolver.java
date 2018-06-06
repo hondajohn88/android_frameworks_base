@@ -17,9 +17,13 @@
 package android.content;
 
 import android.accounts.Account;
+import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.app.ActivityManagerNative;
+import android.annotation.RequiresPermission;
+import android.annotation.TestApi;
+import android.annotation.UserIdInt;
+import android.app.ActivityManager;
 import android.app.ActivityThread;
 import android.app.AppGlobals;
 import android.content.pm.PackageManager.NameNotFoundException;
@@ -30,6 +34,7 @@ import android.database.CrossProcessCursorWrapper;
 import android.database.Cursor;
 import android.database.IContentObserver;
 import android.graphics.Point;
+import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.CancellationSignal;
@@ -46,10 +51,11 @@ import android.text.TextUtils;
 import android.util.EventLog;
 import android.util.Log;
 
-import dalvik.system.CloseGuard;
-
 import com.android.internal.util.ArrayUtils;
+import com.android.internal.util.MimeIconUtils;
 import com.android.internal.util.Preconditions;
+
+import dalvik.system.CloseGuard;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -57,10 +63,12 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Random;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * This class provides applications access to the content model.
@@ -84,6 +92,13 @@ public abstract class ContentResolver {
      * at the front of the sync request queue and without any delay
      */
     public static final String SYNC_EXTRAS_EXPEDITED = "expedited";
+
+    /**
+     * If this extra is set to true, the sync request will be scheduled
+     * only when the device is plugged in. This is equivalent to calling
+     * setRequiresCharging(true) on {@link SyncRequest}.
+     */
+    public static final String SYNC_EXTRAS_REQUIRE_CHARGING = "require_charging";
 
     /**
      * @deprecated instead use
@@ -177,6 +192,193 @@ public abstract class ContentResolver {
      *      CancellationSignal)
      */
     public static final String EXTRA_SIZE = "android.content.extra.SIZE";
+
+    /**
+     * An extra boolean describing whether a particular provider supports refresh
+     * or not. If a provider supports refresh, it should include this key in its
+     * returned Cursor as part of its query call.
+     *
+     */
+    public static final String EXTRA_REFRESH_SUPPORTED = "android.content.extra.REFRESH_SUPPORTED";
+
+    /**
+     * Key for an SQL style selection string that may be present in the query Bundle argument
+     * passed to {@link ContentProvider#query(Uri, String[], Bundle, CancellationSignal)}
+     * when called by a legacy client.
+     *
+     * <p>Clients should never include user supplied values directly in the selection string,
+     * as this presents an avenue for SQL injection attacks. In lieu of this, a client
+     * should use standard placeholder notation to represent values in a selection string,
+     * then supply a corresponding value in {@value #QUERY_ARG_SQL_SELECTION_ARGS}.
+     *
+     * <p><b>Apps targeting {@link android.os.Build.VERSION_CODES#O} or higher are strongly
+     * encourage to use structured query arguments in lieu of opaque SQL query clauses.</b>
+     *
+     * @see #QUERY_ARG_SORT_COLUMNS
+     * @see #QUERY_ARG_SORT_DIRECTION
+     * @see #QUERY_ARG_SORT_COLLATION
+     */
+    public static final String QUERY_ARG_SQL_SELECTION = "android:query-arg-sql-selection";
+
+    /**
+     * Key for SQL selection string arguments list.
+     *
+     * <p>Clients should never include user supplied values directly in the selection string,
+     * as this presents an avenue for SQL injection attacks. In lieu of this, a client
+     * should use standard placeholder notation to represent values in a selection string,
+     * then supply a corresponding value in {@value #QUERY_ARG_SQL_SELECTION_ARGS}.
+     *
+     * <p><b>Apps targeting {@link android.os.Build.VERSION_CODES#O} or higher are strongly
+     * encourage to use structured query arguments in lieu of opaque SQL query clauses.</b>
+     *
+     * @see #QUERY_ARG_SORT_COLUMNS
+     * @see #QUERY_ARG_SORT_DIRECTION
+     * @see #QUERY_ARG_SORT_COLLATION
+     */
+    public static final String QUERY_ARG_SQL_SELECTION_ARGS =
+            "android:query-arg-sql-selection-args";
+
+    /**
+     * Key for an SQL style sort string that may be present in the query Bundle argument
+     * passed to {@link ContentProvider#query(Uri, String[], Bundle, CancellationSignal)}
+     * when called by a legacy client.
+     *
+     * <p><b>Apps targeting {@link android.os.Build.VERSION_CODES#O} or higher are strongly
+     * encourage to use structured query arguments in lieu of opaque SQL query clauses.</b>
+     *
+     * @see #QUERY_ARG_SORT_COLUMNS
+     * @see #QUERY_ARG_SORT_DIRECTION
+     * @see #QUERY_ARG_SORT_COLLATION
+     */
+    public static final String QUERY_ARG_SQL_SORT_ORDER = "android:query-arg-sql-sort-order";
+
+    /**
+     * Specifies the list of columns against which to sort results. When first column values
+     * are identical, records are then sorted based on second column values, and so on.
+     *
+     * <p>Columns present in this list must also be included in the projection
+     * supplied to {@link ContentResolver#query(Uri, String[], Bundle, CancellationSignal)}.
+     *
+     * <p>Apps targeting {@link android.os.Build.VERSION_CODES#O} or higher:
+     *
+     * <li>{@link ContentProvider} implementations: When preparing data in
+     * {@link ContentProvider#query(Uri, String[], Bundle, CancellationSignal)}, if sort columns
+     * is reflected in the returned Cursor, it is  strongly recommended that
+     * {@link #QUERY_ARG_SORT_COLUMNS} then be included in the array of honored arguments
+     * reflected in {@link Cursor} extras {@link Bundle} under {@link #EXTRA_HONORED_ARGS}.
+     *
+     * <li>When querying a provider, where no QUERY_ARG_SQL* otherwise exists in the
+     * arguments {@link Bundle}, the Content framework will attempt to synthesize
+     * an QUERY_ARG_SQL* argument using the corresponding QUERY_ARG_SORT* values.
+     */
+    public static final String QUERY_ARG_SORT_COLUMNS = "android:query-arg-sort-columns";
+
+    /**
+     * Specifies desired sort order. When unspecified a provider may provide a default
+     * sort direction, or choose to return unsorted results.
+     *
+     * <p>Apps targeting {@link android.os.Build.VERSION_CODES#O} or higher:
+     *
+     * <li>{@link ContentProvider} implementations: When preparing data in
+     * {@link ContentProvider#query(Uri, String[], Bundle, CancellationSignal)}, if sort direction
+     * is reflected in the returned Cursor, it is  strongly recommended that
+     * {@link #QUERY_ARG_SORT_DIRECTION} then be included in the array of honored arguments
+     * reflected in {@link Cursor} extras {@link Bundle} under {@link #EXTRA_HONORED_ARGS}.
+     *
+     * <li>When querying a provider, where no QUERY_ARG_SQL* otherwise exists in the
+     * arguments {@link Bundle}, the Content framework will attempt to synthesize
+     * a QUERY_ARG_SQL* argument using the corresponding QUERY_ARG_SORT* values.
+     *
+     * @see #QUERY_SORT_DIRECTION_ASCENDING
+     * @see #QUERY_SORT_DIRECTION_DESCENDING
+     */
+    public static final String QUERY_ARG_SORT_DIRECTION = "android:query-arg-sort-direction";
+
+    /**
+     * Allows client to specify a hint to the provider declaring which collation
+     * to use when sorting text values.
+     *
+     * <p>Providers may support custom collators. When specifying a custom collator
+     * the value is determined by the Provider.
+     *
+     * <li>{@link ContentProvider} implementations: When preparing data in
+     * {@link ContentProvider#query(Uri, String[], Bundle, CancellationSignal)}, if sort collation
+     * is reflected in the returned Cursor, it is  strongly recommended that
+     * {@link #QUERY_ARG_SORT_COLLATION} then be included in the array of honored arguments
+     * reflected in {@link Cursor} extras {@link Bundle} under {@link #EXTRA_HONORED_ARGS}.
+     *
+     * <li>When querying a provider, where no QUERY_ARG_SQL* otherwise exists in the
+     * arguments {@link Bundle}, the Content framework will attempt to synthesize
+     * a QUERY_ARG_SQL* argument using the corresponding QUERY_ARG_SORT* values.
+     *
+     * @see java.text.Collator#PRIMARY
+     * @see java.text.Collator#SECONDARY
+     * @see java.text.Collator#TERTIARY
+     * @see java.text.Collator#IDENTICAL
+     */
+    public static final String QUERY_ARG_SORT_COLLATION = "android:query-arg-sort-collation";
+
+    /**
+     * Allows provider to report back to client which query keys are honored in a Cursor.
+     *
+     * <p>Key identifying a {@code String[]} containing all QUERY_ARG_SORT* arguments
+     * honored by the provider. Include this in {@link Cursor} extras {@link Bundle}
+     * when any QUERY_ARG_SORT* value was honored during the preparation of the
+     * results {@link Cursor}.
+     *
+     * <p>If present, ALL honored arguments are enumerated in this extra’s payload.
+     *
+     * @see #QUERY_ARG_SORT_COLUMNS
+     * @see #QUERY_ARG_SORT_DIRECTION
+     * @see #QUERY_ARG_SORT_COLLATION
+     */
+    public static final String EXTRA_HONORED_ARGS = "android.content.extra.HONORED_ARGS";
+
+    /** @hide */
+    @IntDef(flag = false, value = {
+            QUERY_SORT_DIRECTION_ASCENDING,
+            QUERY_SORT_DIRECTION_DESCENDING
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface SortDirection {}
+    public static final int QUERY_SORT_DIRECTION_ASCENDING = 0;
+    public static final int QUERY_SORT_DIRECTION_DESCENDING = 1;
+
+    /**
+     * @see {@link java.text.Collector} for details on respective collation strength.
+     * @hide
+     */
+    @IntDef(flag = false, value = {
+            java.text.Collator.PRIMARY,
+            java.text.Collator.SECONDARY,
+            java.text.Collator.TERTIARY,
+            java.text.Collator.IDENTICAL
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface QueryCollator {}
+
+    /**
+     * Specifies the offset row index within a Cursor.
+     */
+    public static final String QUERY_ARG_OFFSET = "android:query-arg-offset";
+
+    /**
+     * Specifies the max number of rows to include in a Cursor.
+     */
+    public static final String QUERY_ARG_LIMIT = "android:query-arg-limit";
+
+    /**
+     * Added to {@link Cursor} extras {@link Bundle} to indicate total row count of
+     * recordset when paging is supported. Providers must include this when
+     * implementing paging support.
+     *
+     * <p>A provider may return -1 that row count of the recordset is unknown.
+     *
+     * <p>Providers having returned -1 in a previous query are recommended to
+     * send content change notification once (if) full recordset size becomes
+     * known.
+     */
+    public static final String EXTRA_TOTAL_COUNT = "android.content.extra.TOTAL_COUNT";
 
     /**
      * This is the Android platform's base MIME type for a content: URI
@@ -279,6 +481,31 @@ public abstract class ContentResolver {
     /** @hide */
     public static final int SYNC_OBSERVER_TYPE_ALL = 0x7fffffff;
 
+    /** @hide */
+    @IntDef(flag = true,
+            value = {
+                NOTIFY_SYNC_TO_NETWORK,
+                NOTIFY_SKIP_NOTIFY_FOR_DESCENDANTS
+            })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface NotifyFlags {}
+
+    /**
+     * Flag for {@link #notifyChange(Uri, ContentObserver, int)}: attempt to sync the change
+     * to the network.
+     */
+    public static final int NOTIFY_SYNC_TO_NETWORK = 1<<0;
+
+    /**
+     * Flag for {@link #notifyChange(Uri, ContentObserver, int)}: if set, this notification
+     * will be skipped if it is being delivered to the root URI of a ContentObserver that is
+     * using "notify for descendants."  The purpose of this is to allow the provide to send
+     * a general notification of "something under X" changed that observers of that specific
+     * URI can receive, while also sending a specific URI under X.  It would use this flag
+     * when sending the former, so that observers of "X and descendants" only see the latter.
+     */
+    public static final int NOTIFY_SKIP_NOTIFY_FOR_DESCENDANTS = 1<<1;
+
     // Always log queries which take 500ms+; shorter queries are
     // sampled accordingly.
     private static final boolean ENABLE_CONTENT_SAMPLE = false;
@@ -288,6 +515,7 @@ public abstract class ContentResolver {
     public ContentResolver(Context context) {
         mContext = context != null ? context : ActivityThread.currentApplication();
         mPackageName = mContext.getOpPackageName();
+        mTargetSdkVersion = mContext.getApplicationInfo().targetSdkVersion;
     }
 
     /** @hide */
@@ -348,7 +576,7 @@ public abstract class ContentResolver {
         }
 
         try {
-            String type = ActivityManagerNative.getDefault().getProviderMimeType(
+            String type = ActivityManager.getService().getProviderMimeType(
                     ContentProvider.getUriWithoutUserId(url), resolveUserId(url));
             return type;
         } catch (RemoteException e) {
@@ -428,9 +656,9 @@ public abstract class ContentResolver {
      * @return A Cursor object, which is positioned before the first entry, or null
      * @see Cursor
      */
-    public final @Nullable Cursor query(@NonNull Uri uri, @Nullable String[] projection,
-            @Nullable String selection, @Nullable String[] selectionArgs,
-            @Nullable String sortOrder) {
+    public final @Nullable Cursor query(@RequiresPermission.Read @NonNull Uri uri,
+            @Nullable String[] projection, @Nullable String selection,
+            @Nullable String[] selectionArgs, @Nullable String sortOrder) {
         return query(uri, projection, selection, selectionArgs, sortOrder, null);
     }
 
@@ -468,9 +696,44 @@ public abstract class ContentResolver {
      * @return A Cursor object, which is positioned before the first entry, or null
      * @see Cursor
      */
-    public final @Nullable Cursor query(final @NonNull Uri uri, @Nullable String[] projection,
-            @Nullable String selection, @Nullable String[] selectionArgs,
-            @Nullable String sortOrder, @Nullable CancellationSignal cancellationSignal) {
+    public final @Nullable Cursor query(@RequiresPermission.Read @NonNull Uri uri,
+            @Nullable String[] projection, @Nullable String selection,
+            @Nullable String[] selectionArgs, @Nullable String sortOrder,
+            @Nullable CancellationSignal cancellationSignal) {
+        Bundle queryArgs = createSqlQueryBundle(selection, selectionArgs, sortOrder);
+        return query(uri, projection, queryArgs, cancellationSignal);
+    }
+
+    /**
+     * Query the given URI, returning a {@link Cursor} over the result set
+     * with support for cancellation.
+     *
+     * <p>For best performance, the caller should follow these guidelines:
+     *
+     * <li>Provide an explicit projection, to prevent reading data from storage
+     * that aren't going to be used.
+     *
+     * Provider must identify which QUERY_ARG_SORT* arguments were honored during
+     * the preparation of the result set by including the respective argument keys
+     * in the {@link Cursor} extras {@link Bundle}. See {@link #EXTRA_HONORED_ARGS}
+     * for details.
+     *
+     * @see #QUERY_ARG_SORT_COLUMNS, #QUERY_ARG_SORT_DIRECTION, #QUERY_ARG_SORT_COLLATION.
+     *
+     * @param uri The URI, using the content:// scheme, for the content to
+     *         retrieve.
+     * @param projection A list of which columns to return. Passing null will
+     *         return all columns, which is inefficient.
+     * @param queryArgs A Bundle containing any arguments to the query.
+     * @param cancellationSignal A signal to cancel the operation in progress, or null if none.
+     * If the operation is canceled, then {@link OperationCanceledException} will be thrown
+     * when the query is executed.
+     * @return A Cursor object, which is positioned before the first entry, or null
+     * @see Cursor
+     */
+    public final @Nullable Cursor query(final @RequiresPermission.Read @NonNull Uri uri,
+            @Nullable String[] projection, @Nullable Bundle queryArgs,
+            @Nullable CancellationSignal cancellationSignal) {
         Preconditions.checkNotNull(uri, "uri");
         IContentProvider unstableProvider = acquireUnstableProvider(uri);
         if (unstableProvider == null) {
@@ -489,7 +752,7 @@ public abstract class ContentResolver {
             }
             try {
                 qCursor = unstableProvider.query(mPackageName, uri, projection,
-                        selection, selectionArgs, sortOrder, remoteCancellationSignal);
+                        queryArgs, remoteCancellationSignal);
             } catch (DeadObjectException e) {
                 // The remote process has died...  but we only hold an unstable
                 // reference though, so we might recover!!!  Let's try!!!!
@@ -499,8 +762,8 @@ public abstract class ContentResolver {
                 if (stableProvider == null) {
                     return null;
                 }
-                qCursor = stableProvider.query(mPackageName, uri, projection,
-                        selection, selectionArgs, sortOrder, remoteCancellationSignal);
+                qCursor = stableProvider.query(
+                        mPackageName, uri, projection, queryArgs, remoteCancellationSignal);
             }
             if (qCursor == null) {
                 return null;
@@ -509,11 +772,12 @@ public abstract class ContentResolver {
             // Force query execution.  Might fail and throw a runtime exception here.
             qCursor.getCount();
             long durationMillis = SystemClock.uptimeMillis() - startTime;
-            maybeLogQueryToEventLog(durationMillis, uri, projection, selection, sortOrder);
+            maybeLogQueryToEventLog(durationMillis, uri, projection, queryArgs);
 
             // Wrap the cursor object into CursorWrapperInner object.
-            CursorWrapperInner wrapper = new CursorWrapperInner(qCursor,
-                    stableProvider != null ? stableProvider : acquireProvider(uri));
+            final IContentProvider provider = (stableProvider != null) ? stableProvider
+                    : acquireProvider(uri);
+            final CursorWrapperInner wrapper = new CursorWrapperInner(qCursor, provider);
             stableProvider = null;
             qCursor = null;
             return wrapper;
@@ -616,6 +880,47 @@ public abstract class ContentResolver {
             // Arbitrary and not worth documenting, as Activity
             // Manager will kill this process shortly anyway.
             return null;
+        } finally {
+            releaseProvider(provider);
+        }
+    }
+
+    /**
+     * This allows clients to request an explicit refresh of content identified by {@code uri}.
+     * <p>
+     * Client code should only invoke this method when there is a strong indication (such as a user
+     * initiated pull to refresh gesture) that the content is stale.
+     * <p>
+     *
+     * @param url The Uri identifying the data to refresh.
+     * @param args Additional options from the client. The definitions of these are specific to the
+     *            content provider being called.
+     * @param cancellationSignal A signal to cancel the operation in progress, or {@code null} if
+     *            none. For example, if you called refresh on a particular uri, you should call
+     *            {@link CancellationSignal#throwIfCanceled()} to check whether the client has
+     *            canceled the refresh request.
+     * @return true if the provider actually tried refreshing.
+     */
+    public final boolean refresh(@NonNull Uri url, @Nullable Bundle args,
+            @Nullable CancellationSignal cancellationSignal) {
+        Preconditions.checkNotNull(url, "url");
+        IContentProvider provider = acquireProvider(url);
+        if (provider == null) {
+            return false;
+        }
+
+        try {
+            ICancellationSignal remoteCancellationSignal = null;
+            if (cancellationSignal != null) {
+                cancellationSignal.throwIfCanceled();
+                remoteCancellationSignal = provider.createCancellationSignal();
+                cancellationSignal.setRemote(remoteCancellationSignal);
+            }
+            return provider.refresh(mPackageName, url, args, remoteCancellationSignal);
+        } catch (RemoteException e) {
+            // Arbitrary and not worth documenting, as Activity
+            // Manager will kill this process shortly anyway.
+            return false;
         } finally {
             releaseProvider(provider);
         }
@@ -984,6 +1289,7 @@ public abstract class ContentResolver {
                         stableProvider = acquireProvider(uri);
                     }
                     releaseUnstableProvider(unstableProvider);
+                    unstableProvider = null;
                     ParcelFileDescriptor pfd = new ParcelFileDescriptorInner(
                             fd.getParcelFileDescriptor(), stableProvider);
 
@@ -1128,6 +1434,7 @@ public abstract class ContentResolver {
                 stableProvider = acquireProvider(uri);
             }
             releaseUnstableProvider(unstableProvider);
+            unstableProvider = null;
             ParcelFileDescriptor pfd = new ParcelFileDescriptorInner(
                     fd.getParcelFileDescriptor(), stableProvider);
 
@@ -1220,7 +1527,8 @@ public abstract class ContentResolver {
      *               the field. Passing an empty ContentValues will create an empty row.
      * @return the URL of the newly created row.
      */
-    public final @Nullable Uri insert(@NonNull Uri url, @Nullable ContentValues values) {
+    public final @Nullable Uri insert(@RequiresPermission.Write @NonNull Uri url,
+                @Nullable ContentValues values) {
         Preconditions.checkNotNull(url, "url");
         IContentProvider provider = acquireProvider(url);
         if (provider == null) {
@@ -1283,7 +1591,8 @@ public abstract class ContentResolver {
      *               the field. Passing null will create an empty row.
      * @return the number of newly created rows.
      */
-    public final int bulkInsert(@NonNull Uri url, @NonNull ContentValues[] values) {
+    public final int bulkInsert(@RequiresPermission.Write @NonNull Uri url,
+                @NonNull ContentValues[] values) {
         Preconditions.checkNotNull(url, "url");
         Preconditions.checkNotNull(values, "values");
         IContentProvider provider = acquireProvider(url);
@@ -1315,7 +1624,7 @@ public abstract class ContentResolver {
                     (excluding the WHERE itself).
      * @return The number of rows deleted.
      */
-    public final int delete(@NonNull Uri url, @Nullable String where,
+    public final int delete(@RequiresPermission.Write @NonNull Uri url, @Nullable String where,
             @Nullable String[] selectionArgs) {
         Preconditions.checkNotNull(url, "url");
         IContentProvider provider = acquireProvider(url);
@@ -1350,8 +1659,9 @@ public abstract class ContentResolver {
      * @return the number of rows updated.
      * @throws NullPointerException if uri or values are null
      */
-    public final int update(@NonNull Uri uri, @Nullable ContentValues values,
-            @Nullable String where, @Nullable String[] selectionArgs) {
+    public final int update(@RequiresPermission.Write @NonNull Uri uri,
+            @Nullable ContentValues values, @Nullable String where,
+            @Nullable String[] selectionArgs) {
         Preconditions.checkNotNull(uri, "uri");
         IContentProvider provider = acquireProvider(uri);
         if (provider == null) {
@@ -1395,7 +1705,9 @@ public abstract class ContentResolver {
             throw new IllegalArgumentException("Unknown URI " + uri);
         }
         try {
-            return provider.call(mPackageName, method, arg, extras);
+            final Bundle res = provider.call(mPackageName, method, arg, extras);
+            Bundle.setDefusable(res, true);
+            return res;
         } catch (RemoteException e) {
             // Arbitrary and not worth documenting, as Activity
             // Manager will kill this process shortly anyway.
@@ -1579,33 +1891,38 @@ public abstract class ContentResolver {
     /**
      * Register an observer class that gets callbacks when data identified by a
      * given content URI changes.
+     * <p>
+     * Starting in {@link android.os.Build.VERSION_CODES#O}, all content
+     * notifications must be backed by a valid {@link ContentProvider}.
      *
-     * @param uri The URI to watch for changes. This can be a specific row URI, or a base URI
-     * for a whole class of content.
-     * @param notifyForDescendents When false, the observer will be notified whenever a
-     * change occurs to the exact URI specified by <code>uri</code> or to one of the
-     * URI's ancestors in the path hierarchy.  When true, the observer will also be notified
-     * whenever a change occurs to the URI's descendants in the path hierarchy.
+     * @param uri The URI to watch for changes. This can be a specific row URI,
+     *            or a base URI for a whole class of content.
+     * @param notifyForDescendants When false, the observer will be notified
+     *            whenever a change occurs to the exact URI specified by
+     *            <code>uri</code> or to one of the URI's ancestors in the path
+     *            hierarchy. When true, the observer will also be notified
+     *            whenever a change occurs to the URI's descendants in the path
+     *            hierarchy.
      * @param observer The object that receives callbacks when changes occur.
      * @see #unregisterContentObserver
      */
-    public final void registerContentObserver(@NonNull Uri uri, boolean notifyForDescendents,
+    public final void registerContentObserver(@NonNull Uri uri, boolean notifyForDescendants,
             @NonNull ContentObserver observer) {
         Preconditions.checkNotNull(uri, "uri");
         Preconditions.checkNotNull(observer, "observer");
         registerContentObserver(
                 ContentProvider.getUriWithoutUserId(uri),
-                notifyForDescendents,
+                notifyForDescendants,
                 observer,
-                ContentProvider.getUserIdFromUri(uri, UserHandle.myUserId()));
+                ContentProvider.getUserIdFromUri(uri, mContext.getUserId()));
     }
 
     /** @hide - designated user version */
     public final void registerContentObserver(Uri uri, boolean notifyForDescendents,
-            ContentObserver observer, int userHandle) {
+            ContentObserver observer, @UserIdInt int userHandle) {
         try {
             getContentService().registerContentObserver(uri, notifyForDescendents,
-                    observer.getContentObserver(), userHandle);
+                    observer.getContentObserver(), userHandle, mTargetSdkVersion);
         } catch (RemoteException e) {
         }
     }
@@ -1629,16 +1946,22 @@ public abstract class ContentResolver {
     }
 
     /**
-     * Notify registered observers that a row was updated and attempt to sync changes
-     * to the network.
-     * To register, call {@link #registerContentObserver(android.net.Uri , boolean, android.database.ContentObserver) registerContentObserver()}.
-     * By default, CursorAdapter objects will get this notification.
+     * Notify registered observers that a row was updated and attempt to sync
+     * changes to the network.
+     * <p>
+     * To observe events sent through this call, use
+     * {@link #registerContentObserver(Uri, boolean, ContentObserver)}.
+     * <p>
+     * Starting in {@link android.os.Build.VERSION_CODES#O}, all content
+     * notifications must be backed by a valid {@link ContentProvider}.
      *
      * @param uri The uri of the content that was changed.
-     * @param observer The observer that originated the change, may be <code>null</null>.
-     * The observer that originated the change will only receive the notification if it
-     * has requested to receive self-change notifications by implementing
-     * {@link ContentObserver#deliverSelfNotifications()} to return true.
+     * @param observer The observer that originated the change, may be
+     *            <code>null</null>. The observer that originated the change
+     *            will only receive the notification if it has requested to
+     *            receive self-change notifications by implementing
+     *            {@link ContentObserver#deliverSelfNotifications()} to return
+     *            true.
      */
     public void notifyChange(@NonNull Uri uri, @Nullable ContentObserver observer) {
         notifyChange(uri, observer, true /* sync to network */);
@@ -1646,18 +1969,26 @@ public abstract class ContentResolver {
 
     /**
      * Notify registered observers that a row was updated.
-     * To register, call {@link #registerContentObserver(android.net.Uri , boolean, android.database.ContentObserver) registerContentObserver()}.
-     * By default, CursorAdapter objects will get this notification.
-     * If syncToNetwork is true, this will attempt to schedule a local sync using the sync
-     * adapter that's registered for the authority of the provided uri. No account will be
-     * passed to the sync adapter, so all matching accounts will be synchronized.
+     * <p>
+     * To observe events sent through this call, use
+     * {@link #registerContentObserver(Uri, boolean, ContentObserver)}.
+     * <p>
+     * If syncToNetwork is true, this will attempt to schedule a local sync
+     * using the sync adapter that's registered for the authority of the
+     * provided uri. No account will be passed to the sync adapter, so all
+     * matching accounts will be synchronized.
+     * <p>
+     * Starting in {@link android.os.Build.VERSION_CODES#O}, all content
+     * notifications must be backed by a valid {@link ContentProvider}.
      *
      * @param uri The uri of the content that was changed.
-     * @param observer The observer that originated the change, may be <code>null</null>.
-     * The observer that originated the change will only receive the notification if it
-     * has requested to receive self-change notifications by implementing
-     * {@link ContentObserver#deliverSelfNotifications()} to return true.
-     * @param syncToNetwork If true, attempt to sync the change to the network.
+     * @param observer The observer that originated the change, may be
+     *            <code>null</null>. The observer that originated the change
+     *            will only receive the notification if it has requested to
+     *            receive self-change notifications by implementing
+     *            {@link ContentObserver#deliverSelfNotifications()} to return
+     *            true.
+     * @param syncToNetwork If true, same as {@link #NOTIFY_SYNC_TO_NETWORK}.
      * @see #requestSync(android.accounts.Account, String, android.os.Bundle)
      */
     public void notifyChange(@NonNull Uri uri, @Nullable ContentObserver observer,
@@ -1667,7 +1998,41 @@ public abstract class ContentResolver {
                 ContentProvider.getUriWithoutUserId(uri),
                 observer,
                 syncToNetwork,
-                ContentProvider.getUserIdFromUri(uri, UserHandle.myUserId()));
+                ContentProvider.getUserIdFromUri(uri, mContext.getUserId()));
+    }
+
+    /**
+     * Notify registered observers that a row was updated.
+     * <p>
+     * To observe events sent through this call, use
+     * {@link #registerContentObserver(Uri, boolean, ContentObserver)}.
+     * <p>
+     * If syncToNetwork is true, this will attempt to schedule a local sync
+     * using the sync adapter that's registered for the authority of the
+     * provided uri. No account will be passed to the sync adapter, so all
+     * matching accounts will be synchronized.
+     * <p>
+     * Starting in {@link android.os.Build.VERSION_CODES#O}, all content
+     * notifications must be backed by a valid {@link ContentProvider}.
+     *
+     * @param uri The uri of the content that was changed.
+     * @param observer The observer that originated the change, may be
+     *            <code>null</null>. The observer that originated the change
+     *            will only receive the notification if it has requested to
+     *            receive self-change notifications by implementing
+     *            {@link ContentObserver#deliverSelfNotifications()} to return
+     *            true.
+     * @param flags Additional flags: {@link #NOTIFY_SYNC_TO_NETWORK}.
+     * @see #requestSync(android.accounts.Account, String, android.os.Bundle)
+     */
+    public void notifyChange(@NonNull Uri uri, @Nullable ContentObserver observer,
+            @NotifyFlags int flags) {
+        Preconditions.checkNotNull(uri, "uri");
+        notifyChange(
+                ContentProvider.getUriWithoutUserId(uri),
+                observer,
+                flags,
+                ContentProvider.getUserIdFromUri(uri, mContext.getUserId()));
     }
 
     /**
@@ -1675,13 +2040,30 @@ public abstract class ContentResolver {
      *
      * @hide
      */
-    public void notifyChange(Uri uri, ContentObserver observer, boolean syncToNetwork,
-            int userHandle) {
+    public void notifyChange(@NonNull Uri uri, ContentObserver observer, boolean syncToNetwork,
+            @UserIdInt int userHandle) {
         try {
             getContentService().notifyChange(
                     uri, observer == null ? null : observer.getContentObserver(),
-                    observer != null && observer.deliverSelfNotifications(), syncToNetwork,
-                    userHandle);
+                    observer != null && observer.deliverSelfNotifications(),
+                    syncToNetwork ? NOTIFY_SYNC_TO_NETWORK : 0,
+                    userHandle, mTargetSdkVersion);
+        } catch (RemoteException e) {
+        }
+    }
+
+    /**
+     * Notify registered observers within the designated user(s) that a row was updated.
+     *
+     * @hide
+     */
+    public void notifyChange(@NonNull Uri uri, ContentObserver observer, @NotifyFlags int flags,
+            @UserIdInt int userHandle) {
+        try {
+            getContentService().notifyChange(
+                    uri, observer == null ? null : observer.getContentObserver(),
+                    observer != null && observer.deliverSelfNotifications(), flags,
+                    userHandle, mTargetSdkVersion);
         } catch (RemoteException e) {
         }
     }
@@ -1700,7 +2082,7 @@ public abstract class ContentResolver {
             @Intent.AccessUriMode int modeFlags) {
         Preconditions.checkNotNull(uri, "uri");
         try {
-            ActivityManagerNative.getDefault().takePersistableUriPermission(
+            ActivityManager.getService().takePersistableUriPermission(
                     ContentProvider.getUriWithoutUserId(uri), modeFlags, resolveUserId(uri));
         } catch (RemoteException e) {
         }
@@ -1718,7 +2100,7 @@ public abstract class ContentResolver {
             @Intent.AccessUriMode int modeFlags) {
         Preconditions.checkNotNull(uri, "uri");
         try {
-            ActivityManagerNative.getDefault().releasePersistableUriPermission(
+            ActivityManager.getService().releasePersistableUriPermission(
                     ContentProvider.getUriWithoutUserId(uri), modeFlags, resolveUserId(uri));
         } catch (RemoteException e) {
         }
@@ -1729,13 +2111,14 @@ public abstract class ContentResolver {
      * calling app. That is, the returned permissions have been granted
      * <em>to</em> the calling app. Only persistable grants taken with
      * {@link #takePersistableUriPermission(Uri, int)} are returned.
+     * <p>Note: Some of the returned URIs may not be usable until after the user is unlocked.
      *
      * @see #takePersistableUriPermission(Uri, int)
      * @see #releasePersistableUriPermission(Uri, int)
      */
     public @NonNull List<UriPermission> getPersistedUriPermissions() {
         try {
-            return ActivityManagerNative.getDefault()
+            return ActivityManager.getService()
                     .getPersistedUriPermissions(mPackageName, true).getList();
         } catch (RemoteException e) {
             throw new RuntimeException("Activity manager has died", e);
@@ -1747,10 +2130,11 @@ public abstract class ContentResolver {
      * calling app. That is, the returned permissions have been granted
      * <em>from</em> the calling app. Only grants taken with
      * {@link #takePersistableUriPermission(Uri, int)} are returned.
+     * <p>Note: Some of the returned URIs may not be usable until after the user is unlocked.
      */
     public @NonNull List<UriPermission> getOutgoingPersistedUriPermissions() {
         try {
-            return ActivityManagerNative.getDefault()
+            return ActivityManager.getService()
                     .getPersistedUriPermissions(mPackageName, false).getList();
         } catch (RemoteException e) {
             throw new RuntimeException("Activity manager has died", e);
@@ -1783,6 +2167,7 @@ public abstract class ContentResolver {
         if (extras != null) {
             String accountName = extras.getString(SYNC_EXTRAS_ACCOUNT);
             if (!TextUtils.isEmpty(accountName)) {
+                // TODO: No references to Google in AOSP
                 account = new Account(accountName, "com.google");
             }
             extras.remove(SYNC_EXTRAS_ACCOUNT);
@@ -1817,7 +2202,7 @@ public abstract class ContentResolver {
      * @see #requestSync(Account, String, Bundle)
      * @hide
      */
-    public static void requestSyncAsUser(Account account, String authority, int userId,
+    public static void requestSyncAsUser(Account account, String authority, @UserIdInt int userId,
             Bundle extras) {
         if (extras == null) {
             throw new IllegalArgumentException("Must specify extras.");
@@ -1914,7 +2299,7 @@ public abstract class ContentResolver {
      * @see #cancelSync(Account, String)
      * @hide
      */
-    public static void cancelSyncAsUser(Account account, String authority, int userId) {
+    public static void cancelSyncAsUser(Account account, String authority, @UserIdInt int userId) {
         try {
             getContentService().cancelSyncAsUser(account, authority, null, userId);
         } catch (RemoteException e) {
@@ -1937,7 +2322,7 @@ public abstract class ContentResolver {
      * @see #getSyncAdapterTypes()
      * @hide
      */
-    public static SyncAdapterType[] getSyncAdapterTypesAsUser(int userId) {
+    public static SyncAdapterType[] getSyncAdapterTypesAsUser(@UserIdInt int userId) {
         try {
             return getContentService().getSyncAdapterTypesAsUser(userId);
         } catch (RemoteException e) {
@@ -1949,8 +2334,9 @@ public abstract class ContentResolver {
      * @hide
      * Returns the package names of syncadapters that match a given user and authority.
      */
+    @TestApi
     public static String[] getSyncAdapterPackagesForAuthorityAsUser(String authority,
-            int userId) {
+            @UserIdInt int userId) {
         try {
             return getContentService().getSyncAdapterPackagesForAuthorityAsUser(authority, userId);
         } catch (RemoteException e) {
@@ -1980,7 +2366,7 @@ public abstract class ContentResolver {
      * @hide
      */
     public static boolean getSyncAutomaticallyAsUser(Account account, String authority,
-            int userId) {
+            @UserIdInt int userId) {
         try {
             return getContentService().getSyncAutomaticallyAsUser(account, authority, userId);
         } catch (RemoteException e) {
@@ -2006,7 +2392,7 @@ public abstract class ContentResolver {
      * @hide
      */
     public static void setSyncAutomaticallyAsUser(Account account, String authority, boolean sync,
-            int userId) {
+            @UserIdInt int userId) {
         try {
             getContentService().setSyncAutomaticallyAsUser(account, authority, sync, userId);
         } catch (RemoteException e) {
@@ -2042,7 +2428,8 @@ public abstract class ContentResolver {
      * @param account the account to specify in the sync
      * @param authority the provider to specify in the sync request
      * @param extras extra parameters to go along with the sync request
-     * @param pollFrequency how frequently the sync should be performed, in seconds.
+     * @param pollFrequency how frequently the sync should be performed, in seconds. A minimum value
+     *                      of 1 hour is enforced.
      * @throws IllegalArgumentException if an illegal extra was set or if any of the parameters
      * are null.
      */
@@ -2165,7 +2552,8 @@ public abstract class ContentResolver {
      * @see #getIsSyncable(Account, String)
      * @hide
      */
-    public static int getIsSyncableAsUser(Account account, String authority, int userId) {
+    public static int getIsSyncableAsUser(Account account, String authority,
+            @UserIdInt int userId) {
         try {
             return getContentService().getIsSyncableAsUser(account, authority, userId);
         } catch (RemoteException e) {
@@ -2208,7 +2596,7 @@ public abstract class ContentResolver {
      * @see #getMasterSyncAutomatically()
      * @hide
      */
-    public static boolean getMasterSyncAutomaticallyAsUser(int userId) {
+    public static boolean getMasterSyncAutomaticallyAsUser(@UserIdInt int userId) {
         try {
             return getContentService().getMasterSyncAutomaticallyAsUser(userId);
         } catch (RemoteException e) {
@@ -2232,7 +2620,7 @@ public abstract class ContentResolver {
      * @see #setMasterSyncAutomatically(boolean)
      * @hide
      */
-    public static void setMasterSyncAutomaticallyAsUser(boolean sync, int userId) {
+    public static void setMasterSyncAutomaticallyAsUser(boolean sync, @UserIdInt int userId) {
         try {
             getContentService().setMasterSyncAutomaticallyAsUser(sync, userId);
         } catch (RemoteException e) {
@@ -2312,7 +2700,7 @@ public abstract class ContentResolver {
      * @see #getCurrentSyncs()
      * @hide
      */
-    public static List<SyncInfo> getCurrentSyncsAsUser(int userId) {
+    public static List<SyncInfo> getCurrentSyncsAsUser(@UserIdInt int userId) {
         try {
             return getContentService().getCurrentSyncsAsUser(userId);
         } catch (RemoteException e) {
@@ -2340,7 +2728,7 @@ public abstract class ContentResolver {
      * @hide
      */
     public static SyncStatusInfo getSyncStatusAsUser(Account account, String authority,
-            int userId) {
+            @UserIdInt int userId) {
         try {
             return getContentService().getSyncStatusAsUser(account, authority, null, userId);
         } catch (RemoteException e) {
@@ -2364,7 +2752,8 @@ public abstract class ContentResolver {
      * @see #requestSync(Account, String, Bundle)
      * @hide
      */
-    public static boolean isSyncPendingAsUser(Account account, String authority, int userId) {
+    public static boolean isSyncPendingAsUser(Account account, String authority,
+            @UserIdInt int userId) {
         try {
             return getContentService().isSyncPendingAsUser(account, authority, null, userId);
         } catch (RemoteException e) {
@@ -2392,6 +2781,7 @@ public abstract class ContentResolver {
         }
         try {
             ISyncStatusObserver.Stub observer = new ISyncStatusObserver.Stub() {
+                @Override
                 public void onStatusChanged(int which) throws RemoteException {
                     callback.onStatusChanged(which);
                 }
@@ -2419,6 +2809,33 @@ public abstract class ContentResolver {
         }
     }
 
+    /** {@hide} */
+    public void putCache(Uri key, Bundle value) {
+        try {
+            getContentService().putCache(mContext.getPackageName(), key, value,
+                    mContext.getUserId());
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /** {@hide} */
+    public Bundle getCache(Uri key) {
+        try {
+            final Bundle bundle = getContentService().getCache(mContext.getPackageName(), key,
+                    mContext.getUserId());
+            if (bundle != null) bundle.setClassLoader(mContext.getClassLoader());
+            return bundle;
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /** {@hide} */
+    public int getTargetSdkVersion() {
+        return mTargetSdkVersion;
+    }
+
     /**
      * Returns sampling percentage for a given duration.
      *
@@ -2431,9 +2848,8 @@ public abstract class ContentResolver {
         return (int) (100 * durationMillis / SLOW_THRESHOLD_MILLIS) + 1;
     }
 
-    private void maybeLogQueryToEventLog(long durationMillis,
-                                         Uri uri, String[] projection,
-                                         String selection, String sortOrder) {
+    private void maybeLogQueryToEventLog(
+            long durationMillis, Uri uri, String[] projection, @Nullable Bundle queryArgs) {
         if (!ENABLE_CONTENT_SAMPLE) return;
         int samplePercent = samplePercentForDuration(durationMillis);
         if (samplePercent < 100) {
@@ -2443,6 +2859,9 @@ public abstract class ContentResolver {
                 }
             }
         }
+
+        // Ensure a non-null bundle.
+        queryArgs = (queryArgs != null) ? queryArgs : Bundle.EMPTY;
 
         StringBuilder projectionBuffer = new StringBuilder(100);
         if (projection != null) {
@@ -2465,8 +2884,8 @@ public abstract class ContentResolver {
             EventLogTags.CONTENT_QUERY_SAMPLE,
             uri.toString(),
             projectionBuffer.toString(),
-            selection != null ? selection : "",
-            sortOrder != null ? sortOrder : "",
+            queryArgs.getString(QUERY_ARG_SQL_SELECTION, ""),
+            queryArgs.getString(QUERY_ARG_SQL_SORT_ORDER, ""),
             durationMillis,
             blockingPackage != null ? blockingPackage : "",
             samplePercent);
@@ -2496,25 +2915,23 @@ public abstract class ContentResolver {
 
     private final class CursorWrapperInner extends CrossProcessCursorWrapper {
         private final IContentProvider mContentProvider;
-        public static final String TAG="CursorWrapperInner";
+        private final AtomicBoolean mProviderReleased = new AtomicBoolean();
 
         private final CloseGuard mCloseGuard = CloseGuard.get();
-        private boolean mProviderReleased;
 
-        CursorWrapperInner(Cursor cursor, IContentProvider icp) {
+        CursorWrapperInner(Cursor cursor, IContentProvider contentProvider) {
             super(cursor);
-            mContentProvider = icp;
+            mContentProvider = contentProvider;
             mCloseGuard.open("close");
         }
 
         @Override
         public void close() {
+            mCloseGuard.close();
             super.close();
-            ContentResolver.this.releaseProvider(mContentProvider);
-            mProviderReleased = true;
 
-            if (mCloseGuard != null) {
-                mCloseGuard.close();
+            if (mProviderReleased.compareAndSet(false, true)) {
+                ContentResolver.this.releaseProvider(mContentProvider);
             }
         }
 
@@ -2525,12 +2942,7 @@ public abstract class ContentResolver {
                     mCloseGuard.warnIfOpen();
                 }
 
-                if (!mProviderReleased && mContentProvider != null) {
-                    // Even though we are using CloseGuard, log this anyway so that
-                    // application developers always see the message in the log.
-                    Log.w(TAG, "Cursor finalized without prior close()");
-                    ContentResolver.this.releaseProvider(mContentProvider);
-                }
+                close();
             } finally {
                 super.finalize();
             }
@@ -2539,7 +2951,7 @@ public abstract class ContentResolver {
 
     private final class ParcelFileDescriptorInner extends ParcelFileDescriptor {
         private final IContentProvider mContentProvider;
-        private boolean mProviderReleased;
+        private final AtomicBoolean mProviderReleased = new AtomicBoolean();
 
         ParcelFileDescriptorInner(ParcelFileDescriptor pfd, IContentProvider icp) {
             super(pfd);
@@ -2548,9 +2960,8 @@ public abstract class ContentResolver {
 
         @Override
         public void releaseResources() {
-            if (!mProviderReleased) {
+            if (mProviderReleased.compareAndSet(false, true)) {
                 ContentResolver.this.releaseProvider(mContentProvider);
-                mProviderReleased = true;
             }
         }
     }
@@ -2577,11 +2988,93 @@ public abstract class ContentResolver {
 
     private static IContentService sContentService;
     private final Context mContext;
+
     final String mPackageName;
+    final int mTargetSdkVersion;
+
     private static final String TAG = "ContentResolver";
 
     /** @hide */
     public int resolveUserId(Uri uri) {
         return ContentProvider.getUserIdFromUri(uri, mContext.getUserId());
+    }
+
+    /** @hide */
+    public Drawable getTypeDrawable(String mimeType) {
+        return MimeIconUtils.loadMimeIcon(mContext, mimeType);
+    }
+
+    /**
+     * @hide
+     */
+    public static @Nullable Bundle createSqlQueryBundle(
+            @Nullable String selection,
+            @Nullable String[] selectionArgs,
+            @Nullable String sortOrder) {
+
+        if (selection == null && selectionArgs == null && sortOrder == null) {
+            return null;
+        }
+
+        Bundle queryArgs = new Bundle();
+        if (selection != null) {
+            queryArgs.putString(QUERY_ARG_SQL_SELECTION, selection);
+        }
+        if (selectionArgs != null) {
+            queryArgs.putStringArray(QUERY_ARG_SQL_SELECTION_ARGS, selectionArgs);
+        }
+        if (sortOrder != null) {
+            queryArgs.putString(QUERY_ARG_SQL_SORT_ORDER, sortOrder);
+        }
+        return queryArgs;
+    }
+
+    /**
+     * Returns structured sort args formatted as an SQL sort clause.
+     *
+     * NOTE: Collator clauses are suitable for use with non text fields. We might
+     * choose to omit any collation clause since we don't know the underlying
+     * type of data to be collated. Imperical testing shows that sqlite3 doesn't
+     * appear to care much about the presence of collate clauses in queries
+     * when ordering by numeric fields. For this reason we include collate
+     * clause unilaterally when {@link #QUERY_ARG_SORT_COLLATION} is present
+     * in query args bundle.
+     *
+     * TODO: Would be nice to explicitly validate that colums referenced in
+     * {@link #QUERY_ARG_SORT_COLUMNS} are present in the associated projection.
+     *
+     * @hide
+     */
+    public static String createSqlSortClause(Bundle queryArgs) {
+        String[] columns = queryArgs.getStringArray(QUERY_ARG_SORT_COLUMNS);
+        if (columns == null || columns.length == 0) {
+            throw new IllegalArgumentException("Can't create sort clause without columns.");
+        }
+
+        String query = TextUtils.join(", ", columns);
+
+        // Interpret PRIMARY and SECONDARY collation strength as no-case collation based
+        // on their javadoc descriptions.
+        int collation = queryArgs.getInt(
+                ContentResolver.QUERY_ARG_SORT_COLLATION, java.text.Collator.IDENTICAL);
+        if (collation == java.text.Collator.PRIMARY || collation == java.text.Collator.SECONDARY) {
+            query += " COLLATE NOCASE";
+        }
+
+        int sortDir = queryArgs.getInt(QUERY_ARG_SORT_DIRECTION, Integer.MIN_VALUE);
+        if (sortDir != Integer.MIN_VALUE) {
+            switch (sortDir) {
+                case QUERY_SORT_DIRECTION_ASCENDING:
+                    query += " ASC";
+                    break;
+                case QUERY_SORT_DIRECTION_DESCENDING:
+                    query += " DESC";
+                    break;
+                default:
+                    throw new IllegalArgumentException("Unsupported sort direction value."
+                            + " See ContentResolver documentation for details.");
+            }
+        }
+        return query;
     }
 }

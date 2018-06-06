@@ -20,8 +20,10 @@ import android.bluetooth.IBluetoothCallback;
 import android.bluetooth.IBluetoothStateChangeCallback;
 import android.bluetooth.BluetoothActivityEnergyInfo;
 import android.bluetooth.BluetoothDevice;
+import android.bluetooth.OobData;
 import android.os.ParcelUuid;
 import android.os.ParcelFileDescriptor;
+import android.os.ResultReceiver;
 
 /**
  * System private API for talking with the Bluetooth service.
@@ -50,15 +52,19 @@ interface IBluetooth
     boolean startDiscovery();
     boolean cancelDiscovery();
     boolean isDiscovering();
+    long getDiscoveryEndMillis();
 
     int getAdapterConnectionState();
     int getProfileConnectionState(int profile);
 
     BluetoothDevice[] getBondedDevices();
     boolean createBond(in BluetoothDevice device, in int transport);
+    boolean createBondOutOfBand(in BluetoothDevice device, in int transport, in OobData oobData);
     boolean cancelBondProcess(in BluetoothDevice device);
     boolean removeBond(in BluetoothDevice device);
     int getBondState(in BluetoothDevice device);
+    boolean isBondingInitiatedLocally(in BluetoothDevice device);
+    long getSupportedProfiles();
     int getConnectionState(in BluetoothDevice device);
 
     String getRemoteName(in BluetoothDevice device);
@@ -69,6 +75,7 @@ interface IBluetooth
     ParcelUuid[] getRemoteUuids(in BluetoothDevice device);
     boolean fetchRemoteUuids(in BluetoothDevice device);
     boolean sdpSearch(in BluetoothDevice device, in ParcelUuid uuid);
+    int getBatteryLevel(in BluetoothDevice device);
 
     boolean setPin(in BluetoothDevice device, boolean accept, int len, in byte[] pinCode);
     boolean setPasskey(in BluetoothDevice device, boolean accept, int len, in byte[]
@@ -91,19 +98,28 @@ interface IBluetooth
     ParcelFileDescriptor connectSocket(in BluetoothDevice device, int type, in ParcelUuid uuid, int port, int flag);
     ParcelFileDescriptor createSocketChannel(int type, in String serviceName, in ParcelUuid uuid, int port, int flag);
 
-    boolean configHciSnoopLog(boolean enable);
     boolean factoryReset();
 
     boolean isMultiAdvertisementSupported();
-    boolean isPeripheralModeSupported();
     boolean isOffloadedFilteringSupported();
     boolean isOffloadedScanBatchingSupported();
     boolean isActivityAndEnergyReportingSupported();
-    void getActivityEnergyInfoFromController();
+    boolean isLe2MPhySupported();
+    boolean isLeCodedPhySupported();
+    boolean isLeExtendedAdvertisingSupported();
+    boolean isLePeriodicAdvertisingSupported();
+    int getLeMaximumAdvertisingDataLength();
     BluetoothActivityEnergyInfo reportActivityInfo();
 
-    // For dumpsys support
-    void dump(in ParcelFileDescriptor fd);
+    /**
+     * Requests the controller activity info asynchronously.
+     * The implementor is expected to reply with the
+     * {@link android.bluetooth.BluetoothActivityEnergyInfo} object placed into the Bundle with the
+     * key {@link android.os.BatteryStats#RESULT_RECEIVER_CONTROLLER_KEY}.
+     * The result code is ignored.
+     */
+    oneway void requestActivityInfo(in ResultReceiver result);
+
     void onLeServiceUp();
     void onBrEdrDown();
 }

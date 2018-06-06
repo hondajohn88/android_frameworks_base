@@ -16,29 +16,46 @@
 
 package com.android.systemui.statusbar.stack;
 
+import android.support.v4.util.ArraySet;
+import android.util.Property;
+import android.view.View;
+
 import java.util.ArrayList;
+import java.util.Set;
 
 /**
  * Filters the animations for only a certain type of properties.
  */
 public class AnimationFilter {
     boolean animateAlpha;
+    boolean animateX;
     boolean animateY;
+    ArraySet<View> animateYViews = new ArraySet<>();
     boolean animateZ;
-    boolean animateScale;
     boolean animateHeight;
     boolean animateTopInset;
     boolean animateDimmed;
     boolean animateDark;
     boolean animateHideSensitive;
+    public boolean animateShadowAlpha;
     boolean hasDelays;
     boolean hasGoToFullShadeEvent;
-    boolean hasDarkEvent;
     boolean hasHeadsUpDisappearClickEvent;
-    int darkAnimationOriginIndex;
+    private ArraySet<Property> mAnimatedProperties = new ArraySet<>();
 
     public AnimationFilter animateAlpha() {
         animateAlpha = true;
+        return this;
+    }
+
+    public AnimationFilter animateScale() {
+        animate(View.SCALE_X);
+        animate(View.SCALE_Y);
+        return this;
+    }
+
+    public AnimationFilter animateX() {
+        animateX = true;
         return this;
     }
 
@@ -54,11 +71,6 @@ public class AnimationFilter {
 
     public AnimationFilter animateZ() {
         animateZ = true;
-        return this;
-    }
-
-    public AnimationFilter animateScale() {
-        animateScale = true;
         return this;
     }
 
@@ -87,6 +99,20 @@ public class AnimationFilter {
         return this;
     }
 
+    public AnimationFilter animateShadowAlpha() {
+        animateShadowAlpha = true;
+        return this;
+    }
+
+    public AnimationFilter animateY(View view) {
+        animateYViews.add(view);
+        return this;
+    }
+
+    public boolean shouldAnimateY(View view) {
+        return animateY || animateYViews.contains(view);
+    }
+
     /**
      * Combines multiple filters into {@code this} filter, using or as the operand .
      *
@@ -102,11 +128,6 @@ public class AnimationFilter {
                     NotificationStackScrollLayout.AnimationEvent.ANIMATION_TYPE_GO_TO_FULL_SHADE) {
                 hasGoToFullShadeEvent = true;
             }
-            if (ev.animationType ==
-                    NotificationStackScrollLayout.AnimationEvent.ANIMATION_TYPE_DARK) {
-                hasDarkEvent = true;
-                darkAnimationOriginIndex = ev.darkAnimationOriginIndex;
-            }
             if (ev.animationType == NotificationStackScrollLayout.AnimationEvent
                     .ANIMATION_TYPE_HEADS_UP_DISAPPEAR_CLICK) {
                 hasHeadsUpDisappearClickEvent = true;
@@ -114,34 +135,47 @@ public class AnimationFilter {
         }
     }
 
-    private void combineFilter(AnimationFilter filter) {
+    public void combineFilter(AnimationFilter filter) {
         animateAlpha |= filter.animateAlpha;
+        animateX |= filter.animateX;
         animateY |= filter.animateY;
+        animateYViews.addAll(filter.animateYViews);
         animateZ |= filter.animateZ;
-        animateScale |= filter.animateScale;
         animateHeight |= filter.animateHeight;
         animateTopInset |= filter.animateTopInset;
         animateDimmed |= filter.animateDimmed;
         animateDark |= filter.animateDark;
         animateHideSensitive |= filter.animateHideSensitive;
+        animateShadowAlpha |= filter.animateShadowAlpha;
         hasDelays |= filter.hasDelays;
+        mAnimatedProperties.addAll(filter.mAnimatedProperties);
     }
 
-    private void reset() {
+    public void reset() {
         animateAlpha = false;
+        animateX = false;
         animateY = false;
+        animateYViews.clear();
         animateZ = false;
-        animateScale = false;
         animateHeight = false;
+        animateShadowAlpha = false;
         animateTopInset = false;
         animateDimmed = false;
         animateDark = false;
         animateHideSensitive = false;
         hasDelays = false;
         hasGoToFullShadeEvent = false;
-        hasDarkEvent = false;
         hasHeadsUpDisappearClickEvent = false;
-        darkAnimationOriginIndex =
-                NotificationStackScrollLayout.AnimationEvent.DARK_ANIMATION_ORIGIN_INDEX_ABOVE;
+        mAnimatedProperties.clear();
+    }
+
+    public AnimationFilter animate(Property property) {
+        mAnimatedProperties.add(property);
+        return this;
+    }
+
+    public boolean shouldAnimateProperty(Property property) {
+        // TODO: migrate all existing animators to properties
+        return mAnimatedProperties.contains(property);
     }
 }

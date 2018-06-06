@@ -35,7 +35,7 @@ import java.util.Set;
  * are handled by {@link CachedBluetoothDeviceManager},
  * {@link BluetoothEventManager}, and {@link LocalBluetoothProfileManager}.
  */
-public final class LocalBluetoothAdapter {
+public class LocalBluetoothAdapter {
     private static final String TAG = "LocalBluetoothAdapter";
 
     /** This class does not allow direct access to the BluetoothAdapter. */
@@ -90,6 +90,10 @@ public final class LocalBluetoothAdapter {
         return mAdapter.disable();
     }
 
+    public String getAddress() {
+        return mAdapter.getAddress();
+    }
+
     void getProfileProxy(Context context,
             BluetoothProfile.ServiceListener listener, int profile) {
         mAdapter.getProfileProxy(context, listener, profile);
@@ -135,6 +139,10 @@ public final class LocalBluetoothAdapter {
         mAdapter.setDiscoverableTimeout(timeout);
     }
 
+    public long getDiscoveryEndMillis() {
+        return mAdapter.getDiscoveryEndMillis();
+    }
+
     public void setName(String name) {
         mAdapter.setName(name);
     }
@@ -160,6 +168,10 @@ public final class LocalBluetoothAdapter {
                 // If we are playing music, don't scan unless forced.
                 A2dpProfile a2dp = mProfileManager.getA2dpProfile();
                 if (a2dp != null && a2dp.isA2dpPlaying()) {
+                    return;
+                }
+                A2dpSinkProfile a2dpSink = mProfileManager.getA2dpSinkProfile();
+                if ((a2dpSink != null) && (a2dpSink.isA2dpPlaying())){
                     return;
                 }
             }
@@ -204,7 +216,7 @@ public final class LocalBluetoothAdapter {
         return false;
     }
 
-    public void setBluetoothEnabled(boolean enabled) {
+    public boolean setBluetoothEnabled(boolean enabled) {
         boolean success = enabled
                 ? mAdapter.enable()
                 : mAdapter.disable();
@@ -221,6 +233,7 @@ public final class LocalBluetoothAdapter {
 
             syncBluetoothState();
         }
+        return success;
     }
 
     public BluetoothDevice getRemoteDevice(String address) {

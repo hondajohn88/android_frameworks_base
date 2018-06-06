@@ -16,6 +16,14 @@
 
 package android.graphics;
 
+import android.annotation.FloatRange;
+import android.annotation.NonNull;
+import android.annotation.Nullable;
+import android.annotation.Size;
+
+import dalvik.annotation.optimization.CriticalNative;
+import dalvik.annotation.optimization.FastNative;
+
 /**
  * The Path class encapsulates compound (multiple contour) geometric paths
  * consisting of straight line segments, quadratic curves, and cubic curves.
@@ -27,7 +35,7 @@ public class Path {
     /**
      * @hide
      */
-    public final long mNativePath;
+    public long mNativePath;
 
     /**
      * @hide
@@ -43,7 +51,7 @@ public class Path {
      * Create an empty path
      */
     public Path() {
-        mNativePath = init1();
+        mNativePath = nInit();
     }
 
     /**
@@ -60,7 +68,7 @@ public class Path {
                 rects = new Region(src.rects);
             }
         }
-        mNativePath = init2(valNative);
+        mNativePath = nInit(valNative);
     }
 
     /**
@@ -74,7 +82,7 @@ public class Path {
         // We promised not to change this, so preserve it around the native
         // call, which does now reset fill type.
         final FillType fillType = getFillType();
-        native_reset(mNativePath);
+        nReset(mNativePath);
         setFillType(fillType);
     }
 
@@ -86,15 +94,27 @@ public class Path {
         isSimplePath = true;
         mLastDirection = null;
         if (rects != null) rects.setEmpty();
-        native_rewind(mNativePath);
+        nRewind(mNativePath);
     }
 
     /** Replace the contents of this with the contents of src.
     */
-    public void set(Path src) {
-        if (this != src) {
-            isSimplePath = src.isSimplePath;
-            native_set(mNativePath, src.mNativePath);
+    public void set(@NonNull Path src) {
+        if (this == src) {
+            return;
+        }
+        isSimplePath = src.isSimplePath;
+        nSet(mNativePath, src.mNativePath);
+        if (!isSimplePath) {
+            return;
+        }
+
+        if (rects != null && src.rects != null) {
+            rects.set(src.rects);
+        } else if (rects != null && src.rects == null) {
+            rects.setEmpty();
+        } else if (src.rects != null) {
+            rects = new Region(src.rects);
         }
     }
 
@@ -159,7 +179,7 @@ public class Path {
      * @see #op(Path, android.graphics.Path.Op)
      */
     public boolean op(Path path1, Path path2, Op op) {
-        if (native_op(path1.mNativePath, path2.mNativePath, op.ordinal(), this.mNativePath)) {
+        if (nOp(path1.mNativePath, path2.mNativePath, op.ordinal(), this.mNativePath)) {
             isSimplePath = false;
             rects = null;
             return true;
@@ -179,7 +199,7 @@ public class Path {
      * @return True if the path is convex.
      */
     public boolean isConvex() {
-        return native_isConvex(mNativePath);
+        return nIsConvex(mNativePath);
     }
 
     /**
@@ -228,7 +248,7 @@ public class Path {
      * @return the path's fill type
      */
     public FillType getFillType() {
-        return sFillTypeArray[native_getFillType(mNativePath)];
+        return sFillTypeArray[nGetFillType(mNativePath)];
     }
 
     /**
@@ -237,7 +257,7 @@ public class Path {
      * @param ft The new fill type for this path
      */
     public void setFillType(FillType ft) {
-        native_setFillType(mNativePath, ft.nativeInt);
+        nSetFillType(mNativePath, ft.nativeInt);
     }
 
     /**
@@ -246,7 +266,7 @@ public class Path {
      * @return true if the filltype is one of the INVERSE variants
      */
     public boolean isInverseFillType() {
-        final int ft = native_getFillType(mNativePath);
+        final int ft = nGetFillType(mNativePath);
         return (ft & FillType.INVERSE_WINDING.nativeInt) != 0;
     }
 
@@ -254,9 +274,9 @@ public class Path {
      * Toggles the INVERSE state of the filltype
      */
     public void toggleInverseFillType() {
-        int ft = native_getFillType(mNativePath);
+        int ft = nGetFillType(mNativePath);
         ft ^= FillType.INVERSE_WINDING.nativeInt;
-        native_setFillType(mNativePath, ft);
+        nSetFillType(mNativePath, ft);
     }
 
     /**
@@ -265,7 +285,7 @@ public class Path {
      * @return true if the path is empty (contains no lines or curves)
      */
     public boolean isEmpty() {
-        return native_isEmpty(mNativePath);
+        return nIsEmpty(mNativePath);
     }
 
     /**
@@ -278,7 +298,7 @@ public class Path {
      * @return     true if the path specifies a rectangle
      */
     public boolean isRect(RectF rect) {
-        return native_isRect(mNativePath, rect);
+        return nIsRect(mNativePath, rect);
     }
 
     /**
@@ -291,7 +311,7 @@ public class Path {
      */
     @SuppressWarnings({"UnusedDeclaration"})
     public void computeBounds(RectF bounds, boolean exact) {
-        native_computeBounds(mNativePath, bounds);
+        nComputeBounds(mNativePath, bounds);
     }
 
     /**
@@ -302,7 +322,7 @@ public class Path {
      *                     path
      */
     public void incReserve(int extraPtCount) {
-        native_incReserve(mNativePath, extraPtCount);
+        nIncReserve(mNativePath, extraPtCount);
     }
 
     /**
@@ -312,7 +332,7 @@ public class Path {
      * @param y The y-coordinate of the start of a new contour
      */
     public void moveTo(float x, float y) {
-        native_moveTo(mNativePath, x, y);
+        nMoveTo(mNativePath, x, y);
     }
 
     /**
@@ -326,7 +346,7 @@ public class Path {
      *           previous contour, to specify the start of a new contour
      */
     public void rMoveTo(float dx, float dy) {
-        native_rMoveTo(mNativePath, dx, dy);
+        nRMoveTo(mNativePath, dx, dy);
     }
 
     /**
@@ -339,7 +359,7 @@ public class Path {
      */
     public void lineTo(float x, float y) {
         isSimplePath = false;
-        native_lineTo(mNativePath, x, y);
+        nLineTo(mNativePath, x, y);
     }
 
     /**
@@ -354,7 +374,7 @@ public class Path {
      */
     public void rLineTo(float dx, float dy) {
         isSimplePath = false;
-        native_rLineTo(mNativePath, dx, dy);
+        nRLineTo(mNativePath, dx, dy);
     }
 
     /**
@@ -369,7 +389,7 @@ public class Path {
      */
     public void quadTo(float x1, float y1, float x2, float y2) {
         isSimplePath = false;
-        native_quadTo(mNativePath, x1, y1, x2, y2);
+        nQuadTo(mNativePath, x1, y1, x2, y2);
     }
 
     /**
@@ -388,7 +408,7 @@ public class Path {
      */
     public void rQuadTo(float dx1, float dy1, float dx2, float dy2) {
         isSimplePath = false;
-        native_rQuadTo(mNativePath, dx1, dy1, dx2, dy2);
+        nRQuadTo(mNativePath, dx1, dy1, dx2, dy2);
     }
 
     /**
@@ -406,7 +426,7 @@ public class Path {
     public void cubicTo(float x1, float y1, float x2, float y2,
                         float x3, float y3) {
         isSimplePath = false;
-        native_cubicTo(mNativePath, x1, y1, x2, y2, x3, y3);
+        nCubicTo(mNativePath, x1, y1, x2, y2, x3, y3);
     }
 
     /**
@@ -417,7 +437,7 @@ public class Path {
     public void rCubicTo(float x1, float y1, float x2, float y2,
                          float x3, float y3) {
         isSimplePath = false;
-        native_rCubicTo(mNativePath, x1, y1, x2, y2, x3, y3);
+        nRCubicTo(mNativePath, x1, y1, x2, y2, x3, y3);
     }
 
     /**
@@ -468,7 +488,7 @@ public class Path {
     public void arcTo(float left, float top, float right, float bottom, float startAngle,
             float sweepAngle, boolean forceMoveTo) {
         isSimplePath = false;
-        native_arcTo(mNativePath, left, top, right, bottom, startAngle, sweepAngle, forceMoveTo);
+        nArcTo(mNativePath, left, top, right, bottom, startAngle, sweepAngle, forceMoveTo);
     }
 
     /**
@@ -477,7 +497,7 @@ public class Path {
      */
     public void close() {
         isSimplePath = false;
-        native_close(mNativePath);
+        nClose(mNativePath);
     }
 
     /**
@@ -486,9 +506,9 @@ public class Path {
      */
     public enum Direction {
         /** clockwise */
-        CW  (1),    // must match enum in SkPath.h
+        CW  (0),    // must match enum in SkPath.h
         /** counter-clockwise */
-        CCW (2);    // must match enum in SkPath.h
+        CCW (1);    // must match enum in SkPath.h
 
         Direction(int ni) {
             nativeInt = ni;
@@ -529,7 +549,7 @@ public class Path {
      */
     public void addRect(float left, float top, float right, float bottom, Direction dir) {
         detectSimplePath(left, top, right, bottom, dir);
-        native_addRect(mNativePath, left, top, right, bottom, dir.nativeInt);
+        nAddRect(mNativePath, left, top, right, bottom, dir.nativeInt);
     }
 
     /**
@@ -549,7 +569,7 @@ public class Path {
      */
     public void addOval(float left, float top, float right, float bottom, Direction dir) {
         isSimplePath = false;
-        native_addOval(mNativePath, left, top, right, bottom, dir.nativeInt);
+        nAddOval(mNativePath, left, top, right, bottom, dir.nativeInt);
     }
 
     /**
@@ -562,7 +582,7 @@ public class Path {
      */
     public void addCircle(float x, float y, float radius, Direction dir) {
         isSimplePath = false;
-        native_addCircle(mNativePath, x, y, radius, dir.nativeInt);
+        nAddCircle(mNativePath, x, y, radius, dir.nativeInt);
     }
 
     /**
@@ -585,7 +605,7 @@ public class Path {
     public void addArc(float left, float top, float right, float bottom, float startAngle,
             float sweepAngle) {
         isSimplePath = false;
-        native_addArc(mNativePath, left, top, right, bottom, startAngle, sweepAngle);
+        nAddArc(mNativePath, left, top, right, bottom, startAngle, sweepAngle);
     }
 
     /**
@@ -610,7 +630,7 @@ public class Path {
     public void addRoundRect(float left, float top, float right, float bottom, float rx, float ry,
             Direction dir) {
         isSimplePath = false;
-        native_addRoundRect(mNativePath, left, top, right, bottom, rx, ry, dir.nativeInt);
+        nAddRoundRect(mNativePath, left, top, right, bottom, rx, ry, dir.nativeInt);
     }
 
     /**
@@ -643,7 +663,7 @@ public class Path {
             throw new ArrayIndexOutOfBoundsException("radii[] needs 8 values");
         }
         isSimplePath = false;
-        native_addRoundRect(mNativePath, left, top, right, bottom, radii, dir.nativeInt);
+        nAddRoundRect(mNativePath, left, top, right, bottom, radii, dir.nativeInt);
     }
 
     /**
@@ -654,7 +674,7 @@ public class Path {
      */
     public void addPath(Path src, float dx, float dy) {
         isSimplePath = false;
-        native_addPath(mNativePath, src.mNativePath, dx, dy);
+        nAddPath(mNativePath, src.mNativePath, dx, dy);
     }
 
     /**
@@ -664,7 +684,7 @@ public class Path {
      */
     public void addPath(Path src) {
         isSimplePath = false;
-        native_addPath(mNativePath, src.mNativePath);
+        nAddPath(mNativePath, src.mNativePath);
     }
 
     /**
@@ -674,7 +694,7 @@ public class Path {
      */
     public void addPath(Path src, Matrix matrix) {
         if (!src.isSimplePath) isSimplePath = false;
-        native_addPath(mNativePath, src.mNativePath, matrix.native_instance);
+        nAddPath(mNativePath, src.mNativePath, matrix.native_instance);
     }
 
     /**
@@ -685,13 +705,13 @@ public class Path {
      * @param dst The translated path is written here. If this is null, then
      *            the original path is modified.
      */
-    public void offset(float dx, float dy, Path dst) {
-        long dstNative = 0;
+    public void offset(float dx, float dy, @Nullable Path dst) {
         if (dst != null) {
-            dstNative = dst.mNativePath;
-            dst.isSimplePath = false;
+            dst.set(this);
+        } else {
+            dst = this;
         }
-        native_offset(mNativePath, dx, dy, dstNative);
+        dst.offset(dx, dy);
     }
 
     /**
@@ -701,8 +721,16 @@ public class Path {
      * @param dy The amount in the Y direction to offset the entire path
      */
     public void offset(float dx, float dy) {
-        isSimplePath = false;
-        native_offset(mNativePath, dx, dy);
+        if (isSimplePath && rects == null) {
+            // nothing to offset
+            return;
+        }
+        if (isSimplePath && dx == Math.rint(dx) && dy == Math.rint(dy)) {
+            rects.translate((int) dx, (int) dy);
+        } else {
+            isSimplePath = false;
+        }
+        nOffset(mNativePath, dx, dy);
     }
 
     /**
@@ -713,7 +741,7 @@ public class Path {
      */
     public void setLastPoint(float dx, float dy) {
         isSimplePath = false;
-        native_setLastPoint(mNativePath, dx, dy);
+        nSetLastPoint(mNativePath, dx, dy);
     }
 
     /**
@@ -730,7 +758,7 @@ public class Path {
             dst.isSimplePath = false;
             dstNative = dst.mNativePath;
         }
-        native_transform(mNativePath, matrix.native_instance, dstNative);
+        nTransform(mNativePath, matrix.native_instance, dstNative);
     }
 
     /**
@@ -740,18 +768,25 @@ public class Path {
      */
     public void transform(Matrix matrix) {
         isSimplePath = false;
-        native_transform(mNativePath, matrix.native_instance);
+        nTransform(mNativePath, matrix.native_instance);
     }
 
     protected void finalize() throws Throwable {
         try {
-            finalizer(mNativePath);
+            nFinalize(mNativePath);
+            mNativePath = 0;  //  Other finalizers can still call us.
         } finally {
             super.finalize();
         }
     }
 
-    final long ni() {
+    /** @hide */
+    public final long readOnlyNI() {
+        return mNativePath;
+    }
+
+    final long mutateNI() {
+        isSimplePath = false;
         return mNativePath;
     }
 
@@ -771,63 +806,75 @@ public class Path {
      *                        Path. Typically this would be 0.5 so that
      *                        the error is less than half a pixel.
      * @return An array of components for points approximating the Path.
-     * @hide
      */
-    public float[] approximate(float acceptableError) {
-        return native_approximate(mNativePath, acceptableError);
+    @NonNull
+    @Size(min = 6, multiple = 3)
+    public float[] approximate(@FloatRange(from = 0) float acceptableError) {
+        if (acceptableError < 0) {
+            throw new IllegalArgumentException("AcceptableError must be greater than or equal to 0");
+        }
+        return nApproximate(mNativePath, acceptableError);
     }
 
-    private static native long init1();
-    private static native long init2(long nPath);
-    private static native void native_reset(long nPath);
-    private static native void native_rewind(long nPath);
-    private static native void native_set(long native_dst, long native_src);
-    private static native boolean native_isConvex(long nPath);
-    private static native int native_getFillType(long nPath);
-    private static native void native_setFillType(long nPath, int ft);
-    private static native boolean native_isEmpty(long nPath);
-    private static native boolean native_isRect(long nPath, RectF rect);
-    private static native void native_computeBounds(long nPath, RectF bounds);
-    private static native void native_incReserve(long nPath, int extraPtCount);
-    private static native void native_moveTo(long nPath, float x, float y);
-    private static native void native_rMoveTo(long nPath, float dx, float dy);
-    private static native void native_lineTo(long nPath, float x, float y);
-    private static native void native_rLineTo(long nPath, float dx, float dy);
-    private static native void native_quadTo(long nPath, float x1, float y1,
-                                             float x2, float y2);
-    private static native void native_rQuadTo(long nPath, float dx1, float dy1,
-                                              float dx2, float dy2);
-    private static native void native_cubicTo(long nPath, float x1, float y1,
-                                        float x2, float y2, float x3, float y3);
-    private static native void native_rCubicTo(long nPath, float x1, float y1,
-                                        float x2, float y2, float x3, float y3);
-    private static native void native_arcTo(long nPath, float left, float top,
-                                            float right, float bottom, float startAngle,
-                                            float sweepAngle, boolean forceMoveTo);
-    private static native void native_close(long nPath);
-    private static native void native_addRect(long nPath, float left, float top,
-                                            float right, float bottom, int dir);
-    private static native void native_addOval(long nPath, float left, float top,
+    // ------------------ Regular JNI ------------------------
+
+    private static native long nInit();
+    private static native long nInit(long nPath);
+    private static native void nFinalize(long nPath);
+    private static native void nSet(long native_dst, long nSrc);
+    private static native void nComputeBounds(long nPath, RectF bounds);
+    private static native void nIncReserve(long nPath, int extraPtCount);
+    private static native void nMoveTo(long nPath, float x, float y);
+    private static native void nRMoveTo(long nPath, float dx, float dy);
+    private static native void nLineTo(long nPath, float x, float y);
+    private static native void nRLineTo(long nPath, float dx, float dy);
+    private static native void nQuadTo(long nPath, float x1, float y1, float x2, float y2);
+    private static native void nRQuadTo(long nPath, float dx1, float dy1, float dx2, float dy2);
+    private static native void nCubicTo(long nPath, float x1, float y1, float x2, float y2,
+            float x3, float y3);
+    private static native void nRCubicTo(long nPath, float x1, float y1, float x2, float y2,
+            float x3, float y3);
+    private static native void nArcTo(long nPath, float left, float top, float right, float bottom,
+            float startAngle, float sweepAngle, boolean forceMoveTo);
+    private static native void nClose(long nPath);
+    private static native void nAddRect(long nPath, float left, float top,
             float right, float bottom, int dir);
-    private static native void native_addCircle(long nPath, float x, float y, float radius, int dir);
-    private static native void native_addArc(long nPath, float left, float top,
-                                             float right, float bottom,
-                                             float startAngle, float sweepAngle);
-    private static native void native_addRoundRect(long nPath, float left, float top,
-                                                   float right, float bottom,
-                                                   float rx, float ry, int dir);
-    private static native void native_addRoundRect(long nPath, float left, float top,
-                                                   float right, float bottom,
-                                                   float[] radii, int dir);
-    private static native void native_addPath(long nPath, long src, float dx, float dy);
-    private static native void native_addPath(long nPath, long src);
-    private static native void native_addPath(long nPath, long src, long matrix);
-    private static native void native_offset(long nPath, float dx, float dy, long dst_path);
-    private static native void native_offset(long nPath, float dx, float dy);
-    private static native void native_setLastPoint(long nPath, float dx, float dy);
-    private static native void native_transform(long nPath, long matrix, long dst_path);
-    private static native void native_transform(long nPath, long matrix);
-    private static native boolean native_op(long path1, long path2, int op, long result);
-    private static native void finalizer(long nPath);
-    private static native float[] native_approximate(long nPath, float error);
+    private static native void nAddOval(long nPath, float left, float top,
+            float right, float bottom, int dir);
+    private static native void nAddCircle(long nPath, float x, float y, float radius, int dir);
+    private static native void nAddArc(long nPath, float left, float top, float right, float bottom,
+            float startAngle, float sweepAngle);
+    private static native void nAddRoundRect(long nPath, float left, float top,
+            float right, float bottom, float rx, float ry, int dir);
+    private static native void nAddRoundRect(long nPath, float left, float top,
+            float right, float bottom, float[] radii, int dir);
+    private static native void nAddPath(long nPath, long src, float dx, float dy);
+    private static native void nAddPath(long nPath, long src);
+    private static native void nAddPath(long nPath, long src, long matrix);
+    private static native void nOffset(long nPath, float dx, float dy);
+    private static native void nSetLastPoint(long nPath, float dx, float dy);
+    private static native void nTransform(long nPath, long matrix, long dst_path);
+    private static native void nTransform(long nPath, long matrix);
+    private static native boolean nOp(long path1, long path2, int op, long result);
+    private static native float[] nApproximate(long nPath, float error);
+
+    // ------------------ Fast JNI ------------------------
+
+    @FastNative
+    private static native boolean nIsRect(long nPath, RectF rect);
+
+    // ------------------ Critical JNI ------------------------
+
+    @CriticalNative
+    private static native void nReset(long nPath);
+    @CriticalNative
+    private static native void nRewind(long nPath);
+    @CriticalNative
+    private static native boolean nIsEmpty(long nPath);
+    @CriticalNative
+    private static native boolean nIsConvex(long nPath);
+    @CriticalNative
+    private static native int nGetFillType(long nPath);
+    @CriticalNative
+    private static native void nSetFillType(long nPath, int ft);
 }

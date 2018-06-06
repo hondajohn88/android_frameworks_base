@@ -16,6 +16,20 @@
 
 package android.widget;
 
+import static android.view.Gravity.AXIS_PULL_AFTER;
+import static android.view.Gravity.AXIS_PULL_BEFORE;
+import static android.view.Gravity.AXIS_SPECIFIED;
+import static android.view.Gravity.AXIS_X_SHIFT;
+import static android.view.Gravity.AXIS_Y_SHIFT;
+import static android.view.Gravity.HORIZONTAL_GRAVITY_MASK;
+import static android.view.Gravity.RELATIVE_LAYOUT_DIRECTION;
+import static android.view.Gravity.VERTICAL_GRAVITY_MASK;
+import static android.view.View.MeasureSpec.EXACTLY;
+import static android.view.View.MeasureSpec.makeMeasureSpec;
+
+import static java.lang.Math.max;
+import static java.lang.Math.min;
+
 import android.annotation.IntDef;
 import android.content.Context;
 import android.content.res.TypedArray;
@@ -32,6 +46,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.RemoteViews.RemoteView;
+
 import com.android.internal.R;
 
 import java.lang.annotation.Retention;
@@ -42,12 +57,6 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-
-import static android.view.Gravity.*;
-import static android.view.View.MeasureSpec.EXACTLY;
-import static android.view.View.MeasureSpec.makeMeasureSpec;
-import static java.lang.Math.max;
-import static java.lang.Math.min;
 
 /**
  * A layout that places its children in a rectangular <em>grid</em>.
@@ -867,8 +876,15 @@ public class GridLayout extends ViewGroup {
     }
 
     @Override
-    protected LayoutParams generateLayoutParams(ViewGroup.LayoutParams p) {
-        return new LayoutParams(p);
+    protected LayoutParams generateLayoutParams(ViewGroup.LayoutParams lp) {
+        if (sPreserveMarginParamsInLayoutParamConversion) {
+            if (lp instanceof LayoutParams) {
+                return new LayoutParams((LayoutParams) lp);
+            } else if (lp instanceof MarginLayoutParams) {
+                return new LayoutParams((MarginLayoutParams) lp);
+            }
+        }
+        return new LayoutParams(lp);
     }
 
     // Draw grid
@@ -1752,7 +1768,8 @@ public class GridLayout extends ViewGroup {
             boolean validSolution = true;
             // do a binary search to find the max delta that won't conflict with constraints
             while(deltaMin < deltaMax) {
-                final int delta = (deltaMin + deltaMax) / 2;
+                // cast to long to prevent overflow.
+                final int delta = (int) (((long) deltaMin + deltaMax) / 2);
                 invalidateValues();
                 shareOutDelta(delta, totalWeight);
                 validSolution = solve(getArcs(), a, false);

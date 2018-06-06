@@ -48,6 +48,7 @@ final class BroadcastRecord extends Binder {
     final String callerPackage; // who sent this
     final int callingPid;   // the pid of who sent this
     final int callingUid;   // the uid of who sent this
+    final boolean callerInstantApp; // caller is an Instant App?
     final boolean ordered;  // serialize the send to receivers?
     final boolean sticky;   // originated from existing sticky data?
     final boolean initialSticky; // initial broadcast from register to sticky?
@@ -57,6 +58,7 @@ final class BroadcastRecord extends Binder {
     final int appOp;        // an app op that is associated with this broadcast
     final BroadcastOptions options; // BroadcastOptions supplied by caller
     final List receivers;   // contains BroadcastFilter and ResolveInfo
+    final int[] delivery;   // delivery state of each receiver
     IIntentReceiver resultTo; // who receives final result if non-null
     long enqueueClockTime;  // the clock time the broadcast was enqueued
     long dispatchTime;      // when dispatch started on this set of receivers
@@ -71,6 +73,8 @@ final class BroadcastRecord extends Binder {
     IBinder receiver;       // who is currently running, null if none.
     int state;
     int anrCount;           // has this broadcast record hit any ANRs?
+    int manifestCount;      // number of manifest receivers dispatched.
+    int manifestSkipCount;  // number of manifest receivers skipped.
     BroadcastQueue queue;   // the outbound queue handling this broadcast
 
     static final int IDLE = 0;
@@ -78,6 +82,11 @@ final class BroadcastRecord extends Binder {
     static final int CALL_IN_RECEIVE = 2;
     static final int CALL_DONE_RECEIVE = 3;
     static final int WAITING_SERVICES = 4;
+
+    static final int DELIVERY_PENDING = 0;
+    static final int DELIVERY_DELIVERED = 1;
+    static final int DELIVERY_SKIPPED = 2;
+    static final int DELIVERY_TIMEOUT = 3;
 
     // The following are set when we are calling a receiver (one that
     // was found in our list of registered receivers).
@@ -183,22 +192,36 @@ final class BroadcastRecord extends Binder {
         PrintWriterPrinter printer = new PrintWriterPrinter(pw);
         for (int i = 0; i < N; i++) {
             Object o = receivers.get(i);
-            pw.print(prefix); pw.print("Receiver #"); pw.print(i);
-                    pw.print(": "); pw.println(o);
-            if (o instanceof BroadcastFilter)
-                ((BroadcastFilter)o).dumpBrief(pw, p2);
-            else if (o instanceof ResolveInfo)
-                ((ResolveInfo)o).dump(printer, p2);
+            pw.print(prefix);
+            switch (delivery[i]) {
+                case DELIVERY_PENDING:   pw.print("Pending"); break;
+                case DELIVERY_DELIVERED: pw.print("Deliver"); break;
+                case DELIVERY_SKIPPED:   pw.print("Skipped"); break;
+                case DELIVERY_TIMEOUT:   pw.print("Timeout"); break;
+                default:                 pw.print("???????"); break;
+            }
+            pw.print(" #"); pw.print(i); pw.print(": ");
+            if (o instanceof BroadcastFilter) {
+                pw.println(o);
+                ((BroadcastFilter) o).dumpBrief(pw, p2);
+            } else if (o instanceof ResolveInfo) {
+                pw.println("(manifest)");
+                ((ResolveInfo) o).dump(printer, p2, 0);
+            } else {
+                pw.println(o);
+            }
         }
     }
 
     BroadcastRecord(BroadcastQueue _queue,
             Intent _intent, ProcessRecord _callerApp, String _callerPackage,
-            int _callingPid, int _callingUid, String _resolvedType, String[] _requiredPermissions,
-            int _appOp, BroadcastOptions _options, List _receivers, IIntentReceiver _resultTo,
-            int _resultCode, String _resultData, Bundle _resultExtras, boolean _serialized,
-            boolean _sticky, boolean _initialSticky,
-            int _userId) {
+            int _callingPid, int _callingUid, boolean _callerInstantApp, String _resolvedType,
+            String[] _requiredPermissions, int _appOp, BroadcastOptions _options, List _receivers,
+            IIntentReceiver _resultTo, int _resultCode, String _resultData, Bundle _resultExtras,
+            boolean _serialized, boolean _sticky, boolean _initialSticky, int _userId) {
+        if (_intent == null) {
+            throw new NullPointerException("Can't construct with a null intent");
+        }
         queue = _queue;
         intent = _intent;
         targetComp = _intent.getComponent();
@@ -206,11 +229,13 @@ final class BroadcastRecord extends Binder {
         callerPackage = _callerPackage;
         callingPid = _callingPid;
         callingUid = _callingUid;
+        callerInstantApp = _callerInstantApp;
         resolvedType = _resolvedType;
         requiredPermissions = _requiredPermissions;
         appOp = _appOp;
         options = _options;
         receivers = _receivers;
+        delivery = new int[_receivers != null ? _receivers.size() : 0];
         resultTo = _resultTo;
         resultCode = _resultCode;
         resultData = _resultData;
@@ -221,6 +246,55 @@ final class BroadcastRecord extends Binder {
         userId = _userId;
         nextReceiver = 0;
         state = IDLE;
+    }
+
+    /**
+     * Copy constructor which takes a different intent.
+     * Only used by {@link #maybeStripForHistory}.
+     */
+    private BroadcastRecord(BroadcastRecord from, Intent newIntent) {
+        intent = newIntent;
+        targetComp = newIntent.getComponent();
+
+        callerApp = from.callerApp;
+        callerPackage = from.callerPackage;
+        callingPid = from.callingPid;
+        callingUid = from.callingUid;
+        callerInstantApp = from.callerInstantApp;
+        ordered = from.ordered;
+        sticky = from.sticky;
+        initialSticky = from.initialSticky;
+        userId = from.userId;
+        resolvedType = from.resolvedType;
+        requiredPermissions = from.requiredPermissions;
+        appOp = from.appOp;
+        options = from.options;
+        receivers = from.receivers;
+        delivery = from.delivery;
+        resultTo = from.resultTo;
+        enqueueClockTime = from.enqueueClockTime;
+        dispatchTime = from.dispatchTime;
+        dispatchClockTime = from.dispatchClockTime;
+        receiverTime = from.receiverTime;
+        finishTime = from.finishTime;
+        resultCode = from.resultCode;
+        resultData = from.resultData;
+        resultExtras = from.resultExtras;
+        resultAbort = from.resultAbort;
+        nextReceiver = from.nextReceiver;
+        receiver = from.receiver;
+        state = from.state;
+        anrCount = from.anrCount;
+        manifestCount = from.manifestCount;
+        manifestSkipCount = from.manifestSkipCount;
+        queue = from.queue;
+    }
+
+    public BroadcastRecord maybeStripForHistory() {
+        if (!intent.canStripForHistory()) {
+            return this;
+        }
+        return new BroadcastRecord(this, intent.maybeStripForHistory());
     }
 
     boolean cleanupDisabledPackageReceiversLocked(

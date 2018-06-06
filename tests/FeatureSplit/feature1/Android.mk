@@ -17,15 +17,15 @@
 LOCAL_PATH:= $(call my-dir)
 include $(CLEAR_VARS)
 
+LOCAL_USE_AAPT2 := true
 LOCAL_SRC_FILES := $(call all-subdir-java-files)
 LOCAL_PACKAGE_NAME := FeatureSplit1
 LOCAL_MODULE_TAGS := tests
 
-featureOf := FeatureSplitBase
-featureOfApk := $(call intermediates-dir-for,APPS,$(featureOf))/package.apk
-localRStamp := $(call intermediates-dir-for,APPS,$(LOCAL_PACKAGE_NAME),,COMMON)/src/R.stamp
-$(localRStamp): $(featureOfApk)
+LOCAL_APK_LIBRARIES := FeatureSplitBase
+LOCAL_RES_LIBRARIES := FeatureSplitBase
 
-LOCAL_AAPT_FLAGS := --feature-of $(featureOfApk)
+LOCAL_AAPT_FLAGS += --package-id 0x80
+LOCAL_AAPT_FLAGS += --custom-package com.android.test.split.feature.one
 
 include $(BUILD_PACKAGE)

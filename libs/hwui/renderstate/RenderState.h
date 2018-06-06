@@ -16,31 +16,36 @@
 #ifndef RENDERSTATE_H
 #define RENDERSTATE_H
 
-#include <set>
-#include <GLES2/gl2.h>
-#include <GLES2/gl2ext.h>
-#include <utils/Mutex.h>
-#include <utils/Functor.h>
-#include <utils/RefBase.h>
-#include <private/hwui/DrawGlInfo.h>
-#include <renderstate/Blend.h>
-
-#include "AssetAtlas.h"
 #include "Caches.h"
 #include "Glop.h"
+#include "renderstate/Blend.h"
 #include "renderstate/MeshState.h"
+#include "renderstate/OffscreenBufferPool.h"
 #include "renderstate/PixelBufferState.h"
 #include "renderstate/Scissor.h"
 #include "renderstate/Stencil.h"
 #include "utils/Macros.h"
+
+#include <set>
+#include <GLES2/gl2.h>
+#include <GLES2/gl2ext.h>
+#include <ui/Region.h>
+#include <utils/Mutex.h>
+#include <utils/Functor.h>
+#include <utils/RefBase.h>
+#include <private/hwui/DrawGlInfo.h>
+
+class GrContext;
 
 namespace android {
 namespace uirenderer {
 
 class Caches;
 class Layer;
+class DeferredLayerUpdater;
 
 namespace renderthread {
+class CacheManager;
 class CanvasContext;
 class RenderThread;
 }
@@ -49,15 +54,26 @@ class RenderThread;
 // wrapper of Caches for users to migrate to.
 class RenderState {
     PREVENT_COPY_AND_ASSIGN(RenderState);
+    friend class renderthread::RenderThread;
+    friend class Caches;
+    friend class renderthread::CacheManager;
 public:
     void onGLContextCreated();
     void onGLContextDestroyed();
+
+    void onVkContextCreated();
+    void onVkContextDestroyed();
+
+    void flush(Caches::FlushMode flushMode);
+    void onBitmapDestroyed(uint32_t pixelRefId);
 
     void setViewport(GLsizei width, GLsizei height);
     void getViewport(GLsizei* outWidth, GLsizei* outHeight);
 
     void bindFramebuffer(GLuint fbo);
-    GLint getFramebuffer() { return mFramebuffer; }
+    GLuint getFramebuffer() { return mFramebuffer; }
+    GLuint createFramebuffer();
+    void deleteFramebuffer(GLuint fbo);
 
     void invokeFunctor(Functor* functor, DrawGlInfo::Mode mode, DrawGlInfo* info);
 
@@ -78,30 +94,37 @@ public:
         mRegisteredContexts.erase(context);
     }
 
-    void requireGLContext();
+    void registerDeferredLayerUpdater(DeferredLayerUpdater* layerUpdater) {
+        mActiveLayerUpdaters.insert(layerUpdater);
+    }
+
+    void unregisterDeferredLayerUpdater(DeferredLayerUpdater* layerUpdater) {
+        mActiveLayerUpdaters.erase(layerUpdater);
+    }
 
     // TODO: This system is a little clunky feeling, this could use some
     // more thinking...
     void postDecStrong(VirtualLightRefBase* object);
 
-    void render(const Glop& glop);
+    void render(const Glop& glop, const Matrix4& orthoMatrix, bool overrideDisableBlending);
 
-    AssetAtlas& assetAtlas() { return mAssetAtlas; }
     Blend& blend() { return *mBlend; }
     MeshState& meshState() { return *mMeshState; }
     Scissor& scissor() { return *mScissor; }
     Stencil& stencil() { return *mStencil; }
 
-    void dump();
-private:
-    friend class renderthread::RenderThread;
-    friend class Caches;
+    OffscreenBufferPool& layerPool() { return *mLayerPool; }
 
+    GrContext* getGrContext() const;
+
+    void dump();
+
+private:
     void interruptForFunctorInvoke();
     void resumeFromFunctorInvoke();
-    void assertOnGLThread();
+    void destroyLayersInUpdater();
 
-    RenderState(renderthread::RenderThread& thread);
+    explicit RenderState(renderthread::RenderThread& thread);
     ~RenderState();
 
 
@@ -113,8 +136,10 @@ private:
     Scissor* mScissor = nullptr;
     Stencil* mStencil = nullptr;
 
-    AssetAtlas mAssetAtlas;
+    OffscreenBufferPool* mLayerPool = nullptr;
+
     std::set<Layer*> mActiveLayers;
+    std::set<DeferredLayerUpdater*> mActiveLayerUpdaters;
     std::set<renderthread::CanvasContext*> mRegisteredContexts;
 
     GLsizei mViewportWidth;

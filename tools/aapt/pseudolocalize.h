@@ -1,7 +1,7 @@
 #ifndef HOST_PSEUDOLOCALIZE_H
 #define HOST_PSEUDOLOCALIZE_H
 
-#include <base/macros.h>
+#include <android-base/macros.h>
 #include "StringPool.h"
 
 class PseudoMethodImpl {
@@ -43,7 +43,7 @@ class PseudoMethodAccent : public PseudoMethodImpl {
 
 class Pseudolocalizer {
  public:
-  Pseudolocalizer(PseudolocalizationMethod m);
+  explicit Pseudolocalizer(PseudolocalizationMethod m);
   ~Pseudolocalizer() { if (mImpl) delete mImpl; }
   void setMethod(PseudolocalizationMethod m);
   String16 start() { return mImpl->start(); }

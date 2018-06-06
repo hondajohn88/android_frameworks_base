@@ -23,23 +23,23 @@ import java.util.Objects;
 
 /** @hide */
 public class DisplayAdjustments {
-    public static final boolean DEVELOPMENT_RESOURCES_DEPEND_ON_ACTIVITY_TOKEN = false;
-
     public static final DisplayAdjustments DEFAULT_DISPLAY_ADJUSTMENTS = new DisplayAdjustments();
 
     private volatile CompatibilityInfo mCompatInfo = CompatibilityInfo.DEFAULT_COMPATIBILITY_INFO;
-    private Configuration mConfiguration = Configuration.EMPTY;
+    private Configuration mConfiguration;
 
     public DisplayAdjustments() {
     }
 
     public DisplayAdjustments(Configuration configuration) {
-        mConfiguration = configuration;
+        mConfiguration = new Configuration(configuration != null
+                ? configuration : Configuration.EMPTY);
     }
 
     public DisplayAdjustments(DisplayAdjustments daj) {
         setCompatibilityInfo(daj.mCompatInfo);
-        mConfiguration = daj.mConfiguration;
+        mConfiguration = new Configuration(daj.mConfiguration != null
+                ? daj.mConfiguration : Configuration.EMPTY);
     }
 
     public void setCompatibilityInfo(CompatibilityInfo compatInfo) {
@@ -64,7 +64,7 @@ public class DisplayAdjustments {
             throw new IllegalArgumentException(
                     "setConfiguration: Cannot modify DEFAULT_DISPLAY_ADJUSTMENTS");
         }
-        mConfiguration = configuration;
+        mConfiguration.setTo(configuration != null ? configuration : Configuration.EMPTY);
     }
 
     public Configuration getConfiguration() {
@@ -74,10 +74,8 @@ public class DisplayAdjustments {
     @Override
     public int hashCode() {
         int hash = 17;
-        hash = hash * 31 + mCompatInfo.hashCode();
-        if (DEVELOPMENT_RESOURCES_DEPEND_ON_ACTIVITY_TOKEN) {
-            hash = hash * 31 + (mConfiguration == null ? 0 : mConfiguration.hashCode());
-        }
+        hash = hash * 31 + Objects.hashCode(mCompatInfo);
+        hash = hash * 31 + Objects.hashCode(mConfiguration);
         return hash;
     }
 

@@ -20,7 +20,9 @@ LOCAL_SRC_FILES:= \
 
 LOCAL_SHARED_LIBRARIES := \
     libandroid_runtime \
-    libskia
+    libskia \
+    libui \
+    libandroidfw
 
 LOCAL_C_INCLUDES += \
     frameworks/base/native/include \
@@ -31,7 +33,7 @@ LOCAL_MODULE:= libjnigraphics
 
 LOCAL_CFLAGS += -Wall -Werror -Wunused -Wunreachable-code
 
-# TODO: This is to work around b/19059885. Remove after root cause is fixed
+# TODO: This is to work around b/24465209. Remove after root cause is fixed
 LOCAL_LDFLAGS_arm := -Wl,--hash-style=both
 
 include $(BUILD_SHARED_LIBRARY)

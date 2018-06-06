@@ -18,14 +18,13 @@ package android.net;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.net.ProxyInfo;
-import android.os.Parcelable;
 import android.os.Parcel;
+import android.os.Parcelable;
 import android.text.TextUtils;
 
-import java.net.InetAddress;
 import java.net.Inet4Address;
 import java.net.Inet6Address;
+import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -119,8 +118,12 @@ public final class LinkProperties implements Parcelable {
             //
             // For one such example of this, see b/18867306.
             //
-            // TODO: Remove this special case altogether.
-            if (before.isIPv4Provisioned() && !after.isIPv4Provisioned()) {
+            // Additionally, losing IPv6 provisioning can result in TCP
+            // connections getting stuck until timeouts fire and other
+            // baffling failures. Therefore, loss of either IPv4 or IPv6 on a
+            // previously dualstack network is deemed a lost of provisioning.
+            if ((before.isIPv4Provisioned() && !after.isIPv4Provisioned()) ||
+                (before.isIPv6Provisioned() && !after.isIPv6Provisioned())) {
                 return ProvisioningChange.LOST_PROVISIONING;
             }
             return ProvisioningChange.STILL_PROVISIONED;
@@ -500,11 +503,22 @@ public final class LinkProperties implements Parcelable {
     }
 
     /**
+     * Make sure this LinkProperties instance contains routes that cover the local subnet
+     * of its link addresses. Add any route that is missing.
+     * @hide
+     */
+    public void ensureDirectlyConnectedRoutes() {
+        for (LinkAddress addr: mLinkAddresses) {
+            addRoute(new RouteInfo(addr, null, mIfaceName));
+        }
+    }
+
+    /**
      * Returns all the routes on this link and all the links stacked above it.
      * @hide
      */
     public List<RouteInfo> getAllRoutes() {
-        List<RouteInfo> routes = new ArrayList();
+        List<RouteInfo> routes = new ArrayList<>();
         routes.addAll(mRoutes);
         for (LinkProperties stacked: mStackedLinks.values()) {
             routes.addAll(stacked.getAllRoutes());
@@ -667,7 +681,8 @@ public final class LinkProperties implements Parcelable {
      * @return {@code true} if there is an IPv4 address, {@code false} otherwise.
      */
     private boolean hasIPv4AddressOnInterface(String iface) {
-        return (mIfaceName.equals(iface) && hasIPv4Address()) ||
+        // mIfaceName can be null.
+        return (Objects.equals(iface, mIfaceName) && hasIPv4Address()) ||
                 (iface != null && mStackedLinks.containsKey(iface) &&
                         mStackedLinks.get(iface).hasIPv4Address());
     }

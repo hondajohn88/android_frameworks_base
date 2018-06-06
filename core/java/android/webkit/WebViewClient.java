@@ -16,12 +16,16 @@
 
 package android.webkit;
 
+import android.annotation.IntDef;
 import android.graphics.Bitmap;
 import android.net.http.SslError;
 import android.os.Message;
 import android.view.InputEvent;
 import android.view.KeyEvent;
 import android.view.ViewRootImpl;
+
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 
 public class WebViewClient {
 
@@ -38,9 +42,39 @@ public class WebViewClient {
      * @param url The url to be loaded.
      * @return True if the host application wants to leave the current WebView
      *         and handle the url itself, otherwise return false.
+     * @deprecated Use {@link #shouldOverrideUrlLoading(WebView, WebResourceRequest)
+     *             shouldOverrideUrlLoading(WebView, WebResourceRequest)} instead.
      */
+    @Deprecated
     public boolean shouldOverrideUrlLoading(WebView view, String url) {
         return false;
+    }
+
+    /**
+     * Give the host application a chance to take over the control when a new
+     * url is about to be loaded in the current WebView. If WebViewClient is not
+     * provided, by default WebView will ask Activity Manager to choose the
+     * proper handler for the url. If WebViewClient is provided, return true
+     * means the host application handles the url, while return false means the
+     * current WebView handles the url.
+     *
+     * <p>Notes:
+     * <ul>
+     * <li>This method is not called for requests using the POST &quot;method&quot;.</li>
+     * <li>This method is also called for subframes with non-http schemes, thus it is
+     * strongly disadvised to unconditionally call {@link WebView#loadUrl(String)}
+     * with the request's url from inside the method and then return true,
+     * as this will make WebView to attempt loading a non-http url, and thus fail.</li>
+     * </ul>
+     * </p>
+     *
+     * @param view The WebView that is initiating the callback.
+     * @param request Object containing the details of the request.
+     * @return True if the host application wants to leave the current WebView
+     *         and handle the url itself, otherwise return false.
+     */
+    public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+        return shouldOverrideUrlLoading(view, request.getUrl().toString());
     }
 
     /**
@@ -120,6 +154,10 @@ public class WebViewClient {
      * other than the UI thread so clients should exercise caution
      * when accessing private data or the view system.
      *
+     * <p>Note: when Safe Browsing is enabled, these URLs still undergo Safe Browsing checks. If
+     * this is undesired, whitelist the URL with {@link WebView#setSafeBrowsingWhitelist} or ignore
+     * the warning with {@link #onSafeBrowsingHit}.
+     *
      * @param view The {@link android.webkit.WebView} that is requesting the
      *             resource.
      * @param url The raw url of the resource.
@@ -142,6 +180,10 @@ public class WebViewClient {
      * response and data will be used.  NOTE: This method is called on a thread
      * other than the UI thread so clients should exercise caution
      * when accessing private data or the view system.
+     *
+     * <p>Note: when Safe Browsing is enabled, these URLs still undergo Safe Browsing checks. If
+     * this is undesired, whitelist the URL with {@link WebView#setSafeBrowsingWhitelist} or ignore
+     * the warning with {@link #onSafeBrowsingHit}.
      *
      * @param view The {@link android.webkit.WebView} that is requesting the
      *             resource.
@@ -204,6 +246,27 @@ public class WebViewClient {
     public static final int ERROR_FILE_NOT_FOUND = -14;
     /** Too many requests during this load */
     public static final int ERROR_TOO_MANY_REQUESTS = -15;
+    /** Resource load was cancelled by Safe Browsing */
+    public static final int ERROR_UNSAFE_RESOURCE = -16;
+
+    /** @hide */
+    @IntDef({
+        SAFE_BROWSING_THREAT_UNKNOWN,
+        SAFE_BROWSING_THREAT_MALWARE,
+        SAFE_BROWSING_THREAT_PHISHING,
+        SAFE_BROWSING_THREAT_UNWANTED_SOFTWARE
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface SafeBrowsingThreat {}
+
+    /** The resource was blocked for an unknown reason */
+    public static final int SAFE_BROWSING_THREAT_UNKNOWN = 0;
+    /** The resource was blocked because it contains malware */
+    public static final int SAFE_BROWSING_THREAT_MALWARE = 1;
+    /** The resource was blocked because it contains deceptive content */
+    public static final int SAFE_BROWSING_THREAT_PHISHING = 2;
+    /** The resource was blocked because it contains unwanted software */
+    public static final int SAFE_BROWSING_THREAT_UNWANTED_SOFTWARE = 3;
 
     /**
      * Report an error to the host application. These errors are unrecoverable
@@ -302,7 +365,9 @@ public class WebViewClient {
      * in memory (for the life of the application) if proceed() or cancel() is
      * called and does not call onReceivedClientCertRequest() again for the
      * same host and port pair. Webview does not store the response if ignore()
-     * is called.
+     * is called. Note that, multiple layers in chromium network stack might be
+     * caching the responses, so the behavior for ignore is only a best case
+     * effort.
      *
      * This method is called on the UI thread. During the callback, the
      * connection is suspended.
@@ -371,9 +436,7 @@ public class WebViewClient {
      *
      * @param view The WebView that is initiating the callback.
      * @param event The key event.
-     * @deprecated This method is subsumed by the more generic onUnhandledInputEvent.
      */
-    @Deprecated
     public void onUnhandledKeyEvent(WebView view, KeyEvent event) {
         onUnhandledInputEventInternal(view, event);
     }
@@ -395,6 +458,7 @@ public class WebViewClient {
      *
      * @param view The WebView that is initiating the callback.
      * @param event The input event.
+     * @removed
      */
     public void onUnhandledInputEvent(WebView view, InputEvent event) {
         if (event instanceof KeyEvent) {
@@ -415,7 +479,7 @@ public class WebViewClient {
      * Notify the host application that the scale applied to the WebView has
      * changed.
      *
-     * @param view he WebView that is initiating the callback.
+     * @param view The WebView that is initiating the callback.
      * @param oldScale The old scale factor
      * @param newScale The new scale factor
      */
@@ -434,5 +498,53 @@ public class WebViewClient {
      */
     public void onReceivedLoginRequest(WebView view, String realm,
             String account, String args) {
+    }
+
+    /**
+     * Notify host application that the given webview's render process has exited.
+     *
+     * Multiple WebView instances may be associated with a single render process;
+     * onRenderProcessGone will be called for each WebView that was affected.
+     * The application's implementation of this callback should only attempt to
+     * clean up the specific WebView given as a parameter, and should not assume
+     * that other WebView instances are affected.
+     *
+     * The given WebView can't be used, and should be removed from the view hierarchy,
+     * all references to it should be cleaned up, e.g any references in the Activity
+     * or other classes saved using findViewById and similar calls, etc
+     *
+     * To cause an render process crash for test purpose, the application can
+     * call loadUrl("chrome://crash") on the WebView. Note that multiple WebView
+     * instances may be affected if they share a render process, not just the
+     * specific WebView which loaded chrome://crash.
+     *
+     * @param view The WebView which needs to be cleaned up.
+     * @param detail the reason why it exited.
+     * @return true if the host application handled the situation that process has
+     *         exited, otherwise, application will crash if render process crashed,
+     *         or be killed if render process was killed by the system.
+     */
+    public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+        return false;
+    }
+
+    /**
+     * Notify the host application that a loading URL has been flagged by Safe Browsing.
+     *
+     * The application must invoke the callback to indicate the preferred response. The default
+     * behavior is to show an interstitial to the user, with the reporting checkbox visible.
+     *
+     * If the application needs to show its own custom interstitial UI, the callback can be invoked
+     * asynchronously with backToSafety() or proceed(), depending on user response.
+     *
+     * @param view The WebView that hit the malicious resource.
+     * @param request Object containing the details of the request.
+     * @param threatType The reason the resource was caught by Safe Browsing, corresponding to a
+     *                   SAFE_BROWSING_THREAT_* value.
+     * @param callback Applications must invoke one of the callback methods.
+     */
+    public void onSafeBrowsingHit(WebView view, WebResourceRequest request,
+            @SafeBrowsingThreat int threatType, SafeBrowsingResponse callback) {
+        callback.showInterstitial(/* allowReporting */ true);
     }
 }

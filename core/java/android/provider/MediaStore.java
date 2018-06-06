@@ -18,11 +18,13 @@ package android.provider;
 
 import android.annotation.SdkConstant;
 import android.annotation.SdkConstant.SdkConstantType;
+import android.content.ContentProviderClient;
 import android.content.ContentResolver;
 import android.content.ContentUris;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.UriPermission;
 import android.database.Cursor;
 import android.database.DatabaseUtils;
 import android.database.sqlite.SQLiteException;
@@ -32,17 +34,23 @@ import android.graphics.Matrix;
 import android.media.MiniThumbFile;
 import android.media.ThumbnailUtils;
 import android.net.Uri;
+import android.os.Bundle;
 import android.os.Environment;
 import android.os.ParcelFileDescriptor;
+import android.os.RemoteException;
 import android.service.media.CameraPrewarmService;
 import android.util.Log;
 
+import libcore.io.IoUtils;
+
+import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Arrays;
+import java.util.List;
 
 /**
  * The Media provider contains meta data for all available media on both internal
@@ -283,7 +291,7 @@ public final class MediaStore {
      *
      * <p>Note: if you app targets {@link android.os.Build.VERSION_CODES#M M} and above
      * and declares as using the {@link android.Manifest.permission#CAMERA} permission which
-     * is not granted, then atempting to use this action will result in a {@link
+     * is not granted, then attempting to use this action will result in a {@link
      * java.lang.SecurityException}.
      *
      *  @see #EXTRA_OUTPUT
@@ -384,8 +392,14 @@ public final class MediaStore {
 
     public interface MediaColumns extends BaseColumns {
         /**
-         * The data stream for the file
-         * <P>Type: DATA STREAM</P>
+         * Path to the file on disk.
+         * <p>
+         * Note that apps may not have filesystem permissions to directly access
+         * this path. Instead of trying to open this path directly, apps should
+         * use {@link ContentResolver#openFileDescriptor(Uri, String)} to gain
+         * access.
+         * <p>
+         * Type: TEXT
          */
         public static final String DATA = "_data";
 
@@ -517,6 +531,14 @@ public final class MediaStore {
                 long fileId) {
             return Uri.parse(CONTENT_AUTHORITY_SLASH + volumeName
                     + "/object/" + fileId + "/references");
+        }
+
+        /**
+         * Used to trigger special logic for directories.
+         * @hide
+         */
+        public static final Uri getDirectoryUri(String volumeName) {
+            return Uri.parse(CONTENT_AUTHORITY_SLASH + volumeName + "/dir");
         }
 
         /**
@@ -672,8 +694,8 @@ public final class MediaStore {
             // Log.v(TAG, "getThumbnail: origId="+origId+", kind="+kind+", isVideo="+isVideo);
             // If the magic is non-zero, we simply return thumbnail if it does exist.
             // querying MediaProvider and simply return thumbnail.
-            MiniThumbFile thumbFile = new MiniThumbFile(isVideo ? Video.Media.EXTERNAL_CONTENT_URI
-                    : Images.Media.EXTERNAL_CONTENT_URI);
+            MiniThumbFile thumbFile = MiniThumbFile.instance(
+                    isVideo ? Video.Media.EXTERNAL_CONTENT_URI : Images.Media.EXTERNAL_CONTENT_URI);
             Cursor c = null;
             try {
                 long magic = thumbFile.getMagic(origId);
@@ -1149,8 +1171,15 @@ public final class MediaStore {
             public static final String DEFAULT_SORT_ORDER = "image_id ASC";
 
             /**
-             * The data stream for the thumbnail
-             * <P>Type: DATA STREAM</P>
+             * Path to the thumbnail file on disk.
+             * <p>
+             * Note that apps may not have filesystem permissions to directly
+             * access this path. Instead of trying to open this path directly,
+             * apps should use
+             * {@link ContentResolver#openFileDescriptor(Uri, String)} to gain
+             * access.
+             * <p>
+             * Type: TEXT
              */
             public static final String DATA = "_data";
 
@@ -1469,6 +1498,7 @@ public final class MediaStore {
              * May also contain the extra EXTRA_MAX_BYTES.
              * @see #EXTRA_MAX_BYTES
              */
+            @SdkConstant(SdkConstantType.ACTIVITY_INTENT_ACTION)
             public static final String RECORD_SOUND_ACTION =
                     "android.provider.MediaStore.RECORD_SOUND";
 
@@ -1596,8 +1626,15 @@ public final class MediaStore {
             public static final String NAME = "name";
 
             /**
-             * The data stream for the playlist file
-             * <P>Type: DATA STREAM</P>
+             * Path to the playlist file on disk.
+             * <p>
+             * Note that apps may not have filesystem permissions to directly
+             * access this path. Instead of trying to open this path directly,
+             * apps should use
+             * {@link ContentResolver#openFileDescriptor(Uri, String)} to gain
+             * access.
+             * <p>
+             * Type: TEXT
              */
             public static final String DATA = "_data";
 
@@ -2192,8 +2229,15 @@ public final class MediaStore {
             public static final String DEFAULT_SORT_ORDER = "video_id ASC";
 
             /**
-             * The data stream for the thumbnail
-             * <P>Type: DATA STREAM</P>
+             * Path to the thumbnail file on disk.
+             * <p>
+             * Note that apps may not have filesystem permissions to directly
+             * access this path. Instead of trying to open this path directly,
+             * apps should use
+             * {@link ContentResolver#openFileDescriptor(Uri, String)} to gain
+             * access.
+             * <p>
+             * Type: TEXT
              */
             public static final String DATA = "_data";
 
@@ -2269,5 +2313,87 @@ public final class MediaStore {
             }
         }
         return null;
+    }
+
+    /**
+     * Gets a URI backed by a {@link DocumentsProvider} that points to the same media
+     * file as the specified mediaUri. This allows apps who have permissions to access
+     * media files in Storage Access Framework to perform file operations through that
+     * on media files.
+     * <p>
+     * Note: this method doesn't grant any URI permission. Callers need to obtain
+     * permission before calling this method. One way to obtain permission is through
+     * a 3-step process:
+     * <ol>
+     *     <li>Call {@link android.os.storage.StorageManager#getStorageVolume(File)} to
+     *     obtain the {@link android.os.storage.StorageVolume} of a media file;</li>
+     *
+     *     <li>Invoke the intent returned by
+     *     {@link android.os.storage.StorageVolume#createAccessIntent(String)} to
+     *     obtain the access of the volume or one of its specific subdirectories;</li>
+     *
+     *     <li>Check whether permission is granted and take persistent permission.</li>
+     * </ol>
+     * @param mediaUri the media URI which document URI is requested
+     * @return the document URI
+     */
+    public static Uri getDocumentUri(Context context, Uri mediaUri) {
+
+        try {
+            final ContentResolver resolver = context.getContentResolver();
+
+            final String path = getFilePath(resolver, mediaUri);
+            final List<UriPermission> uriPermissions = resolver.getPersistedUriPermissions();
+
+            return getDocumentUri(resolver, path, uriPermissions);
+        } catch (RemoteException e) {
+            throw e.rethrowAsRuntimeException();
+        }
+    }
+
+    private static String getFilePath(ContentResolver resolver, Uri mediaUri)
+            throws RemoteException {
+
+        try (ContentProviderClient client =
+                     resolver.acquireUnstableContentProviderClient(AUTHORITY)) {
+            final Cursor c = client.query(
+                    mediaUri,
+                    new String[]{ MediaColumns.DATA },
+                    null, /* selection */
+                    null, /* selectionArg */
+                    null /* sortOrder */);
+
+            final String path;
+            try {
+                if (c.getCount() == 0) {
+                    throw new IllegalStateException("Not found media file under URI: " + mediaUri);
+                }
+
+                if (!c.moveToFirst()) {
+                    throw new IllegalStateException("Failed to move cursor to the first item.");
+                }
+
+                path = c.getString(0);
+            } finally {
+                IoUtils.closeQuietly(c);
+            }
+
+            return path;
+        }
+    }
+
+    private static Uri getDocumentUri(
+            ContentResolver resolver, String path, List<UriPermission> uriPermissions)
+            throws RemoteException {
+
+        try (ContentProviderClient client = resolver.acquireUnstableContentProviderClient(
+                DocumentsContract.EXTERNAL_STORAGE_PROVIDER_AUTHORITY)) {
+            final Bundle in = new Bundle();
+            in.putParcelableList(
+                    DocumentsContract.EXTERNAL_STORAGE_PROVIDER_AUTHORITY + ".extra.uriPermissions",
+                    uriPermissions);
+            final Bundle out = client.call("getDocumentId", path, in);
+            return out.getParcelable(DocumentsContract.EXTRA_URI);
+        }
     }
 }

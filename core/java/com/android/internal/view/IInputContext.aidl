@@ -21,6 +21,7 @@ import android.view.KeyEvent;
 import android.view.inputmethod.CompletionInfo;
 import android.view.inputmethod.CorrectionInfo;
 import android.view.inputmethod.ExtractedTextRequest;
+import android.view.inputmethod.InputContentInfo;
 
 import com.android.internal.view.IInputContextCallback;
 
@@ -38,8 +39,9 @@ import com.android.internal.view.IInputContextCallback;
     
     void getExtractedText(in ExtractedTextRequest request, int flags, int seq,
             IInputContextCallback callback);
-    
-    void deleteSurroundingText(int leftLength, int rightLength);
+
+    void deleteSurroundingText(int beforeLength, int afterLength);
+    void deleteSurroundingTextInCodePoints(int beforeLength, int afterLength);
 
     void setComposingText(CharSequence text, int newCursorPosition);
 
@@ -60,9 +62,7 @@ import com.android.internal.view.IInputContextCallback;
     void beginBatchEdit();
     
     void endBatchEdit();
-    
-    void reportFullscreenMode(boolean enabled);
-    
+
     void sendKeyEvent(in KeyEvent event);
     
     void clearMetaKeyStates(int states);
@@ -73,6 +73,9 @@ import com.android.internal.view.IInputContextCallback;
 
     void getSelectedText(int flags, int seq, IInputContextCallback callback);
 
-    void requestUpdateCursorAnchorInfo(in int cursorUpdateMode, int seq,
+    void requestUpdateCursorAnchorInfo(int cursorUpdateMode, int seq,
+            IInputContextCallback callback);
+
+    void commitContent(in InputContentInfo inputContentInfo, int flags, in Bundle opts, int sec,
             IInputContextCallback callback);
 }

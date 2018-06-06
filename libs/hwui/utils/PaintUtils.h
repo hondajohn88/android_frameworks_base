@@ -16,26 +16,21 @@
 #ifndef PAINT_UTILS_H
 #define PAINT_UTILS_H
 
+#include <utils/Blur.h>
+
 #include <SkColorFilter.h>
-#include <SkXfermode.h>
+#include <SkDrawLooper.h>
+#include <SkShader.h>
 
 namespace android {
 namespace uirenderer {
 
+/**
+ * Utility methods for accessing data within SkPaint, and providing defaults
+ * with optional SkPaint pointers.
+ */
 class PaintUtils {
 public:
-
-   /**
-     * Safely retrieves the mode from the specified xfermode. If the specified
-     * xfermode is null, the mode is assumed to be SkXfermode::kSrcOver_Mode.
-     */
-    static inline SkXfermode::Mode getXfermode(SkXfermode* mode) {
-        SkXfermode::Mode resultMode;
-        if (!SkXfermode::AsMode(mode, &resultMode)) {
-            resultMode = SkXfermode::kSrcOver_Mode;
-        }
-        return resultMode;
-    }
 
     static inline GLenum getFilter(const SkPaint* paint) {
         if (!paint || paint->getFilterQuality() != kNone_SkFilterQuality) {
@@ -44,19 +39,19 @@ public:
         return GL_NEAREST;
     }
 
-    // TODO: move to a method on android:Paint? replace with SkPaint::nothingToDraw()?
-    static inline bool paintWillNotDraw(const SkPaint& paint) {
-        return paint.getAlpha() == 0
-                && !paint.getColorFilter()
-                && getXfermode(paint.getXfermode()) == SkXfermode::kSrcOver_Mode;
-    }
+    static bool isOpaquePaint(const SkPaint* paint) {
+        if (!paint) return true; // default (paintless) behavior is SrcOver, black
 
-    // TODO: move to a method on android:Paint? replace with SkPaint::nothingToDraw()?
-    static inline bool paintWillNotDrawText(const SkPaint& paint) {
-        return paint.getAlpha() == 0
-                && paint.getLooper() == nullptr
-                && !paint.getColorFilter()
-                && getXfermode(paint.getXfermode()) == SkXfermode::kSrcOver_Mode;
+        if (paint->getAlpha() != 0xFF
+                || PaintUtils::isBlendedShader(paint->getShader())
+                || PaintUtils::isBlendedColorFilter(paint->getColorFilter())) {
+            return false;
+        }
+
+        // Only let simple srcOver / src blending modes declare opaque, since behavior is clear.
+        SkBlendMode mode = paint->getBlendMode();
+        return mode == SkBlendMode::kSrcOver
+                || mode == SkBlendMode::kSrc;
     }
 
     static bool isBlendedShader(const SkShader* shader) {
@@ -71,6 +66,39 @@ public:
             return false;
         }
         return (filter->getFlags() & SkColorFilter::kAlphaUnchanged_Flag) == 0;
+    }
+
+    struct TextShadow {
+        SkScalar radius;
+        float dx;
+        float dy;
+        SkColor color;
+    };
+
+    static inline bool getTextShadow(const SkPaint* paint, TextShadow* textShadow) {
+        SkDrawLooper::BlurShadowRec blur;
+        if (paint && paint->getLooper() && paint->getLooper()->asABlurShadow(&blur)) {
+            if (textShadow) {
+                textShadow->radius = Blur::convertSigmaToRadius(blur.fSigma);
+                textShadow->dx = blur.fOffset.fX;
+                textShadow->dy = blur.fOffset.fY;
+                textShadow->color = blur.fColor;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    static inline bool hasTextShadow(const SkPaint* paint) {
+        return getTextShadow(paint, nullptr);
+    }
+
+    static inline SkBlendMode getBlendModeDirect(const SkPaint* paint) {
+        return paint ? paint->getBlendMode() : SkBlendMode::kSrcOver;
+    }
+
+    static inline int getAlphaDirect(const SkPaint* paint) {
+        return paint ? paint->getAlpha() : 255;
     }
 
 }; // class PaintUtils

@@ -16,6 +16,7 @@
 
 package android.app;
 
+import android.annotation.SystemService;
 import android.content.ActivityNotFoundException;
 import android.content.ComponentName;
 import android.content.ContentResolver;
@@ -31,6 +32,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.RemoteException;
 import android.os.ServiceManager;
+import android.os.ServiceManager.ServiceNotFoundException;
 import android.os.UserHandle;
 import android.text.TextUtils;
 import android.util.Log;
@@ -45,10 +47,6 @@ import java.util.List;
  * services are provided through methods in {@link android.app.Activity Activity}
  * and the {@link android.content.Intent#ACTION_SEARCH ACTION_SEARCH}
  * {@link android.content.Intent Intent}.
- * If you do require direct access to the SearchManager, do not instantiate
- * this class directly. Instead, retrieve it through
- * {@link android.content.Context#getSystemService
- * context.getSystemService(Context.SEARCH_SERVICE)}.
  *
  * <div class="special reference">
  * <h3>Developer Guides</h3>
@@ -57,9 +55,9 @@ import java.util.List;
  * <a href="{@docRoot}guide/topics/search/index.html">Search</a> developer guide.</p>
  * </div>
  */
+@SystemService(Context.SEARCH_SERVICE)
 public class SearchManager
-        implements DialogInterface.OnDismissListener, DialogInterface.OnCancelListener
-{
+        implements DialogInterface.OnDismissListener, DialogInterface.OnCancelListener {
 
     private static final boolean DBG = false;
     private static final String TAG = "SearchManager";
@@ -536,7 +534,7 @@ public class SearchManager
     /**
      * Reference to the shared system search service.
      */
-    private static ISearchManager mService;
+    private final ISearchManager mService;
 
     private final Context mContext;
 
@@ -547,11 +545,11 @@ public class SearchManager
 
     private SearchDialog mSearchDialog;
 
-    /*package*/ SearchManager(Context context, Handler handler)  {
+    /*package*/ SearchManager(Context context, Handler handler) throws ServiceNotFoundException {
         mContext = context;
         mHandler = handler;
         mService = ISearchManager.Stub.asInterface(
-                ServiceManager.getService(Context.SEARCH_SERVICE));
+                ServiceManager.getServiceOrThrow(Context.SEARCH_SERVICE));
     }
 
     /**
@@ -620,7 +618,7 @@ public class SearchManager
             return;
         }
 
-        UiModeManager uiModeManager = new UiModeManager();
+        final UiModeManager uiModeManager = mContext.getSystemService(UiModeManager.class);
         // Don't show search dialog on televisions.
         if (uiModeManager.getCurrentModeType() != Configuration.UI_MODE_TYPE_TELEVISION) {
             ensureSearchDialog();
@@ -686,8 +684,7 @@ public class SearchManager
         try {
             return mService.getGlobalSearchActivities();
         } catch (RemoteException ex) {
-            Log.e(TAG, "getGlobalSearchActivities() failed: " + ex);
-            return null;
+            throw ex.rethrowFromSystemServer();
         }
     }
 
@@ -698,8 +695,7 @@ public class SearchManager
         try {
             return mService.getGlobalSearchActivity();
         } catch (RemoteException ex) {
-            Log.e(TAG, "getGlobalSearchActivity() failed: " + ex);
-            return null;
+            throw ex.rethrowFromSystemServer();
         }
     }
 
@@ -716,8 +712,7 @@ public class SearchManager
         try {
             return mService.getWebSearchActivity();
         } catch (RemoteException ex) {
-            Log.e(TAG, "getWebSearchActivity() failed: " + ex);
-            return null;
+            throw ex.rethrowFromSystemServer();
         }
     }
 
@@ -850,8 +845,7 @@ public class SearchManager
         try {
             return mService.getSearchableInfo(componentName);
         } catch (RemoteException ex) {
-            Log.e(TAG, "getSearchableInfo() failed: " + ex);
-            return null;
+            throw ex.rethrowFromSystemServer();
         }
     }
 
@@ -935,8 +929,7 @@ public class SearchManager
         try {
             return mService.getSearchablesInGlobalSearch();
         } catch (RemoteException e) {
-            Log.e(TAG, "getSearchablesInGlobalSearch() failed: " + e);
-            return null;
+            throw e.rethrowFromSystemServer();
         }
     }
 
@@ -950,7 +943,7 @@ public class SearchManager
         try {
             Intent intent = new Intent(Intent.ACTION_ASSIST);
             if (inclContext) {
-                IActivityManager am = ActivityManagerNative.getDefault();
+                IActivityManager am = ActivityManager.getService();
                 Bundle extras = am.getAssistContextExtras(ActivityManager.ASSIST_CONTEXT_BASIC);
                 if (extras != null) {
                     intent.replaceExtras(extras);
@@ -958,8 +951,7 @@ public class SearchManager
             }
             return intent;
         } catch (RemoteException re) {
-            Log.e(TAG, "getAssistIntent() failed: " + re);
-            return null;
+            throw re.rethrowFromSystemServer();
         }
     }
 
@@ -977,7 +969,7 @@ public class SearchManager
             }
             mService.launchAssist(args);
         } catch (RemoteException re) {
-            Log.e(TAG, "launchAssist() failed: " + re);
+            throw re.rethrowFromSystemServer();
         }
     }
 
@@ -995,8 +987,7 @@ public class SearchManager
             }
             return mService.launchLegacyAssist(hint, userHandle, args);
         } catch (RemoteException re) {
-            Log.e(TAG, "launchAssist() failed: " + re);
-            return false;
+            throw re.rethrowFromSystemServer();
         }
     }
 }

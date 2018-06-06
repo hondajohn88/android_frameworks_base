@@ -17,6 +17,7 @@
 package android.accessibilityservice;
 
 import android.accessibilityservice.IAccessibilityServiceConnection;
+import android.graphics.Region;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityWindowInfo;
 import android.view.KeyEvent;
@@ -30,7 +31,7 @@ import android.view.KeyEvent;
 
     void init(in IAccessibilityServiceConnection connection, int connectionId, IBinder windowToken);
 
-    void onAccessibilityEvent(in AccessibilityEvent event);
+    void onAccessibilityEvent(in AccessibilityEvent event, in boolean serviceWantsEvent);
 
     void onInterrupt();
 
@@ -39,4 +40,18 @@ import android.view.KeyEvent;
     void clearAccessibilityCache();
 
     void onKeyEvent(in KeyEvent event, int sequence);
+
+    void onMagnificationChanged(in Region region, float scale, float centerX, float centerY);
+
+    void onSoftKeyboardShowModeChanged(int showMode);
+
+    void onPerformGestureResult(int sequence, boolean completedSuccessfully);
+
+    void onFingerprintCapturingGesturesChanged(boolean capturing);
+
+    void onFingerprintGesture(int gesture);
+
+    void onAccessibilityButtonClicked();
+
+    void onAccessibilityButtonAvailabilityChanged(boolean available);
 }

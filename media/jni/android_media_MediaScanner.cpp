@@ -24,7 +24,7 @@
 #include <private/media/VideoFrame.h>
 
 #include "jni.h"
-#include "JNIHelp.h"
+#include <nativehelper/JNIHelp.h>
 #include "android_runtime/AndroidRuntime.h"
 #include "android_runtime/Log.h"
 
@@ -412,7 +412,7 @@ android_media_MediaScanner_native_finalize(JNIEnv *env, jobject thiz)
     setNativeScanner_l(env, thiz, 0);
 }
 
-static JNINativeMethod gMethods[] = {
+static const JNINativeMethod gMethods[] = {
     {
         "processDirectory",
         "(Ljava/lang/String;Landroid/media/MediaScannerClient;)V",

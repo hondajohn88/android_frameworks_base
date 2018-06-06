@@ -16,10 +16,13 @@
 
 package android.net;
 
+import android.net.DataUsageRequest;
 import android.net.INetworkStatsSession;
 import android.net.NetworkStats;
 import android.net.NetworkStatsHistory;
 import android.net.NetworkTemplate;
+import android.os.IBinder;
+import android.os.Messenger;
 
 /** {@hide} */
 interface INetworkStatsService {
@@ -33,7 +36,7 @@ interface INetworkStatsService {
      *  PACKAGE_USAGE_STATS permission is always checked. If PACKAGE_USAGE_STATS is not granted
      *  READ_NETWORK_USAGE_STATS is checked for.
      */
-    INetworkStatsSession openSessionForUsageStats(String callingPackage);
+    INetworkStatsSession openSessionForUsageStats(int flags, String callingPackage);
 
     /** Return network layer usage total for traffic that matches template. */
     long getNetworkTotalBytes(in NetworkTemplate template, long start, long end);
@@ -56,5 +59,12 @@ interface INetworkStatsService {
 
     /** Advise persistance threshold; may be overridden internally. */
     void advisePersistThreshold(long thresholdBytes);
+
+    /** Registers a callback on data usage. */
+    DataUsageRequest registerUsageCallback(String callingPackage,
+            in DataUsageRequest request, in Messenger messenger, in IBinder binder);
+
+    /** Unregisters a callback on data usage. */
+    void unregisterUsageRequest(in DataUsageRequest request);
 
 }

@@ -23,25 +23,53 @@ import android.util.LongArray;
 import android.util.LongSparseArray;
 import android.util.SparseArray;
 
+import com.android.internal.annotations.VisibleForTesting;
+
 import java.util.ArrayList;
 import java.util.List;
 
 /**
  * Cache for AccessibilityWindowInfos and AccessibilityNodeInfos.
  * It is updated when windows change or nodes change.
+ * @hide
  */
-final class AccessibilityCache {
+@VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
+public final class AccessibilityCache {
 
     private static final String LOG_TAG = "AccessibilityCache";
 
     private static final boolean DEBUG = false;
 
-    private static final boolean CHECK_INTEGRITY = "eng".equals(Build.TYPE);
+    private static final boolean CHECK_INTEGRITY = Build.IS_ENG;
+
+    /**
+     * {@link AccessibilityEvent} types that are critical for the cache to stay up to date
+     *
+     * When adding new event types in {@link #onAccessibilityEvent}, please add it here also, to
+     * make sure that the events are delivered to cache regardless of
+     * {@link android.accessibilityservice.AccessibilityServiceInfo#eventTypes}
+     */
+    public static final int CACHE_CRITICAL_EVENTS_MASK =
+            AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED
+                    | AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED
+                    | AccessibilityEvent.TYPE_VIEW_FOCUSED
+                    | AccessibilityEvent.TYPE_VIEW_SELECTED
+                    | AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED
+                    | AccessibilityEvent.TYPE_VIEW_CLICKED
+                    | AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED
+                    | AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+                    | AccessibilityEvent.TYPE_VIEW_SCROLLED
+                    | AccessibilityEvent.TYPE_WINDOWS_CHANGED
+                    | AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED;
 
     private final Object mLock = new Object();
 
+    private final AccessibilityNodeRefresher mAccessibilityNodeRefresher;
+
     private long mAccessibilityFocus = AccessibilityNodeInfo.UNDEFINED_ITEM_ID;
     private long mInputFocus = AccessibilityNodeInfo.UNDEFINED_ITEM_ID;
+
+    private boolean mIsAllWindowsCached;
 
     private final SparseArray<AccessibilityWindowInfo> mWindowCache =
             new SparseArray<>();
@@ -51,6 +79,28 @@ final class AccessibilityCache {
 
     private final SparseArray<AccessibilityWindowInfo> mTempWindowArray =
             new SparseArray<>();
+
+    public AccessibilityCache(AccessibilityNodeRefresher nodeRefresher) {
+        mAccessibilityNodeRefresher = nodeRefresher;
+    }
+
+    public void setWindows(List<AccessibilityWindowInfo> windows) {
+        synchronized (mLock) {
+            if (DEBUG) {
+                Log.i(LOG_TAG, "Set windows");
+            }
+            clearWindowCache();
+            if (windows == null) {
+                return;
+            }
+            final int windowCount = windows.size();
+            for (int i = 0; i < windowCount; i++) {
+                final AccessibilityWindowInfo window = windows.get(i);
+                addWindow(window);
+            }
+            mIsAllWindowsCached = true;
+        }
+    }
 
     public void addWindow(AccessibilityWindowInfo window) {
         synchronized (mLock) {
@@ -69,6 +119,9 @@ final class AccessibilityCache {
     /**
      * Notifies the cache that the something in the UI changed. As a result
      * the cache will either refresh some nodes or evict some nodes.
+     *
+     * Note: any event that ends up affecting the cache should also be present in
+     * {@link #CACHE_CRITICAL_EVENTS_MASK}
      *
      * @param event An event.
      */
@@ -150,7 +203,7 @@ final class AccessibilityCache {
             return;
         }
         // The node changed so we will just refresh it right now.
-        if (cachedInfo.refresh(true)) {
+        if (mAccessibilityNodeRefresher.refreshNode(cachedInfo, true)) {
             return;
         }
         // Weird, we could not refresh. Just evict the entire sub-tree.
@@ -186,6 +239,10 @@ final class AccessibilityCache {
 
     public List<AccessibilityWindowInfo> getWindows() {
         synchronized (mLock) {
+            if (!mIsAllWindowsCached) {
+                return null;
+            }
+
             final int windowCount = mWindowCache.size();
             if (windowCount > 0) {
                 // Careful to return the windows in a decreasing layer order.
@@ -197,8 +254,11 @@ final class AccessibilityCache {
                     sortedWindows.put(window.getLayer(), window);
                 }
 
-                List<AccessibilityWindowInfo> windows = new ArrayList<>(windowCount);
-                for (int i = windowCount - 1; i >= 0; i--) {
+                // It's possible in transient conditions for two windows to share the same
+                // layer, which results in sortedWindows being smaller than mWindowCache
+                final int sortedWindowCount = sortedWindows.size();
+                List<AccessibilityWindowInfo> windows = new ArrayList<>(sortedWindowCount);
+                for (int i = sortedWindowCount - 1; i >= 0; i--) {
                     AccessibilityWindowInfo window = sortedWindows.valueAt(i);
                     windows.add(AccessibilityWindowInfo.obtain(window));
                     sortedWindows.removeAt(i);
@@ -249,6 +309,13 @@ final class AccessibilityCache {
 
                 final int oldChildCount = oldInfo.getChildCount();
                 for (int i = 0; i < oldChildCount; i++) {
+                    if (nodes.get(sourceId) == null) {
+                        // We've removed (and thus recycled) this node because it was its own
+                        // ancestor (the app gave us bad data), we can't continue using it.
+                        // Clear the cache for this window and give up on adding the node.
+                        clearNodesForWindowLocked(windowId);
+                        return;
+                    }
                     final long oldChildId = oldInfo.getChildId(i);
                     // If the child is no longer present, remove the sub-tree.
                     if (newChildrenIds == null || newChildrenIds.indexOf(oldChildId) < 0) {
@@ -258,7 +325,7 @@ final class AccessibilityCache {
 
                 // Also be careful if the parent has changed since the new
                 // parent may be a predecessor of the old parent which will
-                // add cyclse to the cache.
+                // add cycles to the cache.
                 final long oldParentId = oldInfo.getParentNodeId();
                 if (info.getParentNodeId() != oldParentId) {
                     clearSubTreeLocked(windowId, oldParentId);
@@ -269,6 +336,12 @@ final class AccessibilityCache {
             // will wipe the data of the cached info.
             AccessibilityNodeInfo clone = AccessibilityNodeInfo.obtain(info);
             nodes.put(sourceId, clone);
+            if (clone.isAccessibilityFocused()) {
+                mAccessibilityFocus = sourceId;
+            }
+            if (clone.isFocused()) {
+                mInputFocus = sourceId;
+            }
         }
     }
 
@@ -280,12 +353,7 @@ final class AccessibilityCache {
             if (DEBUG) {
                 Log.i(LOG_TAG, "clear()");
             }
-            final int windowCount = mWindowCache.size();
-            for (int i = windowCount - 1; i >= 0; i--) {
-                AccessibilityWindowInfo window = mWindowCache.valueAt(i);
-                window.recycle();
-                mWindowCache.removeAt(i);
-            }
+            clearWindowCache();
             final int nodesForWindowCount = mNodeCache.size();
             for (int i = 0; i < nodesForWindowCount; i++) {
                 final int windowId = mNodeCache.keyAt(i);
@@ -297,6 +365,19 @@ final class AccessibilityCache {
         }
     }
 
+    private void clearWindowCache() {
+        final int windowCount = mWindowCache.size();
+        for (int i = windowCount - 1; i >= 0; i--) {
+            AccessibilityWindowInfo window = mWindowCache.valueAt(i);
+            window.recycle();
+            mWindowCache.removeAt(i);
+        }
+        mIsAllWindowsCached = false;
+    }
+
+    /**
+     * Clears nodes for the window with the given id
+     */
     private void clearNodesForWindowLocked(int windowId) {
         if (DEBUG) {
             Log.i(LOG_TAG, "clearNodesForWindowLocked(" + windowId + ")");
@@ -351,6 +432,7 @@ final class AccessibilityCache {
             final long childNodeId = current.getChildId(i);
             clearSubTreeRecursiveLocked(nodes, childNodeId);
         }
+        current.recycle();
     }
 
     /**
@@ -471,6 +553,13 @@ final class AccessibilityCache {
                     }
                 }
             }
+        }
+    }
+
+    // Layer of indirection included to break dependency chain for testing
+    public static class AccessibilityNodeRefresher {
+        public boolean refreshNode(AccessibilityNodeInfo info, boolean bypassCache) {
+            return info.refresh(null, bypassCache);
         }
     }
 }

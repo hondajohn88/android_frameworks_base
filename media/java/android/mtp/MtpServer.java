@@ -16,6 +16,8 @@
 
 package android.mtp;
 
+import com.android.internal.util.Preconditions;
+
 /**
  * Java wrapper for MTP/PTP support as USB responder.
  * {@hide}
@@ -23,13 +25,30 @@ package android.mtp;
 public class MtpServer implements Runnable {
 
     private long mNativeContext; // accessed by native methods
+    private final MtpDatabase mDatabase;
+    private final Runnable mOnTerminate;
 
     static {
         System.loadLibrary("media_jni");
     }
 
-    public MtpServer(MtpDatabase database, boolean usePtp) {
-        native_setup(database, usePtp);
+    public MtpServer(
+            MtpDatabase database,
+            boolean usePtp,
+            Runnable onTerminate,
+            String deviceInfoManufacturer,
+            String deviceInfoModel,
+            String deviceInfoDeviceVersion,
+            String deviceInfoSerialNumber) {
+        mDatabase = Preconditions.checkNotNull(database);
+        mOnTerminate = Preconditions.checkNotNull(onTerminate);
+        native_setup(
+                database,
+                usePtp,
+                deviceInfoManufacturer,
+                deviceInfoModel,
+                deviceInfoDeviceVersion,
+                deviceInfoSerialNumber);
         database.setServer(this);
     }
 
@@ -42,6 +61,8 @@ public class MtpServer implements Runnable {
     public void run() {
         native_run();
         native_cleanup();
+        mDatabase.close();
+        mOnTerminate.run();
     }
 
     public void sendObjectAdded(int handle) {
@@ -64,7 +85,18 @@ public class MtpServer implements Runnable {
         native_remove_storage(storage.getStorageId());
     }
 
-    private native final void native_setup(MtpDatabase database, boolean usePtp);
+    public static void configure(boolean usePtp) {
+        native_configure(usePtp);
+    }
+
+    public static native final void native_configure(boolean usePtp);
+    private native final void native_setup(
+            MtpDatabase database,
+            boolean usePtp,
+            String deviceInfoManufacturer,
+            String deviceInfoModel,
+            String deviceInfoDeviceVersion,
+            String deviceInfoSerialNumber);
     private native final void native_run();
     private native final void native_cleanup();
     private native final void native_send_object_added(int handle);

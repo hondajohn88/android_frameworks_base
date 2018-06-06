@@ -18,6 +18,7 @@ package android.widget;
 
 import android.animation.ObjectAnimator;
 import android.annotation.DrawableRes;
+import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.StyleRes;
 import android.content.Context;
@@ -29,8 +30,8 @@ import android.graphics.Insets;
 import android.graphics.Paint;
 import android.graphics.PorterDuff;
 import android.graphics.Rect;
-import android.graphics.Typeface;
 import android.graphics.Region.Op;
+import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
 import android.text.Layout;
 import android.text.StaticLayout;
@@ -45,8 +46,8 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.SoundEffectConstants;
 import android.view.VelocityTracker;
-import android.view.ViewStructure;
 import android.view.ViewConfiguration;
+import android.view.ViewStructure;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 
@@ -63,6 +64,9 @@ import com.android.internal.R;
  * setTypeface() methods control the typeface and style of label text, whereas the
  * {@link #setSwitchTextAppearance(android.content.Context, int) switchTextAppearance} and
  * the related setSwitchTypeface() methods control that of the thumb.
+ *
+ * <p>{@link android.support.v7.widget.SwitchCompat} is a version of
+ * the Switch widget which runs on devices back to API 7.</p>
  *
  * <p>See the <a href="{@docRoot}guide/topics/ui/controls/togglebutton.html">Toggle Buttons</a>
  * guide.</p>
@@ -888,8 +892,9 @@ public class Switch extends CompoundButton {
                     ? mSwitchTransformationMethod.getTransformation(text, this)
                     : text;
 
-        return new StaticLayout(transformed, mTextPaint,
-                (int) Math.ceil(Layout.getDesiredWidth(transformed, mTextPaint)),
+        int width = (int) Math.ceil(Layout.getDesiredWidth(transformed, 0,
+                transformed.length(), mTextPaint, getTextDirectionHeuristic()));
+        return new StaticLayout(transformed, mTextPaint, width,
                 Layout.Alignment.ALIGN_NORMAL, 1.f, 0, true);
     }
 
@@ -1026,9 +1031,9 @@ public class Switch extends CompoundButton {
 
         if (newState != oldState) {
             playSoundEffect(SoundEffectConstants.CLICK);
-            setChecked(newState);
         }
-
+        // Always call setChecked so that the thumb is moved back to the correct edge
+        setChecked(newState);
         cancelSuperTouch(ev);
     }
 
@@ -1339,17 +1344,22 @@ public class Switch extends CompoundButton {
     protected void drawableStateChanged() {
         super.drawableStateChanged();
 
-        final int[] myDrawableState = getDrawableState();
+        final int[] state = getDrawableState();
+        boolean changed = false;
 
-        if (mThumbDrawable != null) {
-            mThumbDrawable.setState(myDrawableState);
+        final Drawable thumbDrawable = mThumbDrawable;
+        if (thumbDrawable != null && thumbDrawable.isStateful()) {
+            changed |= thumbDrawable.setState(state);
         }
 
-        if (mTrackDrawable != null) {
-            mTrackDrawable.setState(myDrawableState);
+        final Drawable trackDrawable = mTrackDrawable;
+        if (trackDrawable != null && trackDrawable.isStateful()) {
+            changed |= trackDrawable.setState(state);
         }
 
-        invalidate();
+        if (changed) {
+            invalidate();
+        }
     }
 
     @Override
@@ -1366,7 +1376,7 @@ public class Switch extends CompoundButton {
     }
 
     @Override
-    protected boolean verifyDrawable(Drawable who) {
+    protected boolean verifyDrawable(@NonNull Drawable who) {
         return super.verifyDrawable(who) || who == mThumbDrawable || who == mTrackDrawable;
     }
 
@@ -1382,7 +1392,7 @@ public class Switch extends CompoundButton {
             mTrackDrawable.jumpToCurrentState();
         }
 
-        if (mPositionAnimator != null && mPositionAnimator.isRunning()) {
+        if (mPositionAnimator != null && mPositionAnimator.isStarted()) {
             mPositionAnimator.end();
             mPositionAnimator = null;
         }
@@ -1396,6 +1406,17 @@ public class Switch extends CompoundButton {
     @Override
     public void onProvideStructure(ViewStructure structure) {
         super.onProvideStructure(structure);
+        onProvideAutoFillStructureForAssistOrAutofill(structure);
+    }
+
+    @Override
+    public void onProvideAutofillStructure(ViewStructure structure, int flags) {
+        super.onProvideAutofillStructure(structure, flags);
+        onProvideAutoFillStructureForAssistOrAutofill(structure);
+    }
+
+    // NOTE: currently there is no difference for Assist or AutoFill, so it doesn't take flags
+    private void onProvideAutoFillStructureForAssistOrAutofill(ViewStructure structure) {
         CharSequence switchText = isChecked() ? mTextOn : mTextOff;
         if (!TextUtils.isEmpty(switchText)) {
             CharSequence oldText = structure.getText();

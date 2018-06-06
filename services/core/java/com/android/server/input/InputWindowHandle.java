@@ -18,6 +18,7 @@ package com.android.server.input;
 
 import android.graphics.Region;
 import android.view.InputChannel;
+import android.view.IWindow;
 
 /**
  * Functions as a handle for a window that can receive input.
@@ -35,6 +36,9 @@ public final class InputWindowHandle {
 
     // The window manager's window state.
     public final Object windowState;
+
+    // The client window.
+    public final IWindow clientWindow;
 
     // The input channel associated with the window.
     public InputChannel inputChannel;
@@ -93,10 +97,23 @@ public final class InputWindowHandle {
     private native void nativeDispose();
 
     public InputWindowHandle(InputApplicationHandle inputApplicationHandle,
-            Object windowState, int displayId) {
+            Object windowState, IWindow clientWindow, int displayId) {
         this.inputApplicationHandle = inputApplicationHandle;
         this.windowState = windowState;
+        this.clientWindow = clientWindow;
         this.displayId = displayId;
+    }
+
+    @Override
+    public String toString() {
+        return new StringBuilder(name)
+                .append(", layer=").append(layer)
+                .append(", frame=[").append(frameLeft).append(",").append(frameTop).append(",")
+                        .append(frameRight).append(",").append(frameBottom).append("]")
+                .append(", touchableRegion=").append(touchableRegion)
+                .append(", visible=").append(visible)
+                .toString();
+
     }
 
     @Override

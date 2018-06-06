@@ -17,17 +17,16 @@
 package android.widget;
 
 import android.annotation.NonNull;
-import android.os.Build;
-import android.os.Build.VERSION_CODES;
-import android.os.Parcel;
-import android.os.Parcelable;
-import com.android.internal.R;
-
 import android.content.Context;
+import android.content.res.Configuration;
 import android.content.res.TypedArray;
 import android.graphics.Canvas;
 import android.graphics.Rect;
+import android.os.Build;
+import android.os.Build.VERSION_CODES;
 import android.os.Bundle;
+import android.os.Parcel;
+import android.os.Parcelable;
 import android.os.StrictMode;
 import android.util.AttributeSet;
 import android.util.Log;
@@ -46,28 +45,32 @@ import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.animation.AnimationUtils;
 
+import com.android.internal.R;
+
 import java.util.List;
 
 /**
- * Layout container for a view hierarchy that can be scrolled by the user,
- * allowing it to be larger than the physical display.  A ScrollView
- * is a {@link FrameLayout}, meaning you should place one child in it
- * containing the entire contents to scroll; this child may itself be a layout
- * manager with a complex hierarchy of objects.  A child that is often used
- * is a {@link LinearLayout} in a vertical orientation, presenting a vertical
- * array of top-level items that the user can scroll through.
- * <p>You should never use a ScrollView with a {@link ListView}, because
- * ListView takes care of its own vertical scrolling.  Most importantly, doing this
- * defeats all of the important optimizations in ListView for dealing with
- * large lists, since it effectively forces the ListView to display its entire
- * list of items to fill up the infinite container supplied by ScrollView.
- * <p>The {@link TextView} class also
- * takes care of its own scrolling, so does not require a ScrollView, but
- * using the two together is possible to achieve the effect of a text view
- * within a larger container.
+ * A view group that allows the view hierarchy placed within it to be scrolled.
+ * Scroll view may have only one direct child placed within it.
+ * To add multiple views within the scroll view, make
+ * the direct child you add a view group, for example {@link LinearLayout}, and
+ * place additional views within that LinearLayout.
  *
- * <p>ScrollView only supports vertical scrolling. For horizontal scrolling,
- * use {@link HorizontalScrollView}.
+ * <p>Scroll view supports vertical scrolling only. For horizontal scrolling,
+ * use {@link HorizontalScrollView} instead.</p>
+ *
+ * <p>Never add a {@link android.support.v7.widget.RecyclerView} or {@link ListView} to
+ * a scroll view. Doing so results in poor user interface performance and a poor user
+ * experience.</p>
+ *
+ * <p class="note">
+ * For vertical scrolling, consider {@link android.support.v4.widget.NestedScrollView}
+ * instead of scroll view which offers greater user interface flexibility and
+ * support for the material design scrolling patterns.</p>
+ *
+ * <p>To learn more about material design patterns for handling scrolling, see
+ * <a href="https://material.io/guidelines/patterns/scrolling-techniques.html#">
+ * Scrolling techniques</a>.</p>
  *
  * @attr ref android.R.styleable#ScrollView_fillViewport
  */
@@ -134,6 +137,8 @@ public class ScrollView extends FrameLayout {
     private int mOverscrollDistance;
     private int mOverflingDistance;
 
+    private float mVerticalScrollFactor;
+
     /**
      * ID of the active pointer. This is used to retain consistency during
      * drags/flings if multiple pointers are used.
@@ -186,6 +191,10 @@ public class ScrollView extends FrameLayout {
         setFillViewport(a.getBoolean(R.styleable.ScrollView_fillViewport, false));
 
         a.recycle();
+
+        if (context.getResources().getConfiguration().uiMode == Configuration.UI_MODE_TYPE_WATCH) {
+            setRevealOnFocusHint(false);
+        }
     }
 
     @Override
@@ -243,6 +252,7 @@ public class ScrollView extends FrameLayout {
         mMaximumVelocity = configuration.getScaledMaximumFlingVelocity();
         mOverscrollDistance = configuration.getScaledOverscrollDistance();
         mOverflingDistance = configuration.getScaledOverflingDistance();
+        mVerticalScrollFactor = configuration.getScaledVerticalScrollFactor();
     }
 
     @Override
@@ -350,24 +360,24 @@ public class ScrollView extends FrameLayout {
 
         if (getChildCount() > 0) {
             final View child = getChildAt(0);
-            final int height = getMeasuredHeight();
-            if (child.getMeasuredHeight() < height) {
-                final int widthPadding;
-                final int heightPadding;
-                final FrameLayout.LayoutParams lp = (LayoutParams) child.getLayoutParams();
-                final int targetSdkVersion = getContext().getApplicationInfo().targetSdkVersion;
-                if (targetSdkVersion >= VERSION_CODES.M) {
-                    widthPadding = mPaddingLeft + mPaddingRight + lp.leftMargin + lp.rightMargin;
-                    heightPadding = mPaddingTop + mPaddingBottom + lp.topMargin + lp.bottomMargin;
-                } else {
-                    widthPadding = mPaddingLeft + mPaddingRight;
-                    heightPadding = mPaddingTop + mPaddingBottom;
-                }
+            final int widthPadding;
+            final int heightPadding;
+            final int targetSdkVersion = getContext().getApplicationInfo().targetSdkVersion;
+            final FrameLayout.LayoutParams lp = (LayoutParams) child.getLayoutParams();
+            if (targetSdkVersion >= VERSION_CODES.M) {
+                widthPadding = mPaddingLeft + mPaddingRight + lp.leftMargin + lp.rightMargin;
+                heightPadding = mPaddingTop + mPaddingBottom + lp.topMargin + lp.bottomMargin;
+            } else {
+                widthPadding = mPaddingLeft + mPaddingRight;
+                heightPadding = mPaddingTop + mPaddingBottom;
+            }
 
+            final int desiredHeight = getMeasuredHeight() - heightPadding;
+            if (child.getMeasuredHeight() < desiredHeight) {
                 final int childWidthMeasureSpec = getChildMeasureSpec(
                         widthMeasureSpec, widthPadding, lp.width);
                 final int childHeightMeasureSpec = MeasureSpec.makeMeasureSpec(
-                        height - heightPadding, MeasureSpec.EXACTLY);
+                        desiredHeight, MeasureSpec.EXACTLY);
                 child.measure(childWidthMeasureSpec, childHeightMeasureSpec);
             }
         }
@@ -489,6 +499,10 @@ public class ScrollView extends FrameLayout {
             return true;
         }
 
+        if (super.onInterceptTouchEvent(ev)) {
+            return true;
+        }
+
         /*
          * Don't try to intercept touch if we can't scroll anyway.
          */
@@ -557,10 +571,12 @@ public class ScrollView extends FrameLayout {
                 initOrResetVelocityTracker();
                 mVelocityTracker.addMovement(ev);
                 /*
-                * If being flinged and user touches the screen, initiate drag;
-                * otherwise don't.  mScroller.isFinished should be false when
-                * being flinged.
+                 * If being flinged and user touches the screen, initiate drag;
+                 * otherwise don't. mScroller.isFinished should be false when
+                 * being flinged. We need to call computeScrollOffset() first so that
+                 * isFinished() is correct.
                 */
+                mScroller.computeScrollOffset();
                 mIsBeingDragged = !mScroller.isFinished();
                 if (mIsBeingDragged && mScrollStrictSpan == null) {
                     mScrollStrictSpan = StrictMode.enterCriticalSpan("ScrollView-scroll");
@@ -771,30 +787,35 @@ public class ScrollView extends FrameLayout {
 
     @Override
     public boolean onGenericMotionEvent(MotionEvent event) {
-        if ((event.getSource() & InputDevice.SOURCE_CLASS_POINTER) != 0) {
-            switch (event.getAction()) {
-                case MotionEvent.ACTION_SCROLL: {
-                    if (!mIsBeingDragged) {
-                        final float vscroll = event.getAxisValue(MotionEvent.AXIS_VSCROLL);
-                        if (vscroll != 0) {
-                            final int delta = (int) (vscroll * getVerticalScrollFactor());
-                            final int range = getScrollRange();
-                            int oldScrollY = mScrollY;
-                            int newScrollY = oldScrollY - delta;
-                            if (newScrollY < 0) {
-                                newScrollY = 0;
-                            } else if (newScrollY > range) {
-                                newScrollY = range;
-                            }
-                            if (newScrollY != oldScrollY) {
-                                super.scrollTo(mScrollX, newScrollY);
-                                return true;
-                            }
-                        }
+        switch (event.getAction()) {
+            case MotionEvent.ACTION_SCROLL:
+                final float axisValue;
+                if (event.isFromSource(InputDevice.SOURCE_CLASS_POINTER)) {
+                    axisValue = event.getAxisValue(MotionEvent.AXIS_VSCROLL);
+                } else if (event.isFromSource(InputDevice.SOURCE_ROTARY_ENCODER)) {
+                    axisValue = event.getAxisValue(MotionEvent.AXIS_SCROLL);
+                } else {
+                    axisValue = 0;
+                }
+
+                final int delta = Math.round(axisValue * mVerticalScrollFactor);
+                if (delta != 0) {
+                    final int range = getScrollRange();
+                    int oldScrollY = mScrollY;
+                    int newScrollY = oldScrollY - delta;
+                    if (newScrollY < 0) {
+                        newScrollY = 0;
+                    } else if (newScrollY > range) {
+                        newScrollY = range;
+                    }
+                    if (newScrollY != oldScrollY) {
+                        super.scrollTo(mScrollX, newScrollY);
+                        return true;
                     }
                 }
-            }
+                break;
         }
+
         return super.onGenericMotionEvent(event);
     }
 
@@ -1262,9 +1283,10 @@ public class ScrollView extends FrameLayout {
 
         childWidthMeasureSpec = getChildMeasureSpec(parentWidthMeasureSpec, mPaddingLeft
                 + mPaddingRight, lp.width);
-
+        final int verticalPadding = mPaddingTop + mPaddingBottom;
         childHeightMeasureSpec = MeasureSpec.makeSafeMeasureSpec(
-                MeasureSpec.getSize(parentHeightMeasureSpec), MeasureSpec.UNSPECIFIED);
+                Math.max(0, MeasureSpec.getSize(parentHeightMeasureSpec) - verticalPadding),
+                MeasureSpec.UNSPECIFIED);
 
         child.measure(childWidthMeasureSpec, childHeightMeasureSpec);
     }
@@ -1277,8 +1299,11 @@ public class ScrollView extends FrameLayout {
         final int childWidthMeasureSpec = getChildMeasureSpec(parentWidthMeasureSpec,
                 mPaddingLeft + mPaddingRight + lp.leftMargin + lp.rightMargin
                         + widthUsed, lp.width);
+        final int usedTotal = mPaddingTop + mPaddingBottom + lp.topMargin + lp.bottomMargin +
+                heightUsed;
         final int childHeightMeasureSpec = MeasureSpec.makeSafeMeasureSpec(
-                MeasureSpec.getSize(parentHeightMeasureSpec), MeasureSpec.UNSPECIFIED);
+                Math.max(0, MeasureSpec.getSize(parentHeightMeasureSpec) - usedTotal),
+                MeasureSpec.UNSPECIFIED);
 
         child.measure(childWidthMeasureSpec, childHeightMeasureSpec);
     }
@@ -1445,11 +1470,13 @@ public class ScrollView extends FrameLayout {
 
     @Override
     public void requestChildFocus(View child, View focused) {
-        if (!mIsLayoutDirty) {
-            scrollToChild(focused);
-        } else {
-            // The child may not be laid out yet, we can't compute the scroll yet
-            mChildToScrollTo = focused;
+        if (focused != null && focused.getRevealOnFocusHint()) {
+            if (!mIsLayoutDirty) {
+                scrollToChild(focused);
+            } else {
+                // The child may not be laid out yet, we can't compute the scroll yet
+                mChildToScrollTo = focused;
+            }
         }
         super.requestChildFocus(child, focused);
     }
@@ -1850,7 +1877,7 @@ public class ScrollView extends FrameLayout {
 
         @Override
         public String toString() {
-            return "HorizontalScrollView.SavedState{"
+            return "ScrollView.SavedState{"
                     + Integer.toHexString(System.identityHashCode(this))
                     + " scrollPosition=" + scrollPosition + "}";
         }

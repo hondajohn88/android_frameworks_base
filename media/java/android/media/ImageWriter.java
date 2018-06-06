@@ -17,18 +17,23 @@
 package android.media;
 
 import android.graphics.ImageFormat;
+import android.graphics.PixelFormat;
 import android.graphics.Rect;
+import android.hardware.camera2.utils.SurfaceUtils;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
+import android.util.Size;
 import android.view.Surface;
+
+import dalvik.system.VMRuntime;
 
 import java.lang.ref.WeakReference;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.NioUtils;
-import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * <p>
@@ -83,8 +88,10 @@ public class ImageWriter implements AutoCloseable {
     private int mWriterFormat;
 
     private final int mMaxImages;
-    // Keep track of the currently dequeued Image.
-    private List<Image> mDequeuedImages = new ArrayList<Image>();
+    // Keep track of the currently dequeued Image. This need to be thread safe as the images
+    // could be closed by different threads (e.g., application thread and GC thread).
+    private List<Image> mDequeuedImages = new CopyOnWriteArrayList<>();
+    private int mEstimatedNativeAllocBytes;
 
     /**
      * <p>
@@ -112,22 +119,87 @@ public class ImageWriter implements AutoCloseable {
      * @return a new ImageWriter instance.
      */
     public static ImageWriter newInstance(Surface surface, int maxImages) {
-        return new ImageWriter(surface, maxImages);
+        return new ImageWriter(surface, maxImages, ImageFormat.UNKNOWN);
+    }
+
+    /**
+     * <p>
+     * Create a new ImageWriter with given number of max Images and format.
+     * </p>
+     * <p>
+     * The {@code maxImages} parameter determines the maximum number of
+     * {@link Image} objects that can be be dequeued from the
+     * {@code ImageWriter} simultaneously. Requesting more buffers will use up
+     * more memory, so it is important to use only the minimum number necessary.
+     * </p>
+     * <p>
+     * The format specifies the image format of this ImageWriter. The format
+     * from the {@code surface} will be overridden with this format. For example,
+     * if the surface is obtained from a {@link android.graphics.SurfaceTexture}, the default
+     * format may be {@link PixelFormat#RGBA_8888}. If the application creates an ImageWriter
+     * with this surface and {@link ImageFormat#PRIVATE}, this ImageWriter will be able to operate
+     * with {@link ImageFormat#PRIVATE} Images.
+     * </p>
+     * <p>
+     * Note that the consumer end-point may or may not be able to support Images with different
+     * format, for such case, the application should only use this method if the consumer is able
+     * to consume such images.
+     * </p>
+     * <p>
+     * The input Image size depends on the Surface that is provided by
+     * the downstream consumer end-point.
+     * </p>
+     *
+     * @param surface The destination Surface this writer produces Image data
+     *            into.
+     * @param maxImages The maximum number of Images the user will want to
+     *            access simultaneously for producing Image data. This should be
+     *            as small as possible to limit memory use. Once maxImages
+     *            Images are dequeued by the user, one of them has to be queued
+     *            back before a new Image can be dequeued for access via
+     *            {@link #dequeueInputImage()}.
+     * @param format The format of this ImageWriter. It can be any valid format specified by
+     *            {@link ImageFormat} or {@link PixelFormat}.
+     *
+     * @return a new ImageWriter instance.
+     * @hide
+     */
+    public static ImageWriter newInstance(Surface surface, int maxImages, int format) {
+        if (!ImageFormat.isPublicFormat(format) && !PixelFormat.isPublicFormat(format)) {
+            throw new IllegalArgumentException("Invalid format is specified: " + format);
+        }
+        return new ImageWriter(surface, maxImages, format);
     }
 
     /**
      * @hide
      */
-    protected ImageWriter(Surface surface, int maxImages) {
+    protected ImageWriter(Surface surface, int maxImages, int format) {
         if (surface == null || maxImages < 1) {
             throw new IllegalArgumentException("Illegal input argument: surface " + surface
                     + ", maxImages: " + maxImages);
         }
 
         mMaxImages = maxImages;
+
+        if (format == ImageFormat.UNKNOWN) {
+            format = SurfaceUtils.getSurfaceFormat(surface);
+        }
         // Note that the underlying BufferQueue is working in synchronous mode
         // to avoid dropping any buffers.
-        mNativeContext = nativeInit(new WeakReference<ImageWriter>(this), surface, maxImages);
+        mNativeContext = nativeInit(new WeakReference<>(this), surface, maxImages, format);
+
+        // Estimate the native buffer allocation size and register it so it gets accounted for
+        // during GC. Note that this doesn't include the buffers required by the buffer queue
+        // itself and the buffers requested by the producer.
+        // Only include memory for 1 buffer, since actually accounting for the memory used is
+        // complex, and 1 buffer is enough for the VM to treat the ImageWriter as being of some
+        // size.
+        Size surfSize = SurfaceUtils.getSurfaceSize(surface);
+        mEstimatedNativeAllocBytes =
+                ImageUtils.getEstimatedNativeAllocBytes(surfSize.getWidth(),surfSize.getHeight(),
+                        format, /*buffer count*/ 1);
+        VMRuntime.getRuntime().registerNativeAllocation(mEstimatedNativeAllocBytes);
     }
 
     /**
@@ -287,28 +359,14 @@ public class ImageWriter implements AutoCloseable {
             }
 
             ImageReader prevOwner = (ImageReader) image.getOwner();
-            // Only do the image attach for PRIVATE format images for now. Do the image
-            // copy for other formats. TODO: use attach for other formats to
-            // improve the performance, and fall back to copy when attach/detach
-            // fails. Right now, detach is guaranteed to fail as the buffer is
-            // locked when ImageReader#acquireNextImage is called. See bug 19962027.
-            if (image.getFormat() == ImageFormat.PRIVATE) {
-                prevOwner.detachImage(image);
-                attachAndQueueInputImage(image);
-                // This clears the native reference held by the original owner.
-                // When this Image is detached later by this ImageWriter, the
-                // native memory won't be leaked.
-                image.close();
-                return;
-            } else {
-                Image inputImage = dequeueInputImage();
-                inputImage.setTimestamp(image.getTimestamp());
-                inputImage.setCropRect(image.getCropRect());
-                ImageUtils.imageCopy(image, inputImage);
-                image.close();
-                image = inputImage;
-                ownedByMe = true;
-            }
+
+            prevOwner.detachImage(image);
+            attachAndQueueInputImage(image);
+            // This clears the native reference held by the original owner.
+            // When this Image is detached later by this ImageWriter, the
+            // native memory won't be leaked.
+            image.close();
+            return;
         }
 
         Rect crop = image.getCropRect();
@@ -432,6 +490,11 @@ public class ImageWriter implements AutoCloseable {
         mDequeuedImages.clear();
         nativeClose(mNativeContext);
         mNativeContext = 0;
+
+        if (mEstimatedNativeAllocBytes > 0) {
+            VMRuntime.getRuntime().registerNativeFree(mEstimatedNativeAllocBytes);
+            mEstimatedNativeAllocBytes = 0;
+        }
     }
 
     @Override
@@ -569,9 +632,8 @@ public class ImageWriter implements AutoCloseable {
         }
 
         WriterSurfaceImage wi = (WriterSurfaceImage) image;
-
         if (!wi.mIsImageValid) {
-            throw new IllegalStateException("Image is invalid");
+            return;
         }
 
         /**
@@ -728,8 +790,8 @@ public class ImageWriter implements AutoCloseable {
             final private int mPixelStride;
             final private int mRowStride;
 
-            // SurfacePlane instance is created by native code when a new
-            // SurfaceImage is created
+            // SurfacePlane instance is created by native code when SurfaceImage#getPlanes() is
+            // called
             private SurfacePlane(int rowStride, int pixelStride, ByteBuffer buffer) {
                 mRowStride = rowStride;
                 mPixelStride = pixelStride;
@@ -775,7 +837,7 @@ public class ImageWriter implements AutoCloseable {
 
         }
 
-        // this will create the SurfacePlane object and fill the information
+        // Create the SurfacePlane object and fill the information
         private synchronized native SurfacePlane[] nativeCreatePlanes(int numPlanes, int writerFmt);
 
         private synchronized native int nativeGetWidth();
@@ -786,7 +848,8 @@ public class ImageWriter implements AutoCloseable {
     }
 
     // Native implemented ImageWriter methods.
-    private synchronized native long nativeInit(Object weakSelf, Surface surface, int maxImgs);
+    private synchronized native long nativeInit(Object weakSelf, Surface surface, int maxImgs,
+            int format);
 
     private synchronized native void nativeClose(long nativeCtx);
 

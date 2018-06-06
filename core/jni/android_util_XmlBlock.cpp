@@ -18,7 +18,7 @@
 #define LOG_TAG "XmlBlock"
 
 #include "jni.h"
-#include "JNIHelp.h"
+#include <nativehelper/JNIHelp.h>
 #include <core_jni_helpers.h>
 #include <androidfw/AssetManager.h>
 #include <androidfw/ResourceTypes.h>
@@ -364,7 +364,7 @@ static void android_content_XmlBlock_nativeDestroy(JNIEnv* env, jobject clazz,
 /*
  * JNI registration.
  */
-static JNINativeMethod gXmlBlockMethods[] = {
+static const JNINativeMethod gXmlBlockMethods[] = {
     /* name, signature, funcPtr */
     { "nativeCreate",               "([BII)J",
             (void*) android_content_XmlBlock_nativeCreate },
@@ -372,6 +372,13 @@ static JNINativeMethod gXmlBlockMethods[] = {
             (void*) android_content_XmlBlock_nativeGetStringBlock },
     { "nativeCreateParseState",     "(J)J",
             (void*) android_content_XmlBlock_nativeCreateParseState },
+    { "nativeDestroyParseState",    "(J)V",
+            (void*) android_content_XmlBlock_nativeDestroyParseState },
+    { "nativeDestroy",              "(J)V",
+            (void*) android_content_XmlBlock_nativeDestroy },
+
+    // ------------------- @FastNative ----------------------
+
     { "nativeNext",                 "(J)I",
             (void*) android_content_XmlBlock_nativeNext },
     { "nativeGetNamespace",         "(J)I",
@@ -404,10 +411,6 @@ static JNINativeMethod gXmlBlockMethods[] = {
             (void*) android_content_XmlBlock_nativeGetClassAttribute },
     { "nativeGetStyleAttribute",   "(J)I",
             (void*) android_content_XmlBlock_nativeGetStyleAttribute },
-    { "nativeDestroyParseState",    "(J)V",
-            (void*) android_content_XmlBlock_nativeDestroyParseState },
-    { "nativeDestroy",              "(J)V",
-            (void*) android_content_XmlBlock_nativeDestroy },
 };
 
 int register_android_content_XmlBlock(JNIEnv* env)

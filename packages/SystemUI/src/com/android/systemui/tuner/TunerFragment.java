@@ -16,85 +16,102 @@
 package com.android.systemui.tuner;
 
 import android.app.AlertDialog;
-import android.app.FragmentTransaction;
+import android.app.Dialog;
+import android.app.DialogFragment;
 import android.content.DialogInterface;
-import android.content.DialogInterface.OnClickListener;
-import android.database.ContentObserver;
-import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
-import android.os.Handler;
-import android.preference.Preference;
-import android.preference.Preference.OnPreferenceChangeListener;
-import android.preference.Preference.OnPreferenceClickListener;
-import android.preference.PreferenceFragment;
-import android.preference.PreferenceGroup;
-import android.preference.SwitchPreference;
 import android.provider.Settings;
-import android.provider.Settings.System;
+import android.support.v14.preference.PreferenceFragment;
+import android.support.v7.preference.Preference;
 import android.view.Menu;
 import android.view.MenuInflater;
 import android.view.MenuItem;
 
+import com.android.internal.hardware.AmbientDisplayConfiguration;
 import com.android.internal.logging.MetricsLogger;
+import com.android.internal.logging.nano.MetricsProto.MetricsEvent;
 import com.android.systemui.R;
-import com.android.systemui.statusbar.phone.StatusBarIconController;
-import com.android.systemui.tuner.TunerService.Tunable;
+import com.android.systemui.plugins.PluginPrefs;
 
 public class TunerFragment extends PreferenceFragment {
 
-    public static final String TAG = "TunerFragment";
+    private static final String TAG = "TunerFragment";
 
-    private final SettingObserver mSettingObserver = new SettingObserver();
+    private static final String KEY_BATTERY_PCT = "battery_pct";
+    private static final String KEY_PLUGINS = "plugins";
+    private static final CharSequence KEY_DOZE = "doze";
 
+    public static final String SETTING_SEEN_TUNER_WARNING = "seen_tuner_warning";
+
+    private static final String WARNING_TAG = "tuner_warning";
+    private static final String[] DEBUG_ONLY = new String[] {
+            "nav_bar",
+            "lockscreen",
+            "picture_in_picture",
+    };
+
+    private static final int MENU_REMOVE = Menu.FIRST + 1;
+
+    @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        addPreferencesFromResource(R.xml.tuner_prefs);
-        getActivity().getActionBar().setDisplayHomeAsUpEnabled(true);
         setHasOptionsMenu(true);
+    }
+
+    @Override
+    public void onActivityCreated(Bundle savedInstanceState) {
+        super.onActivityCreated(savedInstanceState);
+        getActivity().getActionBar().setDisplayHomeAsUpEnabled(true);
+    }
+
+    @Override
+    public void onCreatePreferences(Bundle savedInstanceState, String rootKey) {
+        addPreferencesFromResource(R.xml.tuner_prefs);
+        if (!PluginPrefs.hasPlugins(getContext())) {
+            getPreferenceScreen().removePreference(findPreference(KEY_PLUGINS));
+        }
+        if (!alwaysOnAvailable()) {
+            getPreferenceScreen().removePreference(findPreference(KEY_DOZE));
+        }
+        if (!Build.IS_DEBUGGABLE) {
+            for (int i = 0; i < DEBUG_ONLY.length; i++) {
+                Preference preference = findPreference(DEBUG_ONLY[i]);
+                if (preference != null) getPreferenceScreen().removePreference(preference);
+            }
+        }
+
+        if (Settings.Secure.getInt(getContext().getContentResolver(), SETTING_SEEN_TUNER_WARNING,
+                0) == 0) {
+            if (getFragmentManager().findFragmentByTag(WARNING_TAG) == null) {
+                new TunerWarningFragment().show(getFragmentManager(), WARNING_TAG);
+            }
+        }
+    }
+
+    private boolean alwaysOnAvailable() {
+        return new AmbientDisplayConfiguration(getContext()).alwaysOnAvailable();
     }
 
     @Override
     public void onResume() {
         super.onResume();
+        getActivity().setTitle(R.string.system_ui_tuner);
 
-        registerPrefs(getPreferenceScreen());
-        MetricsLogger.visibility(getContext(), MetricsLogger.TUNER, true);
+        MetricsLogger.visibility(getContext(), MetricsEvent.TUNER, true);
     }
 
     @Override
     public void onPause() {
         super.onPause();
-        getContext().getContentResolver().unregisterContentObserver(mSettingObserver);
 
-        unregisterPrefs(getPreferenceScreen());
-        MetricsLogger.visibility(getContext(), MetricsLogger.TUNER, false);
+        MetricsLogger.visibility(getContext(), MetricsEvent.TUNER, false);
     }
 
-    private void registerPrefs(PreferenceGroup group) {
-        TunerService tunerService = TunerService.get(getContext());
-        final int N = group.getPreferenceCount();
-        for (int i = 0; i < N; i++) {
-            Preference pref = group.getPreference(i);
-            if (pref instanceof StatusBarSwitch) {
-                tunerService.addTunable((Tunable) pref, StatusBarIconController.ICON_BLACKLIST);
-            } else if (pref instanceof PreferenceGroup) {
-                registerPrefs((PreferenceGroup) pref);
-            }
-        }
-    }
-
-    private void unregisterPrefs(PreferenceGroup group) {
-        TunerService tunerService = TunerService.get(getContext());
-        final int N = group.getPreferenceCount();
-        for (int i = 0; i < N; i++) {
-            Preference pref = group.getPreference(i);
-            if (pref instanceof Tunable) {
-                tunerService.removeTunable((Tunable) pref);
-            } else if (pref instanceof PreferenceGroup) {
-                registerPrefs((PreferenceGroup) pref);
-            }
-        }
+    @Override
+    public void onCreateOptionsMenu(Menu menu, MenuInflater inflater) {
+        menu.add(Menu.NONE, MENU_REMOVE, Menu.NONE, R.string.remove_from_settings);
     }
 
     @Override
@@ -103,18 +120,33 @@ public class TunerFragment extends PreferenceFragment {
             case android.R.id.home:
                 getActivity().finish();
                 return true;
+            case MENU_REMOVE:
+                TunerService.showResetRequest(getContext(), new Runnable() {
+                    @Override
+                    public void run() {
+                        if (getActivity() != null) {
+                            getActivity().finish();
+                        }
+                    }
+                });
+                return true;
         }
         return super.onOptionsItemSelected(item);
     }
 
-    private final class SettingObserver extends ContentObserver {
-        public SettingObserver() {
-            super(new Handler());
-        }
-
+    public static class TunerWarningFragment extends DialogFragment {
         @Override
-        public void onChange(boolean selfChange, Uri uri, int userId) {
-            super.onChange(selfChange, uri, userId);
+        public Dialog onCreateDialog(Bundle savedInstanceState) {
+            return new AlertDialog.Builder(getContext())
+                    .setTitle(R.string.tuner_warning_title)
+                    .setMessage(R.string.tuner_warning)
+                    .setPositiveButton(R.string.got_it, new DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(DialogInterface dialog, int which) {
+                            Settings.Secure.putInt(getContext().getContentResolver(),
+                                    SETTING_SEEN_TUNER_WARNING, 1);
+                        }
+                    }).show();
         }
     }
 }

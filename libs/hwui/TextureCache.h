@@ -19,13 +19,20 @@
 
 #include <SkBitmap.h>
 
+#include <cutils/compiler.h>
+
 #include <utils/LruCache.h>
 #include <utils/Mutex.h>
-#include <utils/Vector.h>
 
 #include "Debug.h"
 
+#include <vector>
+#include <unordered_map>
+
 namespace android {
+
+class Bitmap;
+
 namespace uirenderer {
 
 class Texture;
@@ -44,8 +51,6 @@ class Texture;
 ///////////////////////////////////////////////////////////////////////////////
 // Classes
 ///////////////////////////////////////////////////////////////////////////////
-
-class AssetAtlas;
 
 /**
  * A simple LRU texture cache. The cache has a maximum size expressed in bytes.
@@ -73,43 +78,32 @@ public:
      * acquired for the bitmap, false otherwise. If a Texture was acquired it is
      * marked as in use.
      */
-    bool prefetchAndMarkInUse(void* ownerToken, const SkBitmap* bitmap);
+    bool prefetchAndMarkInUse(void* ownerToken, Bitmap* bitmap);
 
     /**
-     * Returns the texture associated with the specified bitmap from either within the cache, or
-     * the AssetAtlas. If the texture cannot be found in the cache, a new texture is generated.
+     * Attempts to precache the SkBitmap. Returns true if a Texture was successfully
+     * acquired for the bitmap, false otherwise. Does not mark the Texture
+     * as in use and won't update currently in-use Textures.
      */
-    Texture* get(const SkBitmap* bitmap) {
-        return get(bitmap, AtlasUsageType::Use);
-    }
+    bool prefetch(Bitmap* bitmap);
 
     /**
-     * Returns the texture associated with the specified bitmap. If the texture cannot be found in
-     * the cache, a new texture is generated, even if it resides in the AssetAtlas.
+     * Returns the texture associated with the specified bitmap from within the cache.
+     * If the texture cannot be found in the cache, a new texture is generated.
      */
-    Texture* getAndBypassAtlas(const SkBitmap* bitmap) {
-        return get(bitmap, AtlasUsageType::Bypass);
-    }
+    Texture* get(Bitmap* bitmap);
 
     /**
-     * Removes the texture associated with the specified pixelRef. This is meant
-     * to be called from threads that are not the EGL context thread.
+     * Removes the texture associated with the specified pixelRef. Must be called from RenderThread
+     * Returns true if a texture was destroyed, false if no texture with that id was found
      */
-    ANDROID_API void releaseTexture(uint32_t pixelRefStableID);
-    /**
-     * Process deferred removals.
-     */
-    void clearGarbage();
+    bool destroyTexture(uint32_t pixelRefStableID);
 
     /**
      * Clears the cache. This causes all textures to be deleted.
      */
     void clear();
 
-    /**
-     * Sets the maximum size of the cache in bytes.
-     */
-    void setMaxSize(uint32_t maxSize);
     /**
      * Returns the maximum size of the cache in bytes.
      */
@@ -124,51 +118,24 @@ public:
      * is defined by the flush rate.
      */
     void flush();
-    /**
-     * Indicates the percentage of the cache to retain when a
-     * memory trim is requested (see Caches::flush).
-     */
-    void setFlushRate(float flushRate);
-
-    void setAssetAtlas(AssetAtlas* assetAtlas);
 
 private:
-    enum class AtlasUsageType {
-        Use,
-        Bypass,
-    };
+    bool canMakeTextureFromBitmap(Bitmap* bitmap);
 
-    bool canMakeTextureFromBitmap(const SkBitmap* bitmap);
-
-    Texture* get(const SkBitmap* bitmap, AtlasUsageType atlasUsageType);
-    Texture* getCachedTexture(const SkBitmap* bitmap, AtlasUsageType atlasUsageType);
-
-    /**
-     * Generates the texture from a bitmap into the specified texture structure.
-     *
-     * @param regenerate If true, the bitmap data is reuploaded into the texture, but
-     *        no new texture is generated.
-     */
-    void generateTexture(const SkBitmap* bitmap, Texture* texture, bool regenerate = false);
-
-    void uploadLoFiTexture(bool resize, const SkBitmap* bitmap, uint32_t width, uint32_t height);
-    void uploadToTexture(bool resize, GLenum format, GLsizei stride, GLsizei bpp,
-            GLsizei width, GLsizei height, GLenum type, const GLvoid * data);
+    Texture* getCachedTexture(Bitmap* bitmap);
+    Texture* createTexture(Bitmap* bitmap);
 
     LruCache<uint32_t, Texture*> mCache;
 
     uint32_t mSize;
-    uint32_t mMaxSize;
+    const uint32_t mMaxSize;
     GLint mMaxTextureSize;
 
-    float mFlushRate;
+    const float mFlushRate;
 
     bool mDebugEnabled;
 
-    Vector<uint32_t> mGarbage;
-    mutable Mutex mLock;
-
-    AssetAtlas* mAssetAtlas;
+    std::unordered_map<uint32_t, std::unique_ptr<Texture>> mHardwareTextures;
 }; // class TextureCache
 
 }; // namespace uirenderer

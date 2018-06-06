@@ -18,7 +18,7 @@
 #include "utils/Log.h"
 
 #include "jni.h"
-#include "JNIHelp.h"
+#include <nativehelper/JNIHelp.h>
 #include "android_runtime/AndroidRuntime.h"
 #include "android_runtime/Log.h"
 
@@ -118,7 +118,7 @@ static jint android_server_UsbDeviceManager_getAudioMode(JNIEnv* /* env */, jobj
     return result;
 }
 
-static JNINativeMethod method_table[] = {
+static const JNINativeMethod method_table[] = {
     { "nativeGetAccessoryStrings",  "()[Ljava/lang/String;",
                                     (void*)android_server_UsbDeviceManager_getAccessoryStrings },
     { "nativeOpenAccessory",        "()Landroid/os/ParcelFileDescriptor;",

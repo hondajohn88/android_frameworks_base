@@ -16,6 +16,8 @@
 
 package android.printservice;
 
+import android.annotation.NonNull;
+import android.annotation.SystemApi;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.pm.PackageManager;
@@ -46,6 +48,7 @@ import java.io.IOException;
  *
  * @hide
  */
+@SystemApi
 public final class PrintServiceInfo implements Parcelable {
 
     private static final String LOG_TAG = PrintServiceInfo.class.getSimpleName();
@@ -53,6 +56,8 @@ public final class PrintServiceInfo implements Parcelable {
     private static final String TAG_PRINT_SERVICE = "print-service";
 
     private final String mId;
+
+    private boolean mIsEnabled;
 
     private final ResolveInfo mResolveInfo;
 
@@ -69,6 +74,7 @@ public final class PrintServiceInfo implements Parcelable {
      */
     public PrintServiceInfo(Parcel parcel) {
         mId = parcel.readString();
+        mIsEnabled = parcel.readByte() != 0;
         mResolveInfo = parcel.readParcelable(null);
         mSettingsActivityName = parcel.readString();
         mAddPrintersActivityName = parcel.readString();
@@ -82,6 +88,8 @@ public final class PrintServiceInfo implements Parcelable {
      * @param settingsActivityName Optional settings activity name.
      * @param addPrintersActivityName Optional add printers activity name.
      * @param advancedPrintOptionsActivityName Optional advanced print options activity.
+     *
+     * @hide
      */
     public PrintServiceInfo(ResolveInfo resolveInfo, String settingsActivityName,
             String addPrintersActivityName, String advancedPrintOptionsActivityName) {
@@ -94,14 +102,25 @@ public final class PrintServiceInfo implements Parcelable {
     }
 
     /**
+     * Return the component name for this print service.
+     *
+     * @return The component name for this print service.
+     */
+    public @NonNull ComponentName getComponentName() {
+        return new ComponentName(mResolveInfo.serviceInfo.packageName,
+                mResolveInfo.serviceInfo.name);
+    }
+
+    /**
      * Creates a new instance.
      *
-     * @param resolveInfo The service resolve info.
      * @param context Context for accessing resources.
-     * @throws XmlPullParserException If a XML parsing error occurs.
-     * @throws IOException If a I/O error occurs.
+     * @param resolveInfo The service resolve info.
+     * @return The created instance.
+     *
+     * @hide
      */
-    public static PrintServiceInfo create(ResolveInfo resolveInfo, Context context) {
+    public static PrintServiceInfo create(Context context, ResolveInfo resolveInfo) {
         String settingsActivityName = null;
         String addPrintersActivityName = null;
         String advancedPrintOptionsActivityName = null;
@@ -164,15 +183,41 @@ public final class PrintServiceInfo implements Parcelable {
      * </p>
      *
      * @return The id.
+     *
+     * @hide
      */
     public String getId() {
         return mId;
     }
 
     /**
+     * If the service was enabled when it was read from the system.
+     *
+     * @return The id.
+     *
+     * @hide
+     */
+    public boolean isEnabled() {
+        return mIsEnabled;
+    }
+
+    /**
+     * Mark a service as enabled or not
+     *
+     * @param isEnabled If the service should be marked as enabled.
+     *
+     * @hide
+     */
+    public void setIsEnabled(boolean isEnabled) {
+        mIsEnabled = isEnabled;
+    }
+
+    /**
      * The service {@link ResolveInfo}.
      *
      * @return The info.
+     *
+     * @hide
      */
     public ResolveInfo getResolveInfo() {
         return mResolveInfo;
@@ -186,6 +231,8 @@ public final class PrintServiceInfo implements Parcelable {
      * </p>
      *
      * @return The settings activity name.
+     *
+     * @hide
      */
     public String getSettingsActivityName() {
         return mSettingsActivityName;
@@ -199,6 +246,8 @@ public final class PrintServiceInfo implements Parcelable {
      * </p>
      *
      * @return The add printers activity name.
+     *
+     * @hide
      */
     public String getAddPrintersActivityName() {
         return mAddPrintersActivityName;
@@ -212,6 +261,8 @@ public final class PrintServiceInfo implements Parcelable {
      * </p>
      *
      * @return The advanced print options activity name.
+     *
+     * @hide
      */
     public String getAdvancedOptionsActivityName() {
         return mAdvancedPrintOptionsActivityName;
@@ -220,12 +271,15 @@ public final class PrintServiceInfo implements Parcelable {
     /**
      * {@inheritDoc}
      */
+    @Override
     public int describeContents() {
         return 0;
     }
 
+    @Override
     public void writeToParcel(Parcel parcel, int flagz) {
         parcel.writeString(mId);
+        parcel.writeByte((byte)(mIsEnabled ? 1 : 0));
         parcel.writeParcelable(mResolveInfo, 0);
         parcel.writeString(mSettingsActivityName);
         parcel.writeString(mAddPrintersActivityName);
@@ -264,6 +318,7 @@ public final class PrintServiceInfo implements Parcelable {
         StringBuilder builder = new StringBuilder();
         builder.append("PrintServiceInfo{");
         builder.append("id=").append(mId);
+        builder.append("isEnabled=").append(mIsEnabled);
         builder.append(", resolveInfo=").append(mResolveInfo);
         builder.append(", settingsActivityName=").append(mSettingsActivityName);
         builder.append(", addPrintersActivityName=").append(mAddPrintersActivityName);
@@ -275,10 +330,12 @@ public final class PrintServiceInfo implements Parcelable {
 
     public static final Parcelable.Creator<PrintServiceInfo> CREATOR =
             new Parcelable.Creator<PrintServiceInfo>() {
+        @Override
         public PrintServiceInfo createFromParcel(Parcel parcel) {
             return new PrintServiceInfo(parcel);
         }
 
+        @Override
         public PrintServiceInfo[] newArray(int size) {
             return new PrintServiceInfo[size];
         }

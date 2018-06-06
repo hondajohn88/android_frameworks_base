@@ -16,6 +16,7 @@
 package android.media;
 
 import android.annotation.NonNull;
+import android.annotation.StringDef;
 import android.content.ContentResolver;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -30,6 +31,8 @@ import android.util.ArrayMap;
 import android.util.Log;
 import android.util.SparseArray;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.Set;
 
 /**
@@ -37,6 +40,40 @@ import java.util.Set;
  */
 public final class MediaMetadata implements Parcelable {
     private static final String TAG = "MediaMetadata";
+
+    /**
+     * @hide
+     */
+    @StringDef({METADATA_KEY_TITLE, METADATA_KEY_ARTIST, METADATA_KEY_ALBUM, METADATA_KEY_AUTHOR,
+            METADATA_KEY_WRITER, METADATA_KEY_COMPOSER, METADATA_KEY_COMPILATION,
+            METADATA_KEY_DATE, METADATA_KEY_GENRE, METADATA_KEY_ALBUM_ARTIST, METADATA_KEY_ART_URI,
+            METADATA_KEY_ALBUM_ART_URI, METADATA_KEY_DISPLAY_TITLE, METADATA_KEY_DISPLAY_SUBTITLE,
+            METADATA_KEY_DISPLAY_DESCRIPTION, METADATA_KEY_DISPLAY_ICON_URI,
+            METADATA_KEY_MEDIA_ID, METADATA_KEY_MEDIA_URI})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface TextKey {}
+
+    /**
+     * @hide
+     */
+    @StringDef({METADATA_KEY_DURATION, METADATA_KEY_YEAR, METADATA_KEY_TRACK_NUMBER,
+            METADATA_KEY_NUM_TRACKS, METADATA_KEY_DISC_NUMBER, METADATA_KEY_BT_FOLDER_TYPE})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface LongKey {}
+
+    /**
+     * @hide
+     */
+    @StringDef({METADATA_KEY_ART, METADATA_KEY_ALBUM_ART, METADATA_KEY_DISPLAY_ICON})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface BitmapKey {}
+
+    /**
+     * @hide
+     */
+    @StringDef({METADATA_KEY_USER_RATING, METADATA_KEY_RATING})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface RatingKey {}
 
     /**
      * The title of the media.
@@ -232,7 +269,32 @@ public final class MediaMetadata implements Parcelable {
      */
     public static final String METADATA_KEY_MEDIA_ID = "android.media.metadata.MEDIA_ID";
 
-    private static final String[] PREFERRED_DESCRIPTION_ORDER = {
+    /**
+     * A Uri formatted String representing the content. This value is specific to the
+     * service providing the content. It may be used with
+     * {@link MediaController.TransportControls#playFromUri(Uri, Bundle)}
+     * to initiate playback when provided by a {@link MediaBrowser} connected to
+     * the same app.
+     */
+    public static final String METADATA_KEY_MEDIA_URI = "android.media.metadata.MEDIA_URI";
+
+    /**
+     * The bluetooth folder type of the media specified in the section 6.10.2.2 of the Bluetooth
+     * AVRCP 1.5. It should be one of the following:
+     * <ul>
+     * <li>{@link MediaDescription#BT_FOLDER_TYPE_MIXED}</li>
+     * <li>{@link MediaDescription#BT_FOLDER_TYPE_TITLES}</li>
+     * <li>{@link MediaDescription#BT_FOLDER_TYPE_ALBUMS}</li>
+     * <li>{@link MediaDescription#BT_FOLDER_TYPE_ARTISTS}</li>
+     * <li>{@link MediaDescription#BT_FOLDER_TYPE_GENRES}</li>
+     * <li>{@link MediaDescription#BT_FOLDER_TYPE_PLAYLISTS}</li>
+     * <li>{@link MediaDescription#BT_FOLDER_TYPE_YEARS}</li>
+     * </ul>
+     */
+    public static final String METADATA_KEY_BT_FOLDER_TYPE
+            = "android.media.metadata.BT_FOLDER_TYPE";
+
+    private static final @TextKey String[] PREFERRED_DESCRIPTION_ORDER = {
             METADATA_KEY_TITLE,
             METADATA_KEY_ARTIST,
             METADATA_KEY_ALBUM,
@@ -242,13 +304,13 @@ public final class MediaMetadata implements Parcelable {
             METADATA_KEY_COMPOSER
     };
 
-    private static final String[] PREFERRED_BITMAP_ORDER = {
+    private static final @BitmapKey String[] PREFERRED_BITMAP_ORDER = {
             METADATA_KEY_DISPLAY_ICON,
             METADATA_KEY_ART,
             METADATA_KEY_ALBUM_ART
     };
 
-    private static final String[] PREFERRED_URI_ORDER = {
+    private static final @TextKey String[] PREFERRED_URI_ORDER = {
             METADATA_KEY_DISPLAY_ICON_URI,
             METADATA_KEY_ART_URI,
             METADATA_KEY_ALBUM_ART_URI
@@ -289,6 +351,9 @@ public final class MediaMetadata implements Parcelable {
         METADATA_KEYS_TYPE.put(METADATA_KEY_DISPLAY_DESCRIPTION, METADATA_TYPE_TEXT);
         METADATA_KEYS_TYPE.put(METADATA_KEY_DISPLAY_ICON, METADATA_TYPE_BITMAP);
         METADATA_KEYS_TYPE.put(METADATA_KEY_DISPLAY_ICON_URI, METADATA_TYPE_TEXT);
+        METADATA_KEYS_TYPE.put(METADATA_KEY_BT_FOLDER_TYPE, METADATA_TYPE_LONG);
+        METADATA_KEYS_TYPE.put(METADATA_KEY_MEDIA_ID, METADATA_TYPE_TEXT);
+        METADATA_KEYS_TYPE.put(METADATA_KEY_MEDIA_URI, METADATA_TYPE_TEXT);
     }
 
     private static final SparseArray<String> EDITOR_KEY_MAPPING;
@@ -328,7 +393,7 @@ public final class MediaMetadata implements Parcelable {
     }
 
     private MediaMetadata(Parcel in) {
-        mBundle = in.readBundle();
+        mBundle = Bundle.setDefusable(in.readBundle(), true);
     }
 
     /**
@@ -349,7 +414,7 @@ public final class MediaMetadata implements Parcelable {
      * @param key The key the value is stored under
      * @return a CharSequence value, or null
      */
-    public CharSequence getText(String key) {
+    public CharSequence getText(@TextKey String key) {
         return mBundle.getCharSequence(key);
     }
 
@@ -362,7 +427,7 @@ public final class MediaMetadata implements Parcelable {
      * @param key The key the value is stored under
      * @return a String value, or null
      */
-    public String getString(String key) {
+    public String getString(@TextKey String key) {
         CharSequence text = getText(key);
         if (text != null) {
             return text.toString();
@@ -377,7 +442,7 @@ public final class MediaMetadata implements Parcelable {
      * @param key The key the value is stored under
      * @return a long value
      */
-    public long getLong(String key) {
+    public long getLong(@LongKey String key) {
         return mBundle.getLong(key, 0);
     }
 
@@ -388,7 +453,7 @@ public final class MediaMetadata implements Parcelable {
      * @param key The key the value is stored under
      * @return A {@link Rating} or null
      */
-    public Rating getRating(String key) {
+    public Rating getRating(@RatingKey String key) {
         Rating rating = null;
         try {
             rating = mBundle.getParcelable(key);
@@ -406,7 +471,7 @@ public final class MediaMetadata implements Parcelable {
      * @param key The key the value is stored under
      * @return A {@link Bitmap} or null
      */
-    public Bitmap getBitmap(String key) {
+    public Bitmap getBitmap(@BitmapKey String key) {
         Bitmap bmp = null;
         try {
             bmp = mBundle.getParcelable(key);
@@ -500,6 +565,12 @@ public final class MediaMetadata implements Parcelable {
             }
         }
 
+        Uri mediaUri = null;
+        String mediaUriStr = getString(METADATA_KEY_MEDIA_URI);
+        if (!TextUtils.isEmpty(mediaUriStr)) {
+            mediaUri = Uri.parse(mediaUriStr);
+        }
+
         MediaDescription.Builder bob = new MediaDescription.Builder();
         bob.setMediaId(mediaId);
         bob.setTitle(text[0]);
@@ -507,6 +578,13 @@ public final class MediaMetadata implements Parcelable {
         bob.setDescription(text[2]);
         bob.setIconBitmap(icon);
         bob.setIconUri(iconUri);
+        bob.setMediaUri(mediaUri);
+        if (mBundle.containsKey(METADATA_KEY_BT_FOLDER_TYPE)) {
+            Bundle bundle = new Bundle();
+            bundle.putLong(MediaDescription.EXTRA_BT_FOLDER_TYPE,
+                    getLong(METADATA_KEY_BT_FOLDER_TYPE));
+            bob.setExtras(bundle);
+        }
         mDescription = bob.build();
 
         return mDescription;
@@ -612,7 +690,7 @@ public final class MediaMetadata implements Parcelable {
          * @param value The CharSequence value to store
          * @return The Builder to allow chaining
          */
-        public Builder putText(String key, CharSequence value) {
+        public Builder putText(@TextKey String key, CharSequence value) {
             if (METADATA_KEYS_TYPE.containsKey(key)) {
                 if (METADATA_KEYS_TYPE.get(key) != METADATA_TYPE_TEXT) {
                     throw new IllegalArgumentException("The " + key
@@ -654,7 +732,7 @@ public final class MediaMetadata implements Parcelable {
          * @param value The String value to store
          * @return The Builder to allow chaining
          */
-        public Builder putString(String key, String value) {
+        public Builder putString(@TextKey String key, String value) {
             if (METADATA_KEYS_TYPE.containsKey(key)) {
                 if (METADATA_KEYS_TYPE.get(key) != METADATA_TYPE_TEXT) {
                     throw new IllegalArgumentException("The " + key
@@ -681,7 +759,7 @@ public final class MediaMetadata implements Parcelable {
          * @param value The long value to store
          * @return The Builder to allow chaining
          */
-        public Builder putLong(String key, long value) {
+        public Builder putLong(@LongKey String key, long value) {
             if (METADATA_KEYS_TYPE.containsKey(key)) {
                 if (METADATA_KEYS_TYPE.get(key) != METADATA_TYPE_LONG) {
                     throw new IllegalArgumentException("The " + key
@@ -705,7 +783,7 @@ public final class MediaMetadata implements Parcelable {
          * @param value The Rating value to store
          * @return The Builder to allow chaining
          */
-        public Builder putRating(String key, Rating value) {
+        public Builder putRating(@RatingKey String key, Rating value) {
             if (METADATA_KEYS_TYPE.containsKey(key)) {
                 if (METADATA_KEYS_TYPE.get(key) != METADATA_TYPE_RATING) {
                     throw new IllegalArgumentException("The " + key
@@ -726,15 +804,16 @@ public final class MediaMetadata implements Parcelable {
          * <li>{@link #METADATA_KEY_DISPLAY_ICON}</li>
          * </ul>
          * <p>
-         * Large bitmaps may be scaled down by the system. To pass full
-         * resolution images {@link Uri Uris} should be used with
+         * Large bitmaps may be scaled down by the system when
+         * {@link android.media.session.MediaSession#setMetadata} is called.
+         * To pass full resolution images {@link Uri Uris} should be used with
          * {@link #putString}.
          *
          * @param key The key for referencing this value
          * @param value The Bitmap to store
          * @return The Builder to allow chaining
          */
-        public Builder putBitmap(String key, Bitmap value) {
+        public Builder putBitmap(@BitmapKey String key, Bitmap value) {
             if (METADATA_KEYS_TYPE.containsKey(key)) {
                 if (METADATA_KEYS_TYPE.get(key) != METADATA_TYPE_BITMAP) {
                     throw new IllegalArgumentException("The " + key

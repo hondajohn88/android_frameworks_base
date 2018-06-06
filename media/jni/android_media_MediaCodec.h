@@ -19,6 +19,7 @@
 
 #include "jni.h"
 
+#include <media/MediaAnalyticsItem.h>
 #include <media/hardware/CryptoAPI.h>
 #include <media/stagefright/foundation/ABase.h>
 #include <media/stagefright/foundation/AHandler.h>
@@ -31,10 +32,17 @@ struct ALooper;
 struct AMessage;
 struct AString;
 struct ICrypto;
-struct IGraphicBufferProducer;
+class IGraphicBufferProducer;
 struct MediaCodec;
 struct PersistentSurface;
 class Surface;
+namespace hardware {
+namespace cas {
+namespace native {
+namespace V1_0 {
+struct IDescrambler;
+}}}}
+using hardware::cas::native::V1_0::IDescrambler;
 
 struct JMediaCodec : public AHandler {
     JMediaCodec(
@@ -54,6 +62,7 @@ struct JMediaCodec : public AHandler {
             const sp<AMessage> &format,
             const sp<IGraphicBufferProducer> &bufferProducer,
             const sp<ICrypto> &crypto,
+            const sp<IDescrambler> &descrambler,
             int flags);
 
     status_t setSurface(
@@ -81,6 +90,7 @@ struct JMediaCodec : public AHandler {
             const uint8_t key[16],
             const uint8_t iv[16],
             CryptoPlugin::Mode mode,
+            const CryptoPlugin::Pattern &pattern,
             int64_t presentationTimeUs,
             uint32_t flags,
             AString *errorDetailMsg);
@@ -109,6 +119,8 @@ struct JMediaCodec : public AHandler {
             JNIEnv *env, bool input, size_t index, jobject *image) const;
 
     status_t getName(JNIEnv *env, jstring *name) const;
+
+    status_t getMetrics(JNIEnv *env, MediaAnalyticsItem * &reply) const;
 
     status_t setParameters(const sp<AMessage> &params);
 
@@ -145,8 +157,9 @@ private:
 
     status_t mInitStatus;
 
+    template <typename T>
     status_t createByteBufferFromABuffer(
-            JNIEnv *env, bool readOnly, bool clearBuffer, const sp<ABuffer> &buffer,
+            JNIEnv *env, bool readOnly, bool clearBuffer, const sp<T> &buffer,
             jobject *buf) const;
 
     void cacheJavaObjects(JNIEnv *env);

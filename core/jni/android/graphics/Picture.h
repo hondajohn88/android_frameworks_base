@@ -20,7 +20,8 @@
 #include "SkPicture.h"
 #include "SkPictureRecorder.h"
 #include "SkRefCnt.h"
-#include "SkTemplates.h"
+
+#include <memory>
 
 class SkStream;
 class SkWStream;
@@ -54,12 +55,12 @@ public:
 private:
     int mWidth;
     int mHeight;
-    SkAutoTUnref<const SkPicture> mPicture;
-    SkAutoTDelete<SkPictureRecorder> mRecorder;
+    sk_sp<SkPicture> mPicture;
+    std::unique_ptr<SkPictureRecorder> mRecorder;
 
     // Make a copy of a picture that is in the midst of being recorded. The
     // resulting picture will have balanced saves and restores.
-    SkPicture* makePartialCopy() const;
+    sk_sp<SkPicture> makePartialCopy() const;
 
     void validate() const;
 };

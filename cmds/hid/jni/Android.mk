@@ -6,18 +6,13 @@ LOCAL_SRC_FILES := \
     com_android_commands_hid_Device.cpp
 
 LOCAL_C_INCLUDES := \
-    $(JNI_H_INCLUDE) \
-    frameworks/base/core/jni
+    $(JNI_H_INCLUDE)
 
-LOCAL_SHARED_LIBRARIES := \
-    libandroid_runtime \
-    liblog \
-    libnativehelper \
-    libutils
+LOCAL_LDLIBS += -landroid -llog -lnativehelper
 
 LOCAL_MODULE := libhidcommand_jni
 LOCAL_MODULE_TAGS := optional
 
-LOCAL_CFLAGS += -Wall
+LOCAL_CFLAGS += -Wall -Wextra -Werror
 
 include $(BUILD_SHARED_LIBRARY)

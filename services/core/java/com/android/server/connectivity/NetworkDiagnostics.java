@@ -23,6 +23,7 @@ import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkUtils;
 import android.net.RouteInfo;
+import android.net.TrafficStats;
 import android.os.SystemClock;
 import android.system.ErrnoException;
 import android.system.Os;
@@ -49,7 +50,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Random;
 
@@ -107,27 +110,33 @@ public class NetworkDiagnostics {
     // so callers can wait for completion.
     private final CountDownLatch mCountDownLatch;
 
-    private class Measurement {
+    public class Measurement {
         private static final String SUCCEEDED = "SUCCEEDED";
         private static final String FAILED = "FAILED";
 
-        // TODO: Refactor to make these private for better encapsulation.
-        public String description = "";
-        public long startTime;
-        public long finishTime;
-        public String result = "";
-        public Thread thread;
+        private boolean succeeded;
 
-        public void recordSuccess(String msg) {
+        // Package private.  TODO: investigate better encapsulation.
+        String description = "";
+        long startTime;
+        long finishTime;
+        String result = "";
+        Thread thread;
+
+        public boolean checkSucceeded() { return succeeded; }
+
+        void recordSuccess(String msg) {
             maybeFixupTimes();
+            succeeded = true;
             result = SUCCEEDED + ": " + msg;
             if (mCountDownLatch != null) {
                 mCountDownLatch.countDown();
             }
         }
 
-        public void recordFailure(String msg) {
+        void recordFailure(String msg) {
             maybeFixupTimes();
+            succeeded = false;
             result = FAILED + ": " + msg;
             if (mCountDownLatch != null) {
                 mCountDownLatch.countDown();
@@ -265,6 +274,51 @@ public class NetworkDiagnostics {
         } catch (InterruptedException ignored) {}
     }
 
+    public List<Measurement> getMeasurements() {
+        // TODO: Consider moving waitForMeasurements() in here to minimize the
+        // chance of caller errors.
+
+        ArrayList<Measurement> measurements = new ArrayList(totalMeasurementCount());
+
+        // Sort measurements IPv4 first.
+        for (Map.Entry<InetAddress, Measurement> entry : mIcmpChecks.entrySet()) {
+            if (entry.getKey() instanceof Inet4Address) {
+                measurements.add(entry.getValue());
+            }
+        }
+        for (Map.Entry<Pair<InetAddress, InetAddress>, Measurement> entry :
+                mExplicitSourceIcmpChecks.entrySet()) {
+            if (entry.getKey().first instanceof Inet4Address) {
+                measurements.add(entry.getValue());
+            }
+        }
+        for (Map.Entry<InetAddress, Measurement> entry : mDnsUdpChecks.entrySet()) {
+            if (entry.getKey() instanceof Inet4Address) {
+                measurements.add(entry.getValue());
+            }
+        }
+
+        // IPv6 measurements second.
+        for (Map.Entry<InetAddress, Measurement> entry : mIcmpChecks.entrySet()) {
+            if (entry.getKey() instanceof Inet6Address) {
+                measurements.add(entry.getValue());
+            }
+        }
+        for (Map.Entry<Pair<InetAddress, InetAddress>, Measurement> entry :
+                mExplicitSourceIcmpChecks.entrySet()) {
+            if (entry.getKey().first instanceof Inet6Address) {
+                measurements.add(entry.getValue());
+            }
+        }
+        for (Map.Entry<InetAddress, Measurement> entry : mDnsUdpChecks.entrySet()) {
+            if (entry.getKey() instanceof Inet6Address) {
+                measurements.add(entry.getValue());
+            }
+        }
+
+        return measurements;
+    }
+
     public void dump(IndentingPrintWriter pw) {
         pw.println(TAG + ":" + mDescription);
         final long unfinished = mCountDownLatch.getCount();
@@ -276,30 +330,13 @@ public class NetworkDiagnostics {
         }
 
         pw.increaseIndent();
-        for (Map.Entry<InetAddress, Measurement> entry : mIcmpChecks.entrySet()) {
-            if (entry.getKey() instanceof Inet4Address) {
-                pw.println(entry.getValue().toString());
-            }
+
+        String prefix;
+        for (Measurement m : getMeasurements()) {
+            prefix = m.checkSucceeded() ? "." : "F";
+            pw.println(prefix + "  " + m.toString());
         }
-        for (Map.Entry<InetAddress, Measurement> entry : mIcmpChecks.entrySet()) {
-            if (entry.getKey() instanceof Inet6Address) {
-                pw.println(entry.getValue().toString());
-            }
-        }
-        for (Map.Entry<Pair<InetAddress, InetAddress>, Measurement> entry :
-                mExplicitSourceIcmpChecks.entrySet()) {
-            pw.println(entry.getValue().toString());
-        }
-        for (Map.Entry<InetAddress, Measurement> entry : mDnsUdpChecks.entrySet()) {
-            if (entry.getKey() instanceof Inet4Address) {
-                pw.println(entry.getValue().toString());
-            }
-        }
-        for (Map.Entry<InetAddress, Measurement> entry : mDnsUdpChecks.entrySet()) {
-            if (entry.getKey() instanceof Inet6Address) {
-                pw.println(entry.getValue().toString());
-            }
-        }
+
         pw.decreaseIndent();
     }
 
@@ -345,7 +382,12 @@ public class NetworkDiagnostics {
         protected void setupSocket(
                 int sockType, int protocol, long writeTimeout, long readTimeout, int dstPort)
                 throws ErrnoException, IOException {
-            mFileDescriptor = Os.socket(mAddressFamily, sockType, protocol);
+            final int oldTag = TrafficStats.getAndSetThreadStatsTag(TrafficStats.TAG_SYSTEM_PROBE);
+            try {
+                mFileDescriptor = Os.socket(mAddressFamily, sockType, protocol);
+            } finally {
+                TrafficStats.setThreadStatsTag(oldTag);
+            }
             // Setting SNDTIMEO is purely for defensive purposes.
             Os.setsockoptTimeval(mFileDescriptor,
                     SOL_SOCKET, SO_SNDTIMEO, StructTimeval.fromMillis(writeTimeout));
@@ -512,8 +554,7 @@ public class NetworkDiagnostics {
             mMeasurement.description += " src{" + getSocketAddressString() + "}";
 
             // This needs to be fixed length so it can be dropped into the pre-canned packet.
-            final String sixRandomDigits =
-                    Integer.valueOf(mRandom.nextInt(900000) + 100000).toString();
+            final String sixRandomDigits = String.valueOf(mRandom.nextInt(900000) + 100000);
             mMeasurement.description += " qtype{" + mQueryType + "}"
                     + " qname{" + sixRandomDigits + "-android-ds.metric.gstatic.com}";
 

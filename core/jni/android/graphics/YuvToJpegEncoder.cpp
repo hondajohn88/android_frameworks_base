@@ -1,5 +1,5 @@
 #include "CreateJavaOutputStreamAdaptor.h"
-#include "SkJpegUtility.h"
+#include "SkJPEGWriteUtility.h"
 #include "YuvToJpegEncoder.h"
 #include <ui/PixelFormat.h>
 #include <hardware/hardware.h>
@@ -243,7 +243,7 @@ static jboolean YuvImage_compressToJpeg(JNIEnv* env, jobject, jbyteArray inYuv,
 }
 ///////////////////////////////////////////////////////////////////////////////
 
-static JNINativeMethod gYuvImageMethods[] = {
+static const JNINativeMethod gYuvImageMethods[] = {
     {   "nativeCompressToJpeg",  "([BIII[I[IILjava/io/OutputStream;[B)Z",
         (void*)YuvImage_compressToJpeg }
 };

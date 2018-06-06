@@ -16,12 +16,15 @@
 
 package com.android.systemui.statusbar.policy;
 
-public interface HotspotController {
-    void addCallback(Callback callback);
-    void removeCallback(Callback callback);
+import com.android.systemui.Dumpable;
+import com.android.systemui.statusbar.policy.HotspotController.Callback;
+
+public interface HotspotController extends CallbackController<Callback>, Dumpable {
     boolean isHotspotEnabled();
-    boolean isHotspotSupported();
+    boolean isHotspotTransient();
+
     void setHotspotEnabled(boolean enabled);
+    boolean isHotspotSupported();
 
     public interface Callback {
         void onHotspotChanged(boolean enabled);

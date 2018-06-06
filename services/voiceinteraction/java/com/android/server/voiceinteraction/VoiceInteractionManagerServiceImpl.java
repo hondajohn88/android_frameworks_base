@@ -16,8 +16,15 @@
 
 package com.android.server.voiceinteraction;
 
+import static android.app.ActivityManager.START_ASSISTANT_HIDDEN_SESSION;
+import static android.app.ActivityManager.START_ASSISTANT_NOT_ACTIVE_SESSION;
+import static android.app.ActivityManager.START_VOICE_HIDDEN_SESSION;
+import static android.app.ActivityManager.START_VOICE_NOT_ACTIVE_SESSION;
+
 import android.app.ActivityManager;
-import android.app.ActivityManagerNative;
+import android.app.ActivityManager.StackId;
+import android.app.ActivityManagerInternal;
+import android.app.ActivityOptions;
 import android.app.IActivityManager;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
@@ -40,11 +47,14 @@ import android.util.PrintWriterPrinter;
 import android.util.Slog;
 import android.view.IWindowManager;
 
+import com.android.internal.app.IVoiceInteractionSessionListener;
 import com.android.internal.app.IVoiceInteractionSessionShowCallback;
 import com.android.internal.app.IVoiceInteractor;
+import com.android.server.LocalServices;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
+import java.util.List;
 
 class VoiceInteractionManagerServiceImpl implements VoiceInteractionSessionConnection.Callback {
     final static String TAG = "VoiceInteractionServiceManager";
@@ -55,7 +65,7 @@ class VoiceInteractionManagerServiceImpl implements VoiceInteractionSessionConne
 
     final Context mContext;
     final Handler mHandler;
-    final Object mLock;
+    final VoiceInteractionManagerService.VoiceInteractionManagerServiceStub mServiceStub;
     final int mUser;
     final ComponentName mComponent;
     final IActivityManager mAm;
@@ -74,7 +84,7 @@ class VoiceInteractionManagerServiceImpl implements VoiceInteractionSessionConne
             if (Intent.ACTION_CLOSE_SYSTEM_DIALOGS.equals(intent.getAction())) {
                 String reason = intent.getStringExtra("reason");
                 if (!CLOSE_REASON_VOICE_INTERACTION.equals(reason) && !"dream".equals(reason)) {
-                    synchronized (mLock) {
+                    synchronized (mServiceStub) {
                         if (mActiveSession != null && mActiveSession.mSession != null) {
                             try {
                                 mActiveSession.mSession.closeSystemDialogs();
@@ -90,7 +100,7 @@ class VoiceInteractionManagerServiceImpl implements VoiceInteractionSessionConne
     final ServiceConnection mConnection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName name, IBinder service) {
-            synchronized (mLock) {
+            synchronized (mServiceStub) {
                 mService = IVoiceInteractionService.Stub.asInterface(service);
                 try {
                     mService.ready();
@@ -105,18 +115,19 @@ class VoiceInteractionManagerServiceImpl implements VoiceInteractionSessionConne
         }
     };
 
-    VoiceInteractionManagerServiceImpl(Context context, Handler handler, Object lock,
+    VoiceInteractionManagerServiceImpl(Context context, Handler handler,
+            VoiceInteractionManagerService.VoiceInteractionManagerServiceStub stub,
             int userHandle, ComponentName service) {
         mContext = context;
         mHandler = handler;
-        mLock = lock;
+        mServiceStub = stub;
         mUser = userHandle;
         mComponent = service;
-        mAm = ActivityManagerNative.getDefault();
+        mAm = ActivityManager.getService();
         VoiceInteractionServiceInfo info;
         try {
             info = new VoiceInteractionServiceInfo(context.getPackageManager(), service, mUser);
-        } catch (RemoteException|PackageManager.NameNotFoundException e) {
+        } catch (PackageManager.NameNotFoundException e) {
             Slog.w(TAG, "Voice interaction service not found: " + service, e);
             mInfo = null;
             mSessionComponentName = null;
@@ -145,11 +156,18 @@ class VoiceInteractionManagerServiceImpl implements VoiceInteractionSessionConne
     public boolean showSessionLocked(Bundle args, int flags,
             IVoiceInteractionSessionShowCallback showCallback, IBinder activityToken) {
         if (mActiveSession == null) {
-            mActiveSession = new VoiceInteractionSessionConnection(mLock, mSessionComponentName,
-                    mUser, mContext, this, mInfo.getServiceInfo().applicationInfo.uid, mHandler);
+            mActiveSession = new VoiceInteractionSessionConnection(mServiceStub,
+                    mSessionComponentName, mUser, mContext, this,
+                    mInfo.getServiceInfo().applicationInfo.uid, mHandler);
+        }
+        List<IBinder> activityTokens = null;
+        if (activityToken == null) {
+            // Let's get top activities from all visible stacks
+            activityTokens = LocalServices.getService(ActivityManagerInternal.class)
+                    .getTopVisibleActivities();
         }
         return mActiveSession.showLocked(args, flags, mDisabledShowContext, showCallback,
-                activityToken);
+                activityToken, activityTokens);
     }
 
     public boolean hideSessionLocked() {
@@ -174,11 +192,11 @@ class VoiceInteractionManagerServiceImpl implements VoiceInteractionSessionConne
         try {
             if (mActiveSession == null || token != mActiveSession.mToken) {
                 Slog.w(TAG, "startVoiceActivity does not match active session");
-                return ActivityManager.START_CANCELED;
+                return START_VOICE_NOT_ACTIVE_SESSION;
             }
             if (!mActiveSession.mShown) {
                 Slog.w(TAG, "startVoiceActivity not allowed on hidden session");
-                return ActivityManager.START_CANCELED;
+                return START_VOICE_HIDDEN_SESSION;
             }
             intent = new Intent(intent);
             intent.addCategory(Intent.CATEGORY_VOICE);
@@ -186,6 +204,28 @@ class VoiceInteractionManagerServiceImpl implements VoiceInteractionSessionConne
             return mAm.startVoiceActivity(mComponent.getPackageName(), callingPid, callingUid,
                     intent, resolvedType, mActiveSession.mSession, mActiveSession.mInteractor,
                     0, null, null, mUser);
+        } catch (RemoteException e) {
+            throw new IllegalStateException("Unexpected remote error", e);
+        }
+    }
+
+    public int startAssistantActivityLocked(int callingPid, int callingUid, IBinder token,
+            Intent intent, String resolvedType) {
+        try {
+            if (mActiveSession == null || token != mActiveSession.mToken) {
+                Slog.w(TAG, "startAssistantActivity does not match active session");
+                return START_ASSISTANT_NOT_ACTIVE_SESSION;
+            }
+            if (!mActiveSession.mShown) {
+                Slog.w(TAG, "startAssistantActivity not allowed on hidden session");
+                return START_ASSISTANT_HIDDEN_SESSION;
+            }
+            intent = new Intent(intent);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            ActivityOptions options = ActivityOptions.makeBasic();
+            options.setLaunchStackId(StackId.ASSISTANT_STACK_ID);
+            return mAm.startAssistantActivity(mComponent.getPackageName(), callingPid, callingUid,
+                    intent, resolvedType, options.toBundle(), mUser);
         } catch (RemoteException e) {
             throw new IllegalStateException("Unexpected remote error", e);
         }
@@ -215,12 +255,12 @@ class VoiceInteractionManagerServiceImpl implements VoiceInteractionSessionConne
         }
     }
 
-    public void finishLocked(IBinder token) {
-        if (mActiveSession == null || token != mActiveSession.mToken) {
+    public void finishLocked(IBinder token, boolean finishTask) {
+        if (mActiveSession == null || (!finishTask && token != mActiveSession.mToken)) {
             Slog.w(TAG, "finish does not match active session");
             return;
         }
-        mActiveSession.cancelLocked();
+        mActiveSession.cancelLocked(finishTask);
         mActiveSession = null;
     }
 
@@ -251,6 +291,10 @@ class VoiceInteractionManagerServiceImpl implements VoiceInteractionSessionConne
         return mActiveSession != null ? mActiveSession.getUserDisabledShowContextLocked() : 0;
     }
 
+    public boolean supportsLocalVoiceInteraction() {
+        return mInfo.getSupportsLocalInteraction();
+    }
+
     public void dumpLocked(FileDescriptor fd, PrintWriter pw, String[] args) {
         if (!mValid) {
             pw.print("  NOT VALID: ");
@@ -266,8 +310,6 @@ class VoiceInteractionManagerServiceImpl implements VoiceInteractionSessionConne
         pw.print("  Session service="); pw.println(mInfo.getSessionService());
         pw.println("  Service info:");
         mInfo.getServiceInfo().dump(new PrintWriterPrinter(pw), "    ");
-        pw.println("  Application info:");
-        mInfo.getServiceInfo().applicationInfo.dump(new PrintWriterPrinter(pw), "    ");
         pw.print("  Recognition service="); pw.println(mInfo.getRecognitionService());
         pw.print("  Settings activity="); pw.println(mInfo.getSettingsActivity());
         pw.print("  Supports assist="); pw.println(mInfo.getSupportsAssist());
@@ -310,7 +352,7 @@ class VoiceInteractionManagerServiceImpl implements VoiceInteractionSessionConne
         // If there is an active session, cancel it to allow it to clean up its window and other
         // state.
         if (mActiveSession != null) {
-            mActiveSession.cancelLocked();
+            mActiveSession.cancelLocked(false);
             mActiveSession = null;
         }
         try {
@@ -344,8 +386,18 @@ class VoiceInteractionManagerServiceImpl implements VoiceInteractionSessionConne
 
     @Override
     public void sessionConnectionGone(VoiceInteractionSessionConnection connection) {
-        synchronized (mLock) {
-            finishLocked(connection.mToken);
+        synchronized (mServiceStub) {
+            finishLocked(connection.mToken, false);
         }
+    }
+
+    @Override
+    public void onSessionShown(VoiceInteractionSessionConnection connection) {
+        mServiceStub.onSessionShown();
+    }
+
+    @Override
+    public void onSessionHidden(VoiceInteractionSessionConnection connection) {
+        mServiceStub.onSessionHidden();
     }
 }

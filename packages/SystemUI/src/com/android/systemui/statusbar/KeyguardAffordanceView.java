@@ -21,35 +21,32 @@ import android.animation.AnimatorListenerAdapter;
 import android.animation.ArgbEvaluator;
 import android.animation.PropertyValuesHolder;
 import android.animation.ValueAnimator;
+import android.annotation.Nullable;
 import android.content.Context;
+import android.content.res.TypedArray;
 import android.graphics.Canvas;
 import android.graphics.CanvasProperty;
 import android.graphics.Color;
-import android.graphics.ColorFilter;
 import android.graphics.Paint;
 import android.graphics.PorterDuff;
-import android.graphics.drawable.BitmapDrawable;
-import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
-import android.support.v7.graphics.Palette;
 import android.util.AttributeSet;
 import android.view.DisplayListCanvas;
 import android.view.RenderNodeAnimator;
 import android.view.View;
 import android.view.ViewAnimationUtils;
-import android.view.animation.AnimationUtils;
 import android.view.animation.Interpolator;
 import android.widget.ImageView;
 
+import com.android.systemui.Interpolators;
 import com.android.systemui.R;
 import com.android.systemui.statusbar.phone.KeyguardAffordanceHelper;
-import com.android.systemui.statusbar.phone.PhoneStatusBar;
 
 /**
  * An ImageView which does not have overlapping renderings commands and therefore does not need a
  * layer when alpha is changed.
  */
-public class KeyguardAffordanceView extends ImageView implements Palette.PaletteAsyncListener {
+public class KeyguardAffordanceView extends ImageView {
 
     private static final long CIRCLE_APPEAR_DURATION = 80;
     private static final long CIRCLE_DISAPPEAR_MAX_DURATION = 200;
@@ -59,9 +56,7 @@ public class KeyguardAffordanceView extends ImageView implements Palette.Palette
 
     private final int mMinBackgroundRadius;
     private final Paint mCirclePaint;
-    private final Interpolator mAppearInterpolator;
-    private final Interpolator mDisappearInterpolator;
-    private final int mInverseColor;
+    private final int mDarkIconColor;
     private final int mNormalColor;
     private final ArgbEvaluator mColorInterpolator;
     private final FlingAnimationUtils mFlingAnimationUtils;
@@ -85,7 +80,7 @@ public class KeyguardAffordanceView extends ImageView implements Palette.Palette
     private boolean mSupportHardware;
     private boolean mFinishing;
     private boolean mLaunchingAffordance;
-    private ColorFilter mDefaultFilter;
+    private boolean mShouldTint = true;
 
     private CanvasProperty<Float> mHwCircleRadius;
     private CanvasProperty<Float> mHwCenterX;
@@ -132,21 +127,27 @@ public class KeyguardAffordanceView extends ImageView implements Palette.Palette
     public KeyguardAffordanceView(Context context, AttributeSet attrs, int defStyleAttr,
             int defStyleRes) {
         super(context, attrs, defStyleAttr, defStyleRes);
+        TypedArray a = context.obtainStyledAttributes(attrs, android.R.styleable.ImageView);
+
         mCirclePaint = new Paint();
         mCirclePaint.setAntiAlias(true);
         mCircleColor = 0xffffffff;
         mCirclePaint.setColor(mCircleColor);
 
-        mNormalColor = 0xffffffff;
-        mInverseColor = 0xff000000;
+        mNormalColor = a.getColor(android.R.styleable.ImageView_tint, 0xffffffff);
+        mDarkIconColor = 0xff000000;
         mMinBackgroundRadius = mContext.getResources().getDimensionPixelSize(
                 R.dimen.keyguard_affordance_min_background_radius);
-        mAppearInterpolator = AnimationUtils.loadInterpolator(mContext,
-                android.R.interpolator.linear_out_slow_in);
-        mDisappearInterpolator = AnimationUtils.loadInterpolator(mContext,
-                android.R.interpolator.fast_out_linear_in);
         mColorInterpolator = new ArgbEvaluator();
         mFlingAnimationUtils = new FlingAnimationUtils(mContext, 0.3f);
+
+        a.recycle();
+    }
+
+    public void setImageDrawable(@Nullable Drawable drawable, boolean tint) {
+        super.setImageDrawable(drawable);
+        mShouldTint = tint;
+        updateIconColor();
     }
 
     @Override
@@ -159,7 +160,7 @@ public class KeyguardAffordanceView extends ImageView implements Palette.Palette
 
     @Override
     protected void onDraw(Canvas canvas) {
-        mSupportHardware = false;//canvas.isHardwareAccelerated();
+        mSupportHardware = canvas.isHardwareAccelerated();
         drawBackgroundCircle(canvas);
         canvas.save();
         canvas.scale(mImageScale, mImageScale, getWidth() / 2, getHeight() / 2);
@@ -167,71 +168,30 @@ public class KeyguardAffordanceView extends ImageView implements Palette.Palette
         canvas.restore();
     }
 
-
-    @Override
-    public void setImageDrawable(Drawable drawable) {
-        super.setImageDrawable(drawable);
-        doPaletteIfNecessary();
-    }
-
-    private void doPaletteIfNecessary() {
-        if (mDefaultFilter != null && getDrawable() instanceof BitmapDrawable) {
-            Palette.generateAsync(((BitmapDrawable) getDrawable()).getBitmap(), this);
-        }
-    }
-
-
     public void setPreviewView(View v) {
         View oldPreviewView = mPreviewView;
         mPreviewView = v;
         if (mPreviewView != null) {
             mPreviewView.setVisibility(mLaunchingAffordance
                     ? oldPreviewView.getVisibility() : INVISIBLE);
-            mPreviewView.setVisibility(INVISIBLE);
-            addOverlay();
         }
-    }
-
-    private void addOverlay() {
-        if (mPreviewView != null) {
-            mPreviewView.getOverlay().clear();
-            if (mDefaultFilter != null) {
-                ColorDrawable d = new ColorDrawable(mCircleColor);
-                d.setBounds(0, 0, mPreviewView.getWidth(), mPreviewView.getHeight());
-                mPreviewView.getOverlay().add(d);
-            }
-        }
-    }
-
-    public void setDefaultFilter(ColorFilter filter) {
-        mDefaultFilter = filter;
-        mCircleColor = Color.WHITE;
-        addOverlay();
-        updateIconColor();
     }
 
     private void updateIconColor() {
-        if (getDrawable() == null) {
-            return;
-        }
+        if (!mShouldTint) return;
         Drawable drawable = getDrawable().mutate();
         float alpha = mCircleRadius / mMinBackgroundRadius;
         alpha = Math.min(1.0f, alpha);
-        int color = (int) mColorInterpolator.evaluate(alpha, mNormalColor, mInverseColor);
-        if (mDefaultFilter != null) {
-            if (alpha == 0) {
-                drawable.setColorFilter(mDefaultFilter);
-            } else {
-                drawable.setColorFilter(color, PorterDuff.Mode.DST_IN);
-            }
-        } else {
-            drawable.setColorFilter(color, PorterDuff.Mode.SRC_ATOP);
-        }
+        int color = (int) mColorInterpolator.evaluate(alpha, mNormalColor, mDarkIconColor);
+        drawable.setColorFilter(color, PorterDuff.Mode.SRC_ATOP);
     }
 
     private void drawBackgroundCircle(Canvas canvas) {
         if (mCircleRadius > 0 || mFinishing) {
-            if (mFinishing && mSupportHardware) {
+            if (mFinishing && mSupportHardware && mHwCenterX != null) {
+                // Our hardware drawing proparties can be null if the finishing started but we have
+                // never drawn before. In that case we are not doing a render thread animation
+                // anyway, so we need to use the normal drawing.
                 DisplayListCanvas displayListCanvas = (DisplayListCanvas) canvas;
                 displayListCanvas.drawCircle(mHwCenterX, mHwCenterY, mHwCircleRadius,
                         mHwCirclePaint);
@@ -311,7 +271,7 @@ public class KeyguardAffordanceView extends ImageView implements Palette.Palette
             RenderNodeAnimator animator = new RenderNodeAnimator(mHwCirclePaint,
                     RenderNodeAnimator.PAINT_ALPHA, 255);
             animator.setTarget(this);
-            animator.setInterpolator(PhoneStatusBar.ALPHA_IN);
+            animator.setInterpolator(Interpolators.ALPHA_IN);
             animator.setDuration(250);
             animator.start();
         }
@@ -332,7 +292,7 @@ public class KeyguardAffordanceView extends ImageView implements Palette.Palette
         RenderNodeAnimator animator = new RenderNodeAnimator(mHwCirclePaint,
                 RenderNodeAnimator.PAINT_ALPHA, 0);
         animator.setDuration(duration);
-        animator.setInterpolator(PhoneStatusBar.ALPHA_OUT);
+        animator.setInterpolator(Interpolators.ALPHA_OUT);
         animator.setTarget(this);
         animator.start();
     }
@@ -402,8 +362,8 @@ public class KeyguardAffordanceView extends ImageView implements Palette.Palette
             cancelAnimator(mPreviewClipper);
             ValueAnimator animator = getAnimatorToRadius(circleRadius);
             Interpolator interpolator = circleRadius == 0.0f
-                    ? mDisappearInterpolator
-                    : mAppearInterpolator;
+                    ? Interpolators.FAST_OUT_LINEAR_IN
+                    : Interpolators.LINEAR_OUT_SLOW_IN;
             animator.setInterpolator(interpolator);
             long duration = 250;
             if (!slowAnimation) {
@@ -488,8 +448,8 @@ public class KeyguardAffordanceView extends ImageView implements Palette.Palette
             animator.addListener(mScaleEndListener);
             if (interpolator == null) {
                 interpolator = imageScale == 0.0f
-                        ? mDisappearInterpolator
-                        : mAppearInterpolator;
+                        ? Interpolators.FAST_OUT_LINEAR_IN
+                        : Interpolators.LINEAR_OUT_SLOW_IN;
             }
             animator.setInterpolator(interpolator);
             if (duration == -1) {
@@ -551,8 +511,8 @@ public class KeyguardAffordanceView extends ImageView implements Palette.Palette
             animator.addListener(mAlphaEndListener);
             if (interpolator == null) {
                 interpolator = alpha == 0.0f
-                        ? mDisappearInterpolator
-                        : mAppearInterpolator;
+                        ? Interpolators.FAST_OUT_LINEAR_IN
+                        : Interpolators.LINEAR_OUT_SLOW_IN;
             }
             animator.setInterpolator(interpolator);
             if (duration == -1) {
@@ -600,11 +560,5 @@ public class KeyguardAffordanceView extends ImageView implements Palette.Palette
 
     public void setLaunchingAffordance(boolean launchingAffordance) {
         mLaunchingAffordance = launchingAffordance;
-    }
-
-    @Override
-    public void onGenerated(Palette palette) {
-        mCircleColor = palette.getDarkVibrantColor(Color.WHITE);
-        addOverlay();
     }
 }

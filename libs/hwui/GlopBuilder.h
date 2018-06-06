@@ -13,11 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef RENDERSTATE_GLOPBUILDER_H
-#define RENDERSTATE_GLOPBUILDER_H
+
+#pragma once
 
 #include "Glop.h"
-#include "OpenGLRenderer.h"
 #include "Program.h"
 #include "renderstate/Blend.h"
 #include "utils/Macros.h"
@@ -29,10 +28,15 @@ namespace android {
 namespace uirenderer {
 
 class Caches;
+class GlLayer;
 class Matrix4;
+class Patch;
 class RenderState;
 class Texture;
+class UvMapper;
 class VertexBuffer;
+struct PathTexture;
+struct ShadowTexture;
 
 namespace TextureFillFlags {
     enum {
@@ -47,17 +51,17 @@ class GlopBuilder {
 public:
     GlopBuilder(RenderState& renderState, Caches& caches, Glop* outGlop);
 
+    GlopBuilder& setMeshTexturedIndexedVbo(GLuint vbo, GLsizei elementCount);
     GlopBuilder& setMeshUnitQuad();
     GlopBuilder& setMeshTexturedUnitQuad(const UvMapper* uvMapper);
     GlopBuilder& setMeshTexturedUvQuad(const UvMapper* uvMapper, const Rect uvs);
-    GlopBuilder& setMeshVertexBuffer(const VertexBuffer& vertexBuffer, bool shadowInterp);
+    GlopBuilder& setMeshVertexBuffer(const VertexBuffer& vertexBuffer);
     GlopBuilder& setMeshIndexedQuads(Vertex* vertexData, int quadCount);
-    GlopBuilder& setMeshTexturedMesh(TextureVertex* vertexData, int elementCount); // TODO: use indexed quads
     GlopBuilder& setMeshColoredTexturedMesh(ColorTextureVertex* vertexData, int elementCount); // TODO: use indexed quads
     GlopBuilder& setMeshTexturedIndexedQuads(TextureVertex* vertexData, int elementCount); // TODO: take quadCount
     GlopBuilder& setMeshPatchQuads(const Patch& patch);
 
-    GlopBuilder& setFillPaint(const SkPaint& paint, float alphaScale);
+    GlopBuilder& setFillPaint(const SkPaint& paint, float alphaScale, bool shadowInterp = false); // TODO: avoid boolean with default
     GlopBuilder& setFillTexturePaint(Texture& texture, const int textureFillFlags,
             const SkPaint* paint, float alphaScale);
     GlopBuilder& setFillPathTexturePaint(PathTexture& texture,
@@ -67,13 +71,14 @@ public:
     GlopBuilder& setFillBlack();
     GlopBuilder& setFillClear();
     GlopBuilder& setFillLayer(Texture& texture, const SkColorFilter* colorFilter,
-            float alpha, SkXfermode::Mode mode, Blend::ModeOrderSwap modeUsage);
-    GlopBuilder& setFillTextureLayer(Layer& layer, float alpha);
+            float alpha, SkBlendMode mode, Blend::ModeOrderSwap modeUsage);
+    GlopBuilder& setFillTextureLayer(GlLayer& layer, float alpha);
+    // TODO: setFillLayer normally forces its own wrap & filter mode,
+    // which isn't always correct.
+    GlopBuilder& setFillExternalTexture(Texture& texture, Matrix4& textureTransform,
+            bool requiresFilter);
 
-    GlopBuilder& setTransform(const Snapshot& snapshot, const int transformFlags) {
-        setTransform(snapshot.getOrthoMatrix(), *snapshot.transform, transformFlags);
-        return *this;
-    }
+    GlopBuilder& setTransform(const Matrix4& canvas, const int transformFlags);
 
     GlopBuilder& setModelViewMapUnitToRect(const Rect destination);
     GlopBuilder& setModelViewMapUnitToRectSnap(const Rect destination);
@@ -94,16 +99,22 @@ public:
             return setModelViewOffsetRect(offsetX, offsetY, source);
         }
     }
+    GlopBuilder& setModelViewIdentityEmptyBounds() {
+        // pass empty rect since not needed for damage / snap
+        return setModelViewOffsetRect(0, 0, Rect());
+    }
 
     GlopBuilder& setRoundRectClipState(const RoundRectClipState* roundRectClipState);
 
+    GlopBuilder& setGammaCorrection(bool enabled);
+
     void build();
+
+    static void dump(const Glop& glop);
 private:
     void setFill(int color, float alphaScale,
-            SkXfermode::Mode mode, Blend::ModeOrderSwap modeUsage,
+            SkBlendMode mode, Blend::ModeOrderSwap modeUsage,
             const SkShader* shader, const SkColorFilter* colorFilter);
-    void setTransform(const Matrix4& ortho, const Matrix4& canvas,
-            const int transformFlags);
 
     enum StageFlags {
         kInitialStage = 0,
@@ -124,5 +135,3 @@ private:
 
 } /* namespace uirenderer */
 } /* namespace android */
-
-#endif // RENDERSTATE_GLOPBUILDER_H

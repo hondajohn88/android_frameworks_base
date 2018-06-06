@@ -21,17 +21,23 @@
 #include "android_media_MediaCodec.h"
 
 #include "android_media_MediaCrypto.h"
+#include "android_media_MediaDescrambler.h"
+#include "android_media_MediaMetricsJNI.h"
 #include "android_media_Utils.h"
 #include "android_runtime/AndroidRuntime.h"
 #include "android_runtime/android_view_Surface.h"
+#include "android_util_Binder.h"
 #include "jni.h"
-#include "JNIHelp.h"
+#include <nativehelper/JNIHelp.h>
+
+#include <android/hardware/cas/native/1.0/IDescrambler.h>
 
 #include <cutils/compiler.h>
 
 #include <gui/Surface.h>
 
 #include <media/ICrypto.h>
+#include <media/MediaCodecBuffer.h>
 #include <media/stagefright/MediaCodec.h>
 #include <media/stagefright/foundation/ABuffer.h>
 #include <media/stagefright/foundation/ADebug.h>
@@ -65,6 +71,7 @@ static struct CryptoErrorCodes {
     jint cryptoErrorResourceBusy;
     jint cryptoErrorInsufficientOutputProtection;
     jint cryptoErrorSessionNotOpened;
+    jint cryptoErrorUnsupportedOperation;
 } gCryptoErrorCodes;
 
 static struct CodecActionCodes {
@@ -85,6 +92,13 @@ static struct {
     jmethodID setNativeObjectLocked;
 } gPersistentSurfaceClassInfo;
 
+static struct {
+    jint Unencrypted;
+    jint AesCtr;
+    jint AesCbc;
+} gCryptoModes;
+
+
 struct fields_t {
     jfieldID context;
     jmethodID postEventFromNativeID;
@@ -94,6 +108,9 @@ struct fields_t {
     jfieldID cryptoInfoKeyID;
     jfieldID cryptoInfoIVID;
     jfieldID cryptoInfoModeID;
+    jfieldID cryptoInfoPatternID;
+    jfieldID patternEncryptBlocksID;
+    jfieldID patternSkipBlocksID;
 };
 
 static fields_t gFields;
@@ -120,7 +137,7 @@ JMediaCodec::JMediaCodec(
     mLooper->start(
             false,      // runOnCallingThread
             true,       // canCallJava
-            PRIORITY_FOREGROUND);
+            ANDROID_PRIORITY_VIDEO);
 
     if (nameIsType) {
         mCodec = MediaCodec::CreateByType(mLooper, name, encoder, &mInitStatus);
@@ -256,6 +273,7 @@ status_t JMediaCodec::configure(
         const sp<AMessage> &format,
         const sp<IGraphicBufferProducer> &bufferProducer,
         const sp<ICrypto> &crypto,
+        const sp<IDescrambler> &descrambler,
         int flags) {
     sp<Surface> client;
     if (bufferProducer != NULL) {
@@ -265,7 +283,8 @@ status_t JMediaCodec::configure(
         mSurfaceTextureClient.clear();
     }
 
-    return mCodec->configure(format, mSurfaceTextureClient, crypto, flags);
+    return mCodec->configure(
+            format, mSurfaceTextureClient, crypto, descrambler, flags);
 }
 
 status_t JMediaCodec::setSurface(
@@ -325,11 +344,12 @@ status_t JMediaCodec::queueSecureInputBuffer(
         const uint8_t key[16],
         const uint8_t iv[16],
         CryptoPlugin::Mode mode,
+        const CryptoPlugin::Pattern &pattern,
         int64_t presentationTimeUs,
         uint32_t flags,
         AString *errorDetailMsg) {
     return mCodec->queueSecureInputBuffer(
-            index, offset, subSamples, numSubSamples, key, iv, mode,
+            index, offset, subSamples, numSubSamples, key, iv, mode, pattern,
             presentationTimeUs, flags, errorDetailMsg);
 }
 
@@ -395,7 +415,7 @@ status_t JMediaCodec::getOutputFormat(JNIEnv *env, size_t index, jobject *format
 
 status_t JMediaCodec::getBuffers(
         JNIEnv *env, bool input, jobjectArray *bufArray) const {
-    Vector<sp<ABuffer> > buffers;
+    Vector<sp<MediaCodecBuffer> > buffers;
 
     status_t err =
         input
@@ -413,7 +433,7 @@ status_t JMediaCodec::getBuffers(
     }
 
     for (size_t i = 0; i < buffers.size(); ++i) {
-        const sp<ABuffer> &buffer = buffers.itemAt(i);
+        const sp<MediaCodecBuffer> &buffer = buffers.itemAt(i);
 
         jobject byteBuffer = NULL;
         err = createByteBufferFromABuffer(
@@ -434,12 +454,19 @@ status_t JMediaCodec::getBuffers(
 }
 
 // static
+template <typename T>
 status_t JMediaCodec::createByteBufferFromABuffer(
-        JNIEnv *env, bool readOnly, bool clearBuffer, const sp<ABuffer> &buffer,
+        JNIEnv *env, bool readOnly, bool clearBuffer, const sp<T> &buffer,
         jobject *buf) const {
     // if this is an ABuffer that doesn't actually hold any accessible memory,
     // use a null ByteBuffer
     *buf = NULL;
+
+    if (buffer == NULL) {
+        ALOGV("createByteBufferFromABuffer - given NULL, returning NULL");
+        return OK;
+    }
+
     if (buffer->base() == NULL) {
         return OK;
     }
@@ -474,7 +501,7 @@ status_t JMediaCodec::createByteBufferFromABuffer(
 
 status_t JMediaCodec::getBuffer(
         JNIEnv *env, bool input, size_t index, jobject *buf) const {
-    sp<ABuffer> buffer;
+    sp<MediaCodecBuffer> buffer;
 
     status_t err =
         input
@@ -491,7 +518,7 @@ status_t JMediaCodec::getBuffer(
 
 status_t JMediaCodec::getImage(
         JNIEnv *env, bool input, size_t index, jobject *buf) const {
-    sp<ABuffer> buffer;
+    sp<MediaCodecBuffer> buffer;
 
     status_t err =
         input
@@ -596,6 +623,12 @@ status_t JMediaCodec::getName(JNIEnv *env, jstring *nameStr) const {
     *nameStr = env->NewStringUTF(name.c_str());
 
     return OK;
+}
+
+status_t JMediaCodec::getMetrics(JNIEnv *, MediaAnalyticsItem * &reply) const {
+
+    status_t status = mCodec->getMetrics(reply);
+    return status;
 }
 
 status_t JMediaCodec::setParameters(const sp<AMessage> &msg) {
@@ -828,28 +861,39 @@ static void throwCryptoException(JNIEnv *env, status_t err, const char *msg) {
         env->GetMethodID(clazz.get(), "<init>", "(ILjava/lang/String;)V");
     CHECK(constructID != NULL);
 
-    jstring msgObj = env->NewStringUTF(msg != NULL ? msg : "Unknown Error");
+    const char *defaultMsg = "Unknown Error";
 
     /* translate OS errors to Java API CryptoException errorCodes (which are positive) */
     switch (err) {
         case ERROR_DRM_NO_LICENSE:
             err = gCryptoErrorCodes.cryptoErrorNoKey;
+            defaultMsg = "Crypto key not available";
             break;
         case ERROR_DRM_LICENSE_EXPIRED:
             err = gCryptoErrorCodes.cryptoErrorKeyExpired;
+            defaultMsg = "License expired";
             break;
         case ERROR_DRM_RESOURCE_BUSY:
             err = gCryptoErrorCodes.cryptoErrorResourceBusy;
+            defaultMsg = "Resource busy or unavailable";
             break;
         case ERROR_DRM_INSUFFICIENT_OUTPUT_PROTECTION:
             err = gCryptoErrorCodes.cryptoErrorInsufficientOutputProtection;
+            defaultMsg = "Required output protections are not active";
             break;
         case ERROR_DRM_SESSION_NOT_OPENED:
             err = gCryptoErrorCodes.cryptoErrorSessionNotOpened;
+            defaultMsg = "Attempted to use a closed session";
+            break;
+        case ERROR_DRM_CANNOT_HANDLE:
+            err = gCryptoErrorCodes.cryptoErrorUnsupportedOperation;
+            defaultMsg = "Operation not supported in this configuration";
             break;
         default:  /* Other negative DRM error codes go out as is. */
             break;
     }
+
+    jstring msgObj = env->NewStringUTF(msg != NULL ? msg : defaultMsg);
 
     jthrowable exception =
         (jthrowable)env->NewObject(clazz.get(), constructID, err, msgObj);
@@ -929,6 +973,7 @@ static void android_media_MediaCodec_native_configure(
         jobjectArray keys, jobjectArray values,
         jobject jsurface,
         jobject jcrypto,
+        jobject descramblerBinderObj,
         jint flags) {
     sp<JMediaCodec> codec = getMediaCodec(env, thiz);
 
@@ -964,7 +1009,12 @@ static void android_media_MediaCodec_native_configure(
         crypto = JCrypto::GetCrypto(env, jcrypto);
     }
 
-    err = codec->configure(format, bufferProducer, crypto, flags);
+    sp<IDescrambler> descrambler;
+    if (descramblerBinderObj != NULL) {
+        descrambler = JDescrambler::GetDescrambler(env, descramblerBinderObj);
+    }
+
+    err = codec->configure(format, bufferProducer, crypto, descrambler, flags);
 
     throwExceptionAsNecessary(env, err);
 }
@@ -1262,7 +1312,29 @@ static void android_media_MediaCodec_queueSecureInputBuffer(
     jbyteArray ivObj =
         (jbyteArray)env->GetObjectField(cryptoInfoObj, gFields.cryptoInfoIVID);
 
-    jint mode = env->GetIntField(cryptoInfoObj, gFields.cryptoInfoModeID);
+    jint jmode = env->GetIntField(cryptoInfoObj, gFields.cryptoInfoModeID);
+    enum CryptoPlugin::Mode mode;
+    if (jmode == gCryptoModes.Unencrypted) {
+        mode = CryptoPlugin::kMode_Unencrypted;
+    } else if (jmode == gCryptoModes.AesCtr) {
+        mode = CryptoPlugin::kMode_AES_CTR;
+    } else if (jmode == gCryptoModes.AesCbc) {
+        mode = CryptoPlugin::kMode_AES_CBC;
+    }  else {
+        throwExceptionAsNecessary(env, INVALID_OPERATION);
+        return;
+    }
+
+    jobject patternObj = env->GetObjectField(cryptoInfoObj, gFields.cryptoInfoPatternID);
+
+    CryptoPlugin::Pattern pattern;
+    if (patternObj == NULL) {
+        pattern.mEncryptBlocks = 0;
+        pattern.mSkipBlocks = 0;
+    } else {
+        pattern.mEncryptBlocks = env->GetIntField(patternObj, gFields.patternEncryptBlocksID);
+        pattern.mSkipBlocks = env->GetIntField(patternObj, gFields.patternSkipBlocksID);
+    }
 
     status_t err = OK;
 
@@ -1347,7 +1419,8 @@ static void android_media_MediaCodec_queueSecureInputBuffer(
                 index, offset,
                 subSamples, numSubSamples,
                 (const uint8_t *)key, (const uint8_t *)iv,
-                (CryptoPlugin::Mode)mode,
+                mode,
+                pattern,
                 timestampUs,
                 flags,
                 &errorDetailMsg);
@@ -1592,6 +1665,35 @@ static jobject android_media_MediaCodec_getName(
     return NULL;
 }
 
+static jobject
+android_media_MediaCodec_native_getMetrics(JNIEnv *env, jobject thiz)
+{
+    ALOGV("android_media_MediaCodec_native_getMetrics");
+
+    sp<JMediaCodec> codec = getMediaCodec(env, thiz);
+    if (codec == NULL ) {
+        jniThrowException(env, "java/lang/IllegalStateException", NULL);
+        return 0;
+    }
+
+    // get what we have for the metrics from the codec
+    MediaAnalyticsItem *item = NULL;
+
+    status_t err = codec->getMetrics(env, item);
+    if (err != OK) {
+        ALOGE("getMetrics failed");
+        return (jobject) NULL;
+    }
+
+    jobject mybundle = MediaMetricsJNI::writeMetricsToBundle(env, item, NULL);
+
+    // housekeeping
+    delete item;
+    item = NULL;
+
+    return mybundle;
+}
+
 static void android_media_MediaCodec_setParameters(
         JNIEnv *env, jobject thiz, jobjectArray keys, jobjectArray vals) {
     ALOGV("android_media_MediaCodec_setParameters");
@@ -1624,7 +1726,7 @@ static void android_media_MediaCodec_setVideoScalingMode(
 
     if (mode != NATIVE_WINDOW_SCALING_MODE_SCALE_TO_WINDOW
             && mode != NATIVE_WINDOW_SCALING_MODE_SCALE_CROP) {
-        jniThrowException(env, "java/lang/InvalidArgumentException", NULL);
+        jniThrowException(env, "java/lang/IllegalArgumentException", NULL);
         return;
     }
 
@@ -1644,6 +1746,22 @@ static void android_media_MediaCodec_native_init(JNIEnv *env) {
                 clazz.get(), "postEventFromNative", "(IIILjava/lang/Object;)V");
 
     CHECK(gFields.postEventFromNativeID != NULL);
+
+    jfieldID field;
+    field = env->GetStaticFieldID(clazz.get(), "CRYPTO_MODE_UNENCRYPTED", "I");
+    CHECK(field != NULL);
+    gCryptoModes.Unencrypted =
+        env->GetStaticIntField(clazz.get(), field);
+
+    field = env->GetStaticFieldID(clazz.get(), "CRYPTO_MODE_AES_CTR", "I");
+    CHECK(field != NULL);
+    gCryptoModes.AesCtr =
+        env->GetStaticIntField(clazz.get(), field);
+
+    field = env->GetStaticFieldID(clazz.get(), "CRYPTO_MODE_AES_CBC", "I");
+    CHECK(field != NULL);
+    gCryptoModes.AesCbc =
+        env->GetStaticIntField(clazz.get(), field);
 
     clazz.reset(env->FindClass("android/media/MediaCodec$CryptoInfo"));
     CHECK(clazz.get() != NULL);
@@ -1669,10 +1787,22 @@ static void android_media_MediaCodec_native_init(JNIEnv *env) {
     gFields.cryptoInfoModeID = env->GetFieldID(clazz.get(), "mode", "I");
     CHECK(gFields.cryptoInfoModeID != NULL);
 
+    gFields.cryptoInfoPatternID = env->GetFieldID(clazz.get(), "pattern",
+        "Landroid/media/MediaCodec$CryptoInfo$Pattern;");
+    CHECK(gFields.cryptoInfoPatternID != NULL);
+
+    clazz.reset(env->FindClass("android/media/MediaCodec$CryptoInfo$Pattern"));
+    CHECK(clazz.get() != NULL);
+
+    gFields.patternEncryptBlocksID = env->GetFieldID(clazz.get(), "mEncryptBlocks", "I");
+    CHECK(gFields.patternEncryptBlocksID != NULL);
+
+    gFields.patternSkipBlocksID = env->GetFieldID(clazz.get(), "mSkipBlocks", "I");
+    CHECK(gFields.patternSkipBlocksID != NULL);
+
     clazz.reset(env->FindClass("android/media/MediaCodec$CryptoException"));
     CHECK(clazz.get() != NULL);
 
-    jfieldID field;
     field = env->GetStaticFieldID(clazz.get(), "ERROR_NO_KEY", "I");
     CHECK(field != NULL);
     gCryptoErrorCodes.cryptoErrorNoKey =
@@ -1696,6 +1826,11 @@ static void android_media_MediaCodec_native_init(JNIEnv *env) {
     field = env->GetStaticFieldID(clazz.get(), "ERROR_SESSION_NOT_OPENED", "I");
     CHECK(field != NULL);
     gCryptoErrorCodes.cryptoErrorSessionNotOpened =
+        env->GetStaticIntField(clazz.get(), field);
+
+    field = env->GetStaticFieldID(clazz.get(), "ERROR_UNSUPPORTED_OPERATION", "I");
+    CHECK(field != NULL);
+    gCryptoErrorCodes.cryptoErrorUnsupportedOperation =
         env->GetStaticIntField(clazz.get(), field);
 
     clazz.reset(env->FindClass("android/media/MediaCodec$CodecException"));
@@ -1792,7 +1927,7 @@ static void android_media_MediaCodec_native_finalize(
     android_media_MediaCodec_release(env, thiz);
 }
 
-static JNINativeMethod gMethods[] = {
+static const JNINativeMethod gMethods[] = {
     { "native_release", "()V", (void *)android_media_MediaCodec_release },
 
     { "native_reset", "()V", (void *)android_media_MediaCodec_reset },
@@ -1817,7 +1952,7 @@ static JNINativeMethod gMethods[] = {
 
     { "native_configure",
       "([Ljava/lang/String;[Ljava/lang/Object;Landroid/view/Surface;"
-      "Landroid/media/MediaCrypto;I)V",
+      "Landroid/media/MediaCrypto;Landroid/os/IHwBinder;I)V",
       (void *)android_media_MediaCodec_native_configure },
 
     { "native_setSurface",
@@ -1866,6 +2001,9 @@ static JNINativeMethod gMethods[] = {
 
     { "getName", "()Ljava/lang/String;",
       (void *)android_media_MediaCodec_getName },
+
+    { "native_getMetrics", "()Landroid/os/PersistableBundle;",
+      (void *)android_media_MediaCodec_native_getMetrics},
 
     { "setParameters", "([Ljava/lang/String;[Ljava/lang/Object;)V",
       (void *)android_media_MediaCodec_setParameters },

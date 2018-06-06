@@ -16,8 +16,6 @@
 
 package com.android.systemui.statusbar.policy;
 
-import static android.media.MediaRouter.ROUTE_TYPE_REMOTE_DISPLAY;
-
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
@@ -40,6 +38,8 @@ import java.util.ArrayList;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+
+import static android.media.MediaRouter.ROUTE_TYPE_REMOTE_DISPLAY;
 
 /** Platform implementation of the cast controller. **/
 public class CastControllerImpl implements CastController {
@@ -164,7 +164,7 @@ public class CastControllerImpl implements CastController {
 
     @Override
     public void startCasting(CastDevice device) {
-        if (device == null || !(device.tag instanceof RouteInfo)) return;
+        if (device == null || device.tag == null) return;
         final RouteInfo route = (RouteInfo) device.tag;
         if (DEBUG) Log.d(TAG, "startCasting: " + routeToString(route));
         mMediaRouter.selectRoute(ROUTE_TYPE_REMOTE_DISPLAY, route);
@@ -182,7 +182,7 @@ public class CastControllerImpl implements CastController {
                 Log.w(TAG, "Projection is no longer active: " + projection);
             }
         } else {
-            mMediaRouter.getDefaultRoute().select();
+            mMediaRouter.getFallbackRoute().select();
         }
     }
 

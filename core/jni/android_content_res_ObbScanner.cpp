@@ -21,7 +21,7 @@
 #include <androidfw/ObbFile.h>
 
 #include "jni.h"
-#include "JNIHelp.h"
+#include <nativehelper/JNIHelp.h>
 #include "utils/misc.h"
 #include "android_runtime/AndroidRuntime.h"
 
@@ -76,7 +76,7 @@ static void android_content_res_ObbScanner_getObbInfo(JNIEnv* env, jobject clazz
 /*
  * JNI registration.
  */
-static JNINativeMethod gMethods[] = {
+static const JNINativeMethod gMethods[] = {
     /* name, signature, funcPtr */
     { "getObbInfo_native", "(Ljava/lang/String;Landroid/content/res/ObbInfo;)V",
             (void*) android_content_res_ObbScanner_getObbInfo },

@@ -16,8 +16,8 @@
 
 package android.net;
 
-import android.os.Parcelable;
 import android.os.Parcel;
+import android.os.Parcelable;
 
 import com.android.internal.annotations.VisibleForTesting;
 
@@ -119,18 +119,15 @@ public class NetworkInfo implements Parcelable {
     private String mReason;
     private String mExtraInfo;
     private boolean mIsFailover;
-    private boolean mIsRoaming;
-
-    /**
-     * Indicates whether network connectivity is possible:
-     */
     private boolean mIsAvailable;
+    private boolean mIsRoaming;
 
     /**
      * @hide
      */
     public NetworkInfo(int type, int subtype, String typeName, String subtypeName) {
-        if (!ConnectivityManager.isNetworkTypeValid(type)) {
+        if (!ConnectivityManager.isNetworkTypeValid(type)
+                && type != ConnectivityManager.TYPE_NONE) {
             throw new IllegalArgumentException("Invalid network type: " + type);
         }
         mNetworkType = type;
@@ -139,8 +136,6 @@ public class NetworkInfo implements Parcelable {
         mSubtypeName = subtypeName;
         setDetailedState(DetailedState.IDLE, null, null);
         mState = State.UNKNOWN;
-        mIsAvailable = false; // until we're told otherwise, assume unavailable
-        mIsRoaming = false;
     }
 
     /** {@hide} */
@@ -156,8 +151,8 @@ public class NetworkInfo implements Parcelable {
                 mReason = source.mReason;
                 mExtraInfo = source.mExtraInfo;
                 mIsFailover = source.mIsFailover;
-                mIsRoaming = source.mIsRoaming;
                 mIsAvailable = source.mIsAvailable;
+                mIsRoaming = source.mIsRoaming;
             }
         }
     }
@@ -409,26 +404,20 @@ public class NetworkInfo implements Parcelable {
             append("], state: ").append(mState).append("/").append(mDetailedState).
             append(", reason: ").append(mReason == null ? "(unspecified)" : mReason).
             append(", extra: ").append(mExtraInfo == null ? "(none)" : mExtraInfo).
-            append(", roaming: ").append(mIsRoaming).
             append(", failover: ").append(mIsFailover).
-            append(", isAvailable: ").append(mIsAvailable).
+            append(", available: ").append(mIsAvailable).
+            append(", roaming: ").append(mIsRoaming).
             append("]");
             return builder.toString();
         }
     }
 
-    /**
-     * Implement the Parcelable interface
-     * @hide
-     */
+    @Override
     public int describeContents() {
         return 0;
     }
 
-    /**
-     * Implement the Parcelable interface.
-     * @hide
-     */
+    @Override
     public void writeToParcel(Parcel dest, int flags) {
         synchronized (this) {
             dest.writeInt(mNetworkType);
@@ -445,30 +434,27 @@ public class NetworkInfo implements Parcelable {
         }
     }
 
-    /**
-     * Implement the Parcelable interface.
-     * @hide
-     */
-    public static final Creator<NetworkInfo> CREATOR =
-        new Creator<NetworkInfo>() {
-            public NetworkInfo createFromParcel(Parcel in) {
-                int netType = in.readInt();
-                int subtype = in.readInt();
-                String typeName = in.readString();
-                String subtypeName = in.readString();
-                NetworkInfo netInfo = new NetworkInfo(netType, subtype, typeName, subtypeName);
-                netInfo.mState = State.valueOf(in.readString());
-                netInfo.mDetailedState = DetailedState.valueOf(in.readString());
-                netInfo.mIsFailover = in.readInt() != 0;
-                netInfo.mIsAvailable = in.readInt() != 0;
-                netInfo.mIsRoaming = in.readInt() != 0;
-                netInfo.mReason = in.readString();
-                netInfo.mExtraInfo = in.readString();
-                return netInfo;
-            }
+    public static final Creator<NetworkInfo> CREATOR = new Creator<NetworkInfo>() {
+        @Override
+        public NetworkInfo createFromParcel(Parcel in) {
+            int netType = in.readInt();
+            int subtype = in.readInt();
+            String typeName = in.readString();
+            String subtypeName = in.readString();
+            NetworkInfo netInfo = new NetworkInfo(netType, subtype, typeName, subtypeName);
+            netInfo.mState = State.valueOf(in.readString());
+            netInfo.mDetailedState = DetailedState.valueOf(in.readString());
+            netInfo.mIsFailover = in.readInt() != 0;
+            netInfo.mIsAvailable = in.readInt() != 0;
+            netInfo.mIsRoaming = in.readInt() != 0;
+            netInfo.mReason = in.readString();
+            netInfo.mExtraInfo = in.readString();
+            return netInfo;
+        }
 
-            public NetworkInfo[] newArray(int size) {
-                return new NetworkInfo[size];
-            }
-        };
+        @Override
+        public NetworkInfo[] newArray(int size) {
+            return new NetworkInfo[size];
+        }
+    };
 }

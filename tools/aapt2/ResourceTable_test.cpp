@@ -15,214 +15,130 @@
  */
 
 #include "ResourceTable.h"
+#include "Diagnostics.h"
 #include "ResourceValues.h"
-#include "Util.h"
+#include "test/Test.h"
+#include "util/Util.h"
 
 #include <algorithm>
-#include <gtest/gtest.h>
 #include <ostream>
 #include <string>
 
+using ::testing::NotNull;
+
 namespace aapt {
 
-struct TestValue : public Value {
-    std::u16string value;
-
-    TestValue(StringPiece16 str) : value(str.toString()) {
-    }
-
-    TestValue* clone(StringPool* /*newPool*/) const override {
-        return new TestValue(value);
-    }
-
-    void print(std::ostream& out) const override {
-        out << "(test) " << value;
-    }
-
-    virtual void accept(ValueVisitor&, ValueVisitorArgs&&) override {}
-    virtual void accept(ConstValueVisitor&, ValueVisitorArgs&&) const override {}
-};
-
-struct TestWeakValue : public Value {
-    bool isWeak() const override {
-        return true;
-    }
-
-    TestWeakValue* clone(StringPool* /*newPool*/) const override {
-        return new TestWeakValue();
-    }
-
-    void print(std::ostream& out) const override {
-        out << "(test) [weak]";
-    }
-
-    virtual void accept(ValueVisitor&, ValueVisitorArgs&&) override {}
-    virtual void accept(ConstValueVisitor&, ValueVisitorArgs&&) const override {}
-};
-
 TEST(ResourceTableTest, FailToAddResourceWithBadName) {
-    ResourceTable table;
-    table.setPackage(u"android");
+  ResourceTable table;
 
-    EXPECT_FALSE(table.addResource(
-            ResourceNameRef{ u"android", ResourceType::kId, u"hey,there" },
-            {}, SourceLine{ "test.xml", 21 },
-            util::make_unique<TestValue>(u"rawValue")));
+  EXPECT_FALSE(table.AddResource(
+      test::ParseNameOrDie("android:id/hey,there"), ConfigDescription{}, "",
+      test::ValueBuilder<Id>().SetSource("test.xml", 21u).Build(),
+      test::GetDiagnostics()));
 
-    EXPECT_FALSE(table.addResource(
-            ResourceNameRef{ u"android", ResourceType::kId, u"hey:there" },
-            {}, SourceLine{ "test.xml", 21 },
-            util::make_unique<TestValue>(u"rawValue")));
+  EXPECT_FALSE(table.AddResource(
+      test::ParseNameOrDie("android:id/hey:there"), ConfigDescription{}, "",
+      test::ValueBuilder<Id>().SetSource("test.xml", 21u).Build(),
+      test::GetDiagnostics()));
+}
+
+TEST(ResourceTableTest, AddResourceWithWeirdNameWhenAddingMangledResources) {
+  ResourceTable table;
+
+  EXPECT_TRUE(table.AddResourceAllowMangled(
+      test::ParseNameOrDie("android:id/heythere       "), ConfigDescription{}, "",
+      test::ValueBuilder<Id>().SetSource("test.xml", 21u).Build(), test::GetDiagnostics()));
 }
 
 TEST(ResourceTableTest, AddOneResource) {
-    const std::u16string kAndroidPackage = u"android";
+  ResourceTable table;
 
-    ResourceTable table;
-    table.setPackage(kAndroidPackage);
+  EXPECT_TRUE(table.AddResource(
+      test::ParseNameOrDie("android:attr/id"), ConfigDescription{}, "",
+      test::ValueBuilder<Id>().SetSource("test/path/file.xml", 23u).Build(),
+      test::GetDiagnostics()));
 
-    const ResourceName name = { kAndroidPackage, ResourceType::kAttr, u"id" };
-
-    EXPECT_TRUE(table.addResource(name, {}, SourceLine{ "test/path/file.xml", 23 },
-                                  util::make_unique<TestValue>(u"rawValue")));
-
-    const ResourceTableType* type;
-    const ResourceEntry* entry;
-    std::tie(type, entry) = table.findResource(name);
-    ASSERT_NE(nullptr, type);
-    ASSERT_NE(nullptr, entry);
-    EXPECT_EQ(name.entry, entry->name);
-
-    ASSERT_NE(std::end(entry->values),
-              std::find_if(std::begin(entry->values), std::end(entry->values),
-                      [](const ResourceConfigValue& val) -> bool {
-                          return val.config == ConfigDescription{};
-                      }));
+  EXPECT_THAT(test::GetValue<Id>(&table, "android:attr/id"), NotNull());
 }
 
 TEST(ResourceTableTest, AddMultipleResources) {
-    const std::u16string kAndroidPackage = u"android";
-    ResourceTable table;
-    table.setPackage(kAndroidPackage);
+  ResourceTable table;
 
-    ConfigDescription config;
-    ConfigDescription languageConfig;
-    memcpy(languageConfig.language, "pl", sizeof(languageConfig.language));
+  ConfigDescription config;
+  ConfigDescription language_config;
+  memcpy(language_config.language, "pl", sizeof(language_config.language));
 
-    EXPECT_TRUE(table.addResource(
-            ResourceName{ kAndroidPackage, ResourceType::kAttr, u"layout_width" },
-            config, SourceLine{ "test/path/file.xml", 10 },
-            util::make_unique<TestValue>(u"rawValue")));
+  EXPECT_TRUE(table.AddResource(
+      test::ParseNameOrDie("android:attr/layout_width"), config, "",
+      test::ValueBuilder<Id>().SetSource("test/path/file.xml", 10u).Build(),
+      test::GetDiagnostics()));
 
-    EXPECT_TRUE(table.addResource(
-            ResourceName{ kAndroidPackage, ResourceType::kAttr, u"id" },
-            config, SourceLine{ "test/path/file.xml", 12 },
-            util::make_unique<TestValue>(u"rawValue")));
+  EXPECT_TRUE(table.AddResource(
+      test::ParseNameOrDie("android:attr/id"), config, "",
+      test::ValueBuilder<Id>().SetSource("test/path/file.xml", 12u).Build(),
+      test::GetDiagnostics()));
 
-    EXPECT_TRUE(table.addResource(
-            ResourceName{ kAndroidPackage, ResourceType::kString, u"ok" },
-            config, SourceLine{ "test/path/file.xml", 14 },
-            util::make_unique<TestValue>(u"Ok")));
+  EXPECT_TRUE(table.AddResource(
+      test::ParseNameOrDie("android:string/ok"), config, "",
+      test::ValueBuilder<Id>().SetSource("test/path/file.xml", 14u).Build(),
+      test::GetDiagnostics()));
 
-    EXPECT_TRUE(table.addResource(
-            ResourceName{ kAndroidPackage, ResourceType::kString, u"ok" },
-            languageConfig, SourceLine{ "test/path/file.xml", 20 },
-            util::make_unique<TestValue>(u"Tak")));
+  EXPECT_TRUE(table.AddResource(
+      test::ParseNameOrDie("android:string/ok"), language_config, "",
+      test::ValueBuilder<BinaryPrimitive>(android::Res_value{})
+          .SetSource("test/path/file.xml", 20u)
+          .Build(),
+      test::GetDiagnostics()));
 
-    const auto endTypeIter = std::end(table);
-    auto typeIter = std::begin(table);
-
-    ASSERT_NE(endTypeIter, typeIter);
-    EXPECT_EQ(ResourceType::kAttr, (*typeIter)->type);
-
-    {
-        const std::unique_ptr<ResourceTableType>& type = *typeIter;
-        const auto endEntryIter = std::end(type->entries);
-        auto entryIter = std::begin(type->entries);
-        ASSERT_NE(endEntryIter, entryIter);
-        EXPECT_EQ(std::u16string(u"id"), (*entryIter)->name);
-
-        ++entryIter;
-        ASSERT_NE(endEntryIter, entryIter);
-        EXPECT_EQ(std::u16string(u"layout_width"), (*entryIter)->name);
-
-        ++entryIter;
-        ASSERT_EQ(endEntryIter, entryIter);
-    }
-
-    ++typeIter;
-    ASSERT_NE(endTypeIter, typeIter);
-    EXPECT_EQ(ResourceType::kString, (*typeIter)->type);
-
-    {
-        const std::unique_ptr<ResourceTableType>& type = *typeIter;
-        const auto endEntryIter = std::end(type->entries);
-        auto entryIter = std::begin(type->entries);
-        ASSERT_NE(endEntryIter, entryIter);
-        EXPECT_EQ(std::u16string(u"ok"), (*entryIter)->name);
-
-        {
-            const std::unique_ptr<ResourceEntry>& entry = *entryIter;
-            const auto endConfigIter = std::end(entry->values);
-            auto configIter = std::begin(entry->values);
-
-            ASSERT_NE(endConfigIter, configIter);
-            EXPECT_EQ(config, configIter->config);
-            const TestValue* value =
-                    dynamic_cast<const TestValue*>(configIter->value.get());
-            ASSERT_NE(nullptr, value);
-            EXPECT_EQ(std::u16string(u"Ok"), value->value);
-
-            ++configIter;
-            ASSERT_NE(endConfigIter, configIter);
-            EXPECT_EQ(languageConfig, configIter->config);
-            EXPECT_NE(nullptr, configIter->value);
-
-            value = dynamic_cast<const TestValue*>(configIter->value.get());
-            ASSERT_NE(nullptr, value);
-            EXPECT_EQ(std::u16string(u"Tak"), value->value);
-
-            ++configIter;
-            EXPECT_EQ(endConfigIter, configIter);
-        }
-
-        ++entryIter;
-        ASSERT_EQ(endEntryIter, entryIter);
-    }
-
-    ++typeIter;
-    EXPECT_EQ(endTypeIter, typeIter);
+  EXPECT_THAT(test::GetValue<Id>(&table, "android:attr/layout_width"), NotNull());
+  EXPECT_THAT(test::GetValue<Id>(&table, "android:attr/id"), NotNull());
+  EXPECT_THAT(test::GetValue<Id>(&table, "android:string/ok"), NotNull());
+  EXPECT_THAT(test::GetValueForConfig<BinaryPrimitive>(&table, "android:string/ok", language_config), NotNull());
 }
 
 TEST(ResourceTableTest, OverrideWeakResourceValue) {
-    const std::u16string kAndroid = u"android";
+  ResourceTable table;
 
-    ResourceTable table;
-    table.setPackage(kAndroid);
-    table.setPackageId(0x01);
+  ASSERT_TRUE(table.AddResource(
+      test::ParseNameOrDie("android:attr/foo"), ConfigDescription{}, "",
+      util::make_unique<Attribute>(true), test::GetDiagnostics()));
 
-    ASSERT_TRUE(table.addResource(
-            ResourceName{ kAndroid, ResourceType::kAttr, u"foo" },
-            {}, {}, util::make_unique<TestWeakValue>()));
+  Attribute* attr = test::GetValue<Attribute>(&table, "android:attr/foo");
+  ASSERT_THAT(attr, NotNull());
+  EXPECT_TRUE(attr->IsWeak());
 
-    const ResourceTableType* type;
-    const ResourceEntry* entry;
-    std::tie(type, entry) = table.findResource(
-            ResourceNameRef{ kAndroid, ResourceType::kAttr, u"foo" });
-    ASSERT_NE(nullptr, type);
-    ASSERT_NE(nullptr, entry);
-    ASSERT_EQ(entry->values.size(), 1u);
-    EXPECT_TRUE(entry->values.front().value->isWeak());
+  ASSERT_TRUE(table.AddResource(
+      test::ParseNameOrDie("android:attr/foo"), ConfigDescription{}, "",
+      util::make_unique<Attribute>(false), test::GetDiagnostics()));
 
-    ASSERT_TRUE(table.addResource(ResourceName{ kAndroid, ResourceType::kAttr, u"foo" }, {}, {},
-                                  util::make_unique<TestValue>(u"bar")));
-
-    std::tie(type, entry) = table.findResource(
-            ResourceNameRef{ kAndroid, ResourceType::kAttr, u"foo" });
-    ASSERT_NE(nullptr, type);
-    ASSERT_NE(nullptr, entry);
-    ASSERT_EQ(entry->values.size(), 1u);
-    EXPECT_FALSE(entry->values.front().value->isWeak());
+  attr = test::GetValue<Attribute>(&table, "android:attr/foo");
+  ASSERT_THAT(attr, NotNull());
+  EXPECT_FALSE(attr->IsWeak());
 }
 
-} // namespace aapt
+TEST(ResourceTableTest, ProductVaryingValues) {
+  ResourceTable table;
+
+  EXPECT_TRUE(table.AddResource(test::ParseNameOrDie("android:string/foo"),
+                                test::ParseConfigOrDie("land"), "tablet",
+                                util::make_unique<Id>(),
+                                test::GetDiagnostics()));
+  EXPECT_TRUE(table.AddResource(test::ParseNameOrDie("android:string/foo"),
+                                test::ParseConfigOrDie("land"), "phone",
+                                util::make_unique<Id>(),
+                                test::GetDiagnostics()));
+
+  EXPECT_THAT(test::GetValueForConfigAndProduct<Id>(&table, "android:string/foo",test::ParseConfigOrDie("land"), "tablet"), NotNull());
+  EXPECT_THAT(test::GetValueForConfigAndProduct<Id>(&table, "android:string/foo",test::ParseConfigOrDie("land"), "phone"), NotNull());
+
+  Maybe<ResourceTable::SearchResult> sr =
+      table.FindResource(test::ParseNameOrDie("android:string/foo"));
+  ASSERT_TRUE(sr);
+  std::vector<ResourceConfigValue*> values =
+      sr.value().entry->FindAllValues(test::ParseConfigOrDie("land"));
+  ASSERT_EQ(2u, values.size());
+  EXPECT_EQ(std::string("phone"), values[0]->product);
+  EXPECT_EQ(std::string("tablet"), values[1]->product);
+}
+
+}  // namespace aapt

@@ -16,6 +16,7 @@
 
 package android.graphics.drawable;
 
+import android.content.pm.ActivityInfo.Config;
 import android.content.res.Resources;
 import android.graphics.Canvas;
 import android.os.SystemClock;
@@ -113,6 +114,18 @@ public class TransitionDrawable extends LayerDrawable implements Drawable.Callba
         mDuration = mOriginalDuration = durationMillis;
         mReverse = false;
         mTransitionState = TRANSITION_STARTING;
+        invalidateSelf();
+    }
+
+    /**
+     * Show the second layer on top of the first layer immediately
+     *
+     * @hide
+     */
+    public void showSecondLayer() {
+        mAlpha = 255;
+        mReverse = false;
+        mTransitionState = TRANSITION_NONE;
         invalidateSelf();
     }
 
@@ -259,7 +272,7 @@ public class TransitionDrawable extends LayerDrawable implements Drawable.Callba
         }
 
         @Override
-        public int getChangingConfigurations() {
+        public @Config int getChangingConfigurations() {
             return mChangingConfigurations;
         }
     }

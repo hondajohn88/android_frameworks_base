@@ -21,13 +21,15 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.res.TypedArray;
-import android.text.format.DateFormat;
+import android.icu.text.DateFormat;
+import android.icu.text.DisplayContext;
+import android.text.TextUtils;
 import android.util.AttributeSet;
 import android.widget.TextView;
 
+import com.android.systemui.Dependency;
 import com.android.systemui.R;
 
-import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
 
@@ -36,7 +38,7 @@ public class DateView extends TextView {
 
     private final Date mCurrentTime = new Date();
 
-    private SimpleDateFormat mDateFormat;
+    private DateFormat mDateFormat;
     private String mLastText;
     private String mDatePattern;
 
@@ -51,9 +53,9 @@ public class DateView extends TextView {
                 if (Intent.ACTION_LOCALE_CHANGED.equals(action)
                         || Intent.ACTION_TIMEZONE_CHANGED.equals(action)) {
                     // need to get a fresh date format
-                    mDateFormat = null;
+                    getHandler().post(() -> mDateFormat = null);
                 }
-                updateClock();
+                getHandler().post(() -> updateClock());
             }
         }
     };
@@ -84,7 +86,8 @@ public class DateView extends TextView {
         filter.addAction(Intent.ACTION_TIME_CHANGED);
         filter.addAction(Intent.ACTION_TIMEZONE_CHANGED);
         filter.addAction(Intent.ACTION_LOCALE_CHANGED);
-        getContext().registerReceiver(mIntentReceiver, filter, null, null);
+        getContext().registerReceiver(mIntentReceiver, filter, null,
+                Dependency.get(Dependency.TIME_TICK_HANDLER));
 
         updateClock();
     }
@@ -100,8 +103,9 @@ public class DateView extends TextView {
     protected void updateClock() {
         if (mDateFormat == null) {
             final Locale l = Locale.getDefault();
-            final String fmt = DateFormat.getBestDateTimePattern(l, mDatePattern);
-            mDateFormat = new SimpleDateFormat(fmt, l);
+            DateFormat format = DateFormat.getInstanceForSkeleton(mDatePattern, l);
+            format.setContext(DisplayContext.CAPITALIZATION_FOR_STANDALONE);
+            mDateFormat = format;
         }
 
         mCurrentTime.setTime(System.currentTimeMillis());
@@ -110,6 +114,17 @@ public class DateView extends TextView {
         if (!text.equals(mLastText)) {
             setText(text);
             mLastText = text;
+        }
+    }
+
+    public void setDatePattern(String pattern) {
+        if (TextUtils.equals(pattern, mDatePattern)) {
+            return;
+        }
+        mDatePattern = pattern;
+        mDateFormat = null;
+        if (isAttachedToWindow()) {
+            updateClock();
         }
     }
 }

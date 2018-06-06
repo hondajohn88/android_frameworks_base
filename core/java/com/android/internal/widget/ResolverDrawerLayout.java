@@ -17,9 +17,15 @@
 
 package com.android.internal.widget;
 
+import com.android.internal.R;
+
 import android.content.Context;
 import android.content.res.TypedArray;
+import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.Rect;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.Drawable;
 import android.os.Bundle;
 import android.os.Parcel;
 import android.os.Parcelable;
@@ -38,7 +44,6 @@ import android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction;
 import android.view.animation.AnimationUtils;
 import android.widget.AbsListView;
 import android.widget.OverScroller;
-import com.android.internal.R;
 
 public class ResolverDrawerLayout extends ViewGroup {
     private static final String TAG = "ResolverDrawerLayout";
@@ -86,8 +91,12 @@ public class ResolverDrawerLayout extends ViewGroup {
     private final OverScroller mScroller;
     private final VelocityTracker mVelocityTracker;
 
+    private Drawable mScrollIndicatorDrawable;
+
     private OnDismissedListener mOnDismissedListener;
     private RunOnDismissedListener mRunOnDismissedListener;
+
+    private boolean mDismissLocked;
 
     private float mInitialTouchX;
     private float mInitialTouchY;
@@ -126,6 +135,8 @@ public class ResolverDrawerLayout extends ViewGroup {
                 R.styleable.ResolverDrawerLayout_maxCollapsedHeightSmall,
                 mMaxCollapsedHeight);
         a.recycle();
+
+        mScrollIndicatorDrawable = mContext.getDrawable(R.drawable.scroll_indicator_material);
 
         mScroller = new OverScroller(context, AnimationUtils.loadInterpolator(context,
                 android.R.interpolator.decelerate_quint));
@@ -178,6 +189,10 @@ public class ResolverDrawerLayout extends ViewGroup {
         invalidate();
     }
 
+    public void setDismissLocked(boolean locked) {
+        mDismissLocked = locked;
+    }
+
     private boolean isMoving() {
         return mIsDragging || !mScroller.isFinished();
     }
@@ -202,8 +217,7 @@ public class ResolverDrawerLayout extends ViewGroup {
             }
             final boolean isCollapsedNew = mCollapseOffset != 0;
             if (isCollapsedOld != isCollapsedNew) {
-                notifyViewAccessibilityStateChangedIfNeeded(
-                        AccessibilityEvent.CONTENT_CHANGE_TYPE_UNDEFINED);
+                onCollapsedChanged(isCollapsedNew);
             }
         } else {
             // Start out collapsed at first unless we restored state for otherwise
@@ -219,6 +233,10 @@ public class ResolverDrawerLayout extends ViewGroup {
 
     public void setOnDismissedListener(OnDismissedListener listener) {
         mOnDismissedListener = listener;
+    }
+
+    private boolean isDismissable() {
+        return mOnDismissedListener != null && !mDismissLocked;
     }
 
     @Override
@@ -237,7 +255,7 @@ public class ResolverDrawerLayout extends ViewGroup {
                 final float y = ev.getY();
                 mInitialTouchX = x;
                 mInitialTouchY = mLastTouchY = y;
-                mOpenOnClick = isListChildUnderClipped(x, y) && mCollapsibleHeight > 0;
+                mOpenOnClick = isListChildUnderClipped(x, y) && mCollapseOffset > 0;
             }
             break;
 
@@ -288,7 +306,7 @@ public class ResolverDrawerLayout extends ViewGroup {
                 mInitialTouchY = mLastTouchY = y;
                 mActivePointerId = ev.getPointerId(0);
                 final boolean hitView = findChildUnder(mInitialTouchX, mInitialTouchY) != null;
-                handled = mOnDismissedListener != null || mCollapsibleHeight > 0;
+                handled = isDismissable() || mCollapsibleHeight > 0;
                 mIsDragging = hitView && handled;
                 abortAnimation();
             }
@@ -340,7 +358,7 @@ public class ResolverDrawerLayout extends ViewGroup {
                 mIsDragging = false;
                 if (!wasDragging && findChildUnder(mInitialTouchX, mInitialTouchY) == null &&
                         findChildUnder(ev.getX(), ev.getY()) == null) {
-                    if (mOnDismissedListener != null) {
+                    if (isDismissable()) {
                         dispatchOnDismissed();
                         resetTouch();
                         return true;
@@ -354,7 +372,7 @@ public class ResolverDrawerLayout extends ViewGroup {
                 mVelocityTracker.computeCurrentVelocity(1000);
                 final float yvel = mVelocityTracker.getYVelocity(mActivePointerId);
                 if (Math.abs(yvel) > mMinFlingVelocity) {
-                    if (mOnDismissedListener != null
+                    if (isDismissable()
                             && yvel > 0 && mCollapseOffset > mCollapsibleHeight) {
                         smoothScrollTo(mCollapsibleHeight + mUncollapsibleHeight, yvel);
                         mDismissOnScrollerFinished = true;
@@ -442,13 +460,21 @@ public class ResolverDrawerLayout extends ViewGroup {
             mTopOffset += dy;
             final boolean isCollapsedNew = newPos != 0;
             if (isCollapsedOld != isCollapsedNew) {
-                notifyViewAccessibilityStateChangedIfNeeded(
-                        AccessibilityEvent.CONTENT_CHANGE_TYPE_UNDEFINED);
+                onCollapsedChanged(isCollapsedNew);
             }
             postInvalidateOnAnimation();
             return dy;
         }
         return 0;
+    }
+
+    private void onCollapsedChanged(boolean isCollapsed) {
+        notifyViewAccessibilityStateChangedIfNeeded(
+                AccessibilityEvent.CONTENT_CHANGE_TYPE_UNDEFINED);
+
+        if (mScrollIndicatorDrawable != null) {
+            setWillNotDraw(!isCollapsed);
+        }
     }
 
     void dispatchOnDismissed() {
@@ -640,7 +666,7 @@ public class ResolverDrawerLayout extends ViewGroup {
     @Override
     public boolean onNestedFling(View target, float velocityX, float velocityY, boolean consumed) {
         if (!consumed && Math.abs(velocityY) > mMinFlingVelocity) {
-            if (mOnDismissedListener != null
+            if (isDismissable()
                     && velocityY < 0 && mCollapseOffset > mCollapsibleHeight) {
                 smoothScrollTo(mCollapsibleHeight + mUncollapsibleHeight, velocityY);
                 mDismissOnScrollerFinished = true;
@@ -709,6 +735,15 @@ public class ResolverDrawerLayout extends ViewGroup {
     }
 
     @Override
+    public void onDrawForeground(Canvas canvas) {
+        if (mScrollIndicatorDrawable != null) {
+            mScrollIndicatorDrawable.draw(canvas);
+        }
+
+        super.onDrawForeground(canvas);
+    }
+
+    @Override
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
         final int sourceWidth = MeasureSpec.getSize(widthMeasureSpec);
         int widthSize = sourceWidth;
@@ -723,6 +758,10 @@ public class ResolverDrawerLayout extends ViewGroup {
         final int widthSpec = MeasureSpec.makeMeasureSpec(widthSize, MeasureSpec.EXACTLY);
         final int heightSpec = MeasureSpec.makeMeasureSpec(heightSize, MeasureSpec.EXACTLY);
         final int widthPadding = getPaddingLeft() + getPaddingRight();
+
+        // Currently we allot more height than is really needed so that the entirety of the
+        // sheet may be pulled up.
+        // TODO: Restrict the height here to be the right value.
         int heightUsed = getPaddingTop() + getPaddingBottom();
 
         // Measure always-show children first.
@@ -732,7 +771,7 @@ public class ResolverDrawerLayout extends ViewGroup {
             final LayoutParams lp = (LayoutParams) child.getLayoutParams();
             if (lp.alwaysShow && child.getVisibility() != GONE) {
                 measureChildWithMargins(child, widthSpec, widthPadding, heightSpec, heightUsed);
-                heightUsed += getHeightUsed(child);
+                heightUsed += child.getMeasuredHeight();
             }
         }
 
@@ -744,7 +783,7 @@ public class ResolverDrawerLayout extends ViewGroup {
             final LayoutParams lp = (LayoutParams) child.getLayoutParams();
             if (!lp.alwaysShow && child.getVisibility() != GONE) {
                 measureChildWithMargins(child, widthSpec, widthPadding, heightSpec, heightUsed);
-                heightUsed += getHeightUsed(child);
+                heightUsed += child.getMeasuredHeight();
             }
         }
 
@@ -760,39 +799,11 @@ public class ResolverDrawerLayout extends ViewGroup {
         setMeasuredDimension(sourceWidth, heightSize);
     }
 
-    private int getHeightUsed(View child) {
-        // This method exists because we're taking a fast path at measuring ListViews that
-        // lets us get away with not doing the more expensive wrap_content measurement which
-        // imposes double child view measurement costs. If we're looking at a ListView, we can
-        // check against the lowest child view plus padding and margin instead of the actual
-        // measured height of the ListView. This lets the ListView hang off the edge when
-        // all of the content would fit on-screen.
-
-        int heightUsed = child.getMeasuredHeight();
-        if (child instanceof AbsListView) {
-            final AbsListView lv = (AbsListView) child;
-            final int lvPaddingBottom = lv.getPaddingBottom();
-
-            int lowest = 0;
-            for (int i = 0, N = lv.getChildCount(); i < N; i++) {
-                final int bottom = lv.getChildAt(i).getBottom() + lvPaddingBottom;
-                if (bottom > lowest) {
-                    lowest = bottom;
-                }
-            }
-
-            if (lowest < heightUsed) {
-                heightUsed = lowest;
-            }
-        }
-
-        final LayoutParams lp = (LayoutParams) child.getLayoutParams();
-        return lp.topMargin + heightUsed + lp.bottomMargin;
-    }
-
     @Override
     protected void onLayout(boolean changed, int l, int t, int r, int b) {
         final int width = getWidth();
+
+        View indicatorHost = null;
 
         int ypos = mTopOffset;
         int leftEdge = getPaddingLeft();
@@ -802,6 +813,9 @@ public class ResolverDrawerLayout extends ViewGroup {
         for (int i = 0; i < childCount; i++) {
             final View child = getChildAt(i);
             final LayoutParams lp = (LayoutParams) child.getLayoutParams();
+            if (lp.hasNestedScrollIndicator) {
+                indicatorHost = child;
+            }
 
             if (child.getVisibility() == GONE) {
                 continue;
@@ -821,6 +835,20 @@ public class ResolverDrawerLayout extends ViewGroup {
             child.layout(left, top, right, bottom);
 
             ypos = bottom + lp.bottomMargin;
+        }
+
+        if (mScrollIndicatorDrawable != null) {
+            if (indicatorHost != null) {
+                final int left = indicatorHost.getLeft();
+                final int right = indicatorHost.getRight();
+                final int bottom = indicatorHost.getTop();
+                final int top = bottom - mScrollIndicatorDrawable.getIntrinsicHeight();
+                mScrollIndicatorDrawable.setBounds(left, top, right, bottom);
+                setWillNotDraw(!isCollapsed());
+            } else {
+                mScrollIndicatorDrawable = null;
+                setWillNotDraw(true);
+            }
         }
     }
 
@@ -861,6 +889,7 @@ public class ResolverDrawerLayout extends ViewGroup {
     public static class LayoutParams extends MarginLayoutParams {
         public boolean alwaysShow;
         public boolean ignoreOffset;
+        public boolean hasNestedScrollIndicator;
 
         public LayoutParams(Context c, AttributeSet attrs) {
             super(c, attrs);
@@ -873,6 +902,9 @@ public class ResolverDrawerLayout extends ViewGroup {
             ignoreOffset = a.getBoolean(
                     R.styleable.ResolverDrawerLayout_LayoutParams_layout_ignoreOffset,
                     false);
+            hasNestedScrollIndicator = a.getBoolean(
+                    R.styleable.ResolverDrawerLayout_LayoutParams_layout_hasNestedScrollIndicator,
+                    false);
             a.recycle();
         }
 
@@ -884,6 +916,7 @@ public class ResolverDrawerLayout extends ViewGroup {
             super(source);
             this.alwaysShow = source.alwaysShow;
             this.ignoreOffset = source.ignoreOffset;
+            this.hasNestedScrollIndicator = source.hasNestedScrollIndicator;
         }
 
         public LayoutParams(MarginLayoutParams source) {

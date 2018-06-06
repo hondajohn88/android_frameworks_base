@@ -23,7 +23,7 @@ LOCAL_MODULE_TAGS := tests
 
 LOCAL_SRC_FILES := $(call all-java-files-under, src)
 
-LOCAL_SDK_VERSION := current
+LOCAL_SDK_VERSION := 8
 
 LOCAL_PACKAGE_NAME := MultiDexLegacyTestApp
 
@@ -44,12 +44,14 @@ ifdef LOCAL_JACK_ENABLED
 LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_PATH)/test.jpp
 endif
 
+LOCAL_MIN_SDK_VERSION := 8
+
 include $(BUILD_PACKAGE)
 
 ifndef LOCAL_JACK_ENABLED
-$(mainDexList): $(full_classes_proguard_jar) | $(HOST_OUT_EXECUTABLES)/mainDexClasses
+$(mainDexList): $(full_classes_proguard_jar) | $(MAINDEXCLASSES)
 	$(hide) mkdir -p $(dir $@)
-	$(HOST_OUT_EXECUTABLES)/mainDexClasses $< 1>$@
+	$(MAINDEXCLASSES) $< 1>$@
 	echo "com/android/multidexlegacytestapp/Test.class" >> $@
 
 $(built_dex_intermediate): $(mainDexList)
@@ -64,7 +66,7 @@ LOCAL_MODULE_TAGS := tests
 
 LOCAL_SRC_FILES := $(call all-java-files-under, src)
 
-LOCAL_SDK_VERSION := current
+LOCAL_SDK_VERSION := 8
 
 LOCAL_PACKAGE_NAME := MultiDexLegacyTestApp2
 
@@ -85,12 +87,14 @@ ifdef LOCAL_JACK_ENABLED
 LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_PATH)/test.jpp
 endif
 
+LOCAL_MIN_SDK_VERSION := 8
+
 include $(BUILD_PACKAGE)
 
 ifndef LOCAL_JACK_ENABLED
-$(mainDexList2): $(full_classes_proguard_jar) | $(HOST_OUT_EXECUTABLES)/mainDexClasses
+$(mainDexList2): $(full_classes_proguard_jar) | $(MAINDEXCLASSES)
 	$(hide) mkdir -p $(dir $@)
-	$(HOST_OUT_EXECUTABLES)/mainDexClasses $< 1>$@
+	$(MAINDEXCLASSES) $< 1>$@
 	echo "com/android/multidexlegacytestapp/Test.class" >> $@
 
 $(built_dex_intermediate): $(mainDexList2)

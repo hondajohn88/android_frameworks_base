@@ -17,6 +17,7 @@
 package android.service.voice;
 
 import android.annotation.Nullable;
+import android.app.Activity;
 import android.app.Dialog;
 import android.app.Instrumentation;
 import android.app.VoiceInteractor;
@@ -49,6 +50,7 @@ import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
+
 import com.android.internal.app.IVoiceInteractionManagerService;
 import com.android.internal.app.IVoiceInteractionSessionShowCallback;
 import com.android.internal.app.IVoiceInteractor;
@@ -101,6 +103,23 @@ public class VoiceInteractionSession implements KeyEvent.Callback, ComponentCall
      */
     public static final int SHOW_SOURCE_APPLICATION = 1<<3;
 
+    /**
+     * Flag for use with {@link #onShow}: indicates that an Activity has invoked the voice
+     * interaction service for a local interaction using
+     * {@link Activity#startLocalVoiceInteraction(Bundle)}.
+     */
+    public static final int SHOW_SOURCE_ACTIVITY = 1<<4;
+
+    // Keys for Bundle values
+    /** @hide */
+    public static final String KEY_DATA = "data";
+    /** @hide */
+    public static final String KEY_STRUCTURE = "structure";
+    /** @hide */
+    public static final String KEY_CONTENT = "content";
+    /** @hide */
+    public static final String KEY_RECEIVER_EXTRAS = "receiverExtras";
+
     final Context mContext;
     final HandlerCaller mHandlerCaller;
 
@@ -116,6 +135,7 @@ public class VoiceInteractionSession implements KeyEvent.Callback, ComponentCall
     FrameLayout mContentFrame;
     SoftInputWindow mWindow;
 
+    boolean mUiEnabled = true;
     boolean mInitialized;
     boolean mWindowAdded;
     boolean mWindowVisible;
@@ -215,12 +235,14 @@ public class VoiceInteractionSession implements KeyEvent.Callback, ComponentCall
 
         @Override
         public void hide() {
+            // Remove any pending messages to show the session
+            mHandlerCaller.removeMessages(MSG_SHOW);
             mHandlerCaller.sendMessage(mHandlerCaller.obtainMessage(MSG_HIDE));
         }
 
         @Override
         public void handleAssist(final Bundle data, final AssistStructure structure,
-                final AssistContent content) {
+                final AssistContent content, final int index, final int count) {
             // We want to pre-warm the AssistStructure before handing it off to the main
             // thread.  We also want to do this on a separate thread, so that if the app
             // is for some reason slow (due to slow filling in of async children in the
@@ -238,8 +260,9 @@ public class VoiceInteractionSession implements KeyEvent.Callback, ComponentCall
                             failure = e;
                         }
                     }
-                    mHandlerCaller.sendMessage(mHandlerCaller.obtainMessageOOOO(MSG_HANDLE_ASSIST,
-                            data, failure == null ? structure : null, failure, content));
+                    mHandlerCaller.sendMessage(mHandlerCaller.obtainMessageOOOOII(MSG_HANDLE_ASSIST,
+                            data, failure == null ? structure : null, failure, content,
+                            index, count));
                 }
             };
             retriever.start();
@@ -433,6 +456,7 @@ public class VoiceInteractionSession implements KeyEvent.Callback, ComponentCall
          * VoiceInteractor.ConfirmationRequest}.
          * @deprecated Prefer {@link #getVoicePrompt()} which allows multiple voice prompts.
          */
+        @Deprecated
         @Nullable
         public CharSequence getPrompt() {
             return (mPrompt != null ? mPrompt.getVoicePromptAt(0) : null);
@@ -492,6 +516,7 @@ public class VoiceInteractionSession implements KeyEvent.Callback, ComponentCall
          * {@link android.app.VoiceInteractor.PickOptionRequest VoiceInteractor.PickOptionRequest}.
          * @deprecated Prefer {@link #getVoicePrompt()} which allows multiple voice prompts.
          */
+        @Deprecated
         @Nullable
         public CharSequence getPrompt() {
             return (mPrompt != null ? mPrompt.getVoicePromptAt(0) : null);
@@ -602,6 +627,7 @@ public class VoiceInteractionSession implements KeyEvent.Callback, ComponentCall
          * VoiceInteractor.CompleteVoiceRequest}.
          * @deprecated Prefer {@link #getVoicePrompt()} which allows a separate visual message.
          */
+        @Deprecated
         @Nullable
         public CharSequence getMessage() {
             return (mPrompt != null ? mPrompt.getVoicePromptAt(0) : null);
@@ -658,6 +684,7 @@ public class VoiceInteractionSession implements KeyEvent.Callback, ComponentCall
          * {@link android.app.VoiceInteractor.AbortVoiceRequest VoiceInteractor.AbortVoiceRequest}.
          * @deprecated Prefer {@link #getVoicePrompt()} which allows a separate visual message.
          */
+        @Deprecated
         @Nullable
         public CharSequence getMessage() {
             return (mPrompt != null ? mPrompt.getVoicePromptAt(0) : null);
@@ -822,9 +849,16 @@ public class VoiceInteractionSession implements KeyEvent.Callback, ComponentCall
                 case MSG_HANDLE_ASSIST:
                     args = (SomeArgs)msg.obj;
                     if (DEBUG) Log.d(TAG, "onHandleAssist: data=" + args.arg1
-                            + " structure=" + args.arg2 + " content=" + args.arg3);
-                    doOnHandleAssist((Bundle) args.arg1, (AssistStructure) args.arg2,
-                            (Throwable) args.arg3, (AssistContent) args.arg4);
+                            + " structure=" + args.arg2 + " content=" + args.arg3
+                            + " activityIndex=" + args.argi5 + " activityCount=" + args.argi6);
+                    if (args.argi5 == 0) {
+                        doOnHandleAssist((Bundle) args.arg1, (AssistStructure) args.arg2,
+                                (Throwable) args.arg3, (AssistContent) args.arg4);
+                    } else {
+                        doOnHandleAssistSecondary((Bundle) args.arg1, (AssistStructure) args.arg2,
+                                (Throwable) args.arg3, (AssistContent) args.arg4,
+                                args.argi5, args.argi6);
+                    }
                     break;
                 case MSG_HANDLE_SCREENSHOT:
                     if (DEBUG) Log.d(TAG, "onHandleScreenshot: " + msg.obj);
@@ -970,35 +1004,40 @@ public class VoiceInteractionSession implements KeyEvent.Callback, ComponentCall
 
         try {
             mInShowWindow = true;
+            onPrepareShow(args, flags);
             if (!mWindowVisible) {
-                if (!mWindowAdded) {
-                    mWindowAdded = true;
-                    View v = onCreateContentView();
-                    if (v != null) {
-                        setContentView(v);
-                    }
-                }
+                ensureWindowAdded();
             }
             onShow(args, flags);
             if (!mWindowVisible) {
                 mWindowVisible = true;
-                mWindow.show();
+                if (mUiEnabled) {
+                    mWindow.show();
+                }
             }
             if (showCallback != null) {
-                mRootView.invalidate();
-                mRootView.getViewTreeObserver().addOnPreDrawListener(
-                        new ViewTreeObserver.OnPreDrawListener() {
-                            @Override
-                            public boolean onPreDraw() {
-                                mRootView.getViewTreeObserver().removeOnPreDrawListener(this);
-                                try {
-                                    showCallback.onShown();
-                                } catch (RemoteException e) {
-                                    Log.w(TAG, "Error calling onShown", e);
+                if (mUiEnabled) {
+                    mRootView.invalidate();
+                    mRootView.getViewTreeObserver().addOnPreDrawListener(
+                            new ViewTreeObserver.OnPreDrawListener() {
+                                @Override
+                                public boolean onPreDraw() {
+                                    mRootView.getViewTreeObserver().removeOnPreDrawListener(this);
+                                    try {
+                                        showCallback.onShown();
+                                    } catch (RemoteException e) {
+                                        Log.w(TAG, "Error calling onShown", e);
+                                    }
+                                    return true;
                                 }
-                                return true;
-                            }
-                        });
+                            });
+                } else {
+                    try {
+                        showCallback.onShown();
+                    } catch (RemoteException e) {
+                        Log.w(TAG, "Error calling onShown", e);
+                    }
+                }
             }
         } finally {
             mWindowWasVisible = true;
@@ -1008,7 +1047,7 @@ public class VoiceInteractionSession implements KeyEvent.Callback, ComponentCall
 
     void doHide() {
         if (mWindowVisible) {
-            mWindow.hide();
+            ensureWindowHidden();
             mWindowVisible = false;
             onHide();
         }
@@ -1027,19 +1066,56 @@ public class VoiceInteractionSession implements KeyEvent.Callback, ComponentCall
         }
     }
 
-    void initViews() {
+    void ensureWindowCreated() {
+        if (mInitialized) {
+            return;
+        }
+
+        if (!mUiEnabled) {
+            throw new IllegalStateException("setUiEnabled is false");
+        }
+
         mInitialized = true;
+        mInflater = (LayoutInflater)mContext.getSystemService(
+                Context.LAYOUT_INFLATER_SERVICE);
+        mWindow = new SoftInputWindow(mContext, "VoiceInteractionSession", mTheme,
+                mCallbacks, this, mDispatcherState,
+                WindowManager.LayoutParams.TYPE_VOICE_INTERACTION, Gravity.BOTTOM, true);
+        mWindow.getWindow().addFlags(
+                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED |
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN |
+                        WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR);
 
         mThemeAttrs = mContext.obtainStyledAttributes(android.R.styleable.VoiceInteractionSession);
         mRootView = mInflater.inflate(
                 com.android.internal.R.layout.voice_interaction_session, null);
         mRootView.setSystemUiVisibility(
                 View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
+                        | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
         mWindow.setContentView(mRootView);
         mRootView.getViewTreeObserver().addOnComputeInternalInsetsListener(mInsetsComputer);
 
         mContentFrame = (FrameLayout)mRootView.findViewById(android.R.id.content);
+
+        mWindow.getWindow().setLayout(MATCH_PARENT, MATCH_PARENT);
+        mWindow.setToken(mToken);
+    }
+
+    void ensureWindowAdded() {
+        if (mUiEnabled && !mWindowAdded) {
+            mWindowAdded = true;
+            ensureWindowCreated();
+            View v = onCreateContentView();
+            if (v != null) {
+                setContentView(v);
+            }
+        }
+    }
+
+    void ensureWindowHidden() {
+        if (mWindow != null) {
+            mWindow.hide();
+        }
     }
 
     /**
@@ -1120,6 +1196,24 @@ public class VoiceInteractionSession implements KeyEvent.Callback, ComponentCall
     }
 
     /**
+     * Control whether the UI layer for this session is enabled.  It is enabled by default.
+     * If set to false, you will not be able to provide a UI through {@link #onCreateContentView()}.
+     */
+    public void setUiEnabled(boolean enabled) {
+        if (mUiEnabled != enabled) {
+            mUiEnabled = enabled;
+            if (mWindowVisible) {
+                if (enabled) {
+                    ensureWindowAdded();
+                    mWindow.show();
+                } else {
+                    ensureWindowHidden();
+                }
+            }
+        }
+    }
+
+    /**
      * You can call this to customize the theme used by your IME's window.
      * This must be set before {@link #onCreate}, so you
      * will typically call it in your constructor with the resource ID
@@ -1161,8 +1255,38 @@ public class VoiceInteractionSession implements KeyEvent.Callback, ComponentCall
         }
         try {
             intent.migrateExtraStreamToClipData();
-            intent.prepareToLeaveProcess();
+            intent.prepareToLeaveProcess(mContext);
             int res = mSystemService.startVoiceActivity(mToken, intent,
+                    intent.resolveType(mContext.getContentResolver()));
+            Instrumentation.checkStartActivityResult(res, intent);
+        } catch (RemoteException e) {
+        }
+    }
+
+
+
+    /**
+     * <p>Ask that a new assistant activity be started.  This will create a new task in the
+     * in activity manager: this means that
+     * {@link Intent#FLAG_ACTIVITY_NEW_TASK Intent.FLAG_ACTIVITY_NEW_TASK}
+     * will be set for you to make it a new task.</p>
+     *
+     * <p>The newly started activity will be displayed on top of other activities in the system
+     * in a new layer that is not affected by multi-window mode.  Tasks started from this activity
+     * will go into the normal activity layer and not this new layer.</p>
+     *
+     * <p>By default, the system will create a window for the UI for this session.  If you are using
+     * an assistant activity instead, then you can disable the window creation by calling
+     * {@link #setUiEnabled} in {@link #onPrepareShow(Bundle, int)}.</p>
+     */
+    public void startAssistantActivity(Intent intent) {
+        if (mToken == null) {
+            throw new IllegalStateException("Can't call before onCreate()");
+        }
+        try {
+            intent.migrateExtraStreamToClipData();
+            intent.prepareToLeaveProcess(mContext);
+            int res = mSystemService.startAssistantActivity(mToken, intent,
                     intent.resolveType(mContext.getContentResolver()));
             Instrumentation.checkStartActivityResult(res, intent);
         } catch (RemoteException e) {
@@ -1211,6 +1335,7 @@ public class VoiceInteractionSession implements KeyEvent.Callback, ComponentCall
      * Convenience for inflating views.
      */
     public LayoutInflater getLayoutInflater() {
+        ensureWindowCreated();
         return mInflater;
     }
 
@@ -1218,6 +1343,7 @@ public class VoiceInteractionSession implements KeyEvent.Callback, ComponentCall
      * Retrieve the window being used to show the session's UI.
      */
     public Dialog getWindow() {
+        ensureWindowCreated();
         return mWindow;
     }
 
@@ -1247,18 +1373,17 @@ public class VoiceInteractionSession implements KeyEvent.Callback, ComponentCall
     private void doOnCreate() {
         mTheme = mTheme != 0 ? mTheme
                 : com.android.internal.R.style.Theme_DeviceDefault_VoiceInteractionSession;
-        mInflater = (LayoutInflater)mContext.getSystemService(
-                Context.LAYOUT_INFLATER_SERVICE);
-        mWindow = new SoftInputWindow(mContext, "VoiceInteractionSession", mTheme,
-                mCallbacks, this, mDispatcherState,
-                WindowManager.LayoutParams.TYPE_VOICE_INTERACTION, Gravity.BOTTOM, true);
-        mWindow.getWindow().addFlags(
-                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED |
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN |
-                WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR);
-        initViews();
-        mWindow.getWindow().setLayout(MATCH_PARENT, MATCH_PARENT);
-        mWindow.setToken(mToken);
+    }
+
+    /**
+     * Called prior to {@link #onShow} before any UI setup has occurred.  Not generally useful.
+     *
+     * @param args The arguments that were supplied to
+     * {@link VoiceInteractionService#showSession VoiceInteractionService.showSession}.
+     * @param showFlags The show flags originally provided to
+     * {@link VoiceInteractionService#showSession VoiceInteractionService.showSession}.
+     */
+    public void onPrepareShow(Bundle args, int showFlags) {
     }
 
     /**
@@ -1296,6 +1421,7 @@ public class VoiceInteractionSession implements KeyEvent.Callback, ComponentCall
     }
 
     public void setContentView(View view) {
+        ensureWindowCreated();
         mContentFrame.removeAllViews();
         mContentFrame.addView(view, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1309,6 +1435,14 @@ public class VoiceInteractionSession implements KeyEvent.Callback, ComponentCall
             onAssistStructureFailure(failure);
         }
         onHandleAssist(data, structure, content);
+    }
+
+    void doOnHandleAssistSecondary(Bundle data, AssistStructure structure, Throwable failure,
+            AssistContent content, int index, int count) {
+        if (failure != null) {
+            onAssistStructureFailure(failure);
+        }
+        onHandleAssistSecondary(data, structure, content, index, count);
     }
 
     /**
@@ -1344,6 +1478,45 @@ public class VoiceInteractionSession implements KeyEvent.Callback, ComponentCall
      */
     public void onHandleAssist(@Nullable Bundle data, @Nullable AssistStructure structure,
             @Nullable AssistContent content) {
+    }
+
+    /**
+     * Called to receive data from other applications that the user was or is interacting with,
+     * that are currently on the screen in a multi-window display environment, not including the
+     * currently focused activity. This could be
+     * a free-form window, a picture-in-picture window, or another window in a split-screen display.
+     * <p>
+     * This method is very similar to
+     * {@link #onHandleAssist} except that it is called
+     * for additional non-focused activities along with an index and count that indicates
+     * which additional activity the data is for. {@code index} will be between 1 and
+     * {@code count}-1 and this method is called once for each additional window, in no particular
+     * order. The {@code count} indicates how many windows to expect assist data for, including the
+     * top focused activity, which continues to be returned via {@link #onHandleAssist}.
+     * <p>
+     * To be responsive to assist requests, process assist data as soon as it is received,
+     * without waiting for all queued activities to return assist data.
+     *
+     * @param data Arbitrary data supplied by the app through
+     * {@link android.app.Activity#onProvideAssistData Activity.onProvideAssistData}.
+     * May be null if assist data has been disabled by the user or device policy.
+     * @param structure If available, the structure definition of all windows currently
+     * displayed by the app.  May be null if assist data has been disabled by the user
+     * or device policy; will be an empty stub if the application has disabled assist
+     * by marking its window as secure.
+     * @param content Additional content data supplied by the app through
+     * {@link android.app.Activity#onProvideAssistContent Activity.onProvideAssistContent}.
+     * May be null if assist data has been disabled by the user or device policy; will
+     * not be automatically filled in with data from the app if the app has marked its
+     * window as secure.
+     * @param index the index of the additional activity that this data
+     *        is for.
+     * @param count the total number of additional activities for which the assist data is being
+     *        returned, including the focused activity that is returned via
+     *        {@link #onHandleAssist}.
+     */
+    public void onHandleAssistSecondary(@Nullable Bundle data, @Nullable AssistStructure structure,
+            @Nullable AssistContent content, int index, int count) {
     }
 
     /**
@@ -1545,7 +1718,8 @@ public class VoiceInteractionSession implements KeyEvent.Callback, ComponentCall
     public void dump(String prefix, FileDescriptor fd, PrintWriter writer, String[] args) {
         writer.print(prefix); writer.print("mToken="); writer.println(mToken);
         writer.print(prefix); writer.print("mTheme=#"); writer.println(Integer.toHexString(mTheme));
-        writer.print(prefix); writer.print("mInitialized="); writer.println(mInitialized);
+        writer.print(prefix); writer.print("mUiEnabled="); writer.println(mUiEnabled);
+        writer.print(" mInitialized="); writer.println(mInitialized);
         writer.print(prefix); writer.print("mWindowAdded="); writer.print(mWindowAdded);
         writer.print(" mWindowVisible="); writer.println(mWindowVisible);
         writer.print(prefix); writer.print("mWindowWasVisible="); writer.print(mWindowWasVisible);

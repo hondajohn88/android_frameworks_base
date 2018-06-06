@@ -14,12 +14,8 @@
 
 // SSIZE: mingw does not have signed size_t == ssize_t.
 #if !defined(_WIN32)
-#  define ZD "%zd"
-#  define ZD_TYPE ssize_t
 #  define SSIZE(x) x
 #else
-#  define ZD "%ld"
-#  define ZD_TYPE long
 #  define SSIZE(x) (signed size_t)x
 #endif
 
@@ -127,7 +123,7 @@ int StringPool::entry::compare(const entry& o) const {
 }
 
 StringPool::StringPool(bool utf8) :
-        mUTF8(utf8)
+        mUTF8(utf8), mValues(-1)
 {
 }
 
@@ -144,8 +140,8 @@ ssize_t StringPool::add(const String16& value, const Vector<entry_style_span>& s
 ssize_t StringPool::add(const String16& value,
         bool mergeDuplicates, const String8* configTypeName, const ResTable_config* config)
 {
-    auto it = mValues.find(value);
-    ssize_t pos = it != mValues.end() ? it->second : -1;
+    ssize_t vidx = mValues.indexOfKey(value);
+    ssize_t pos = vidx >= 0 ? mValues.valueAt(vidx) : -1;
     ssize_t eidx = pos >= 0 ? mEntryArray.itemAt(pos) : -1;
     if (eidx < 0) {
         eidx = mEntries.add(entry(value));
@@ -192,21 +188,21 @@ ssize_t StringPool::add(const String16& value,
         }
     }
 
-    const bool first = (it == mValues.end());
+    const bool first = vidx < 0;
     const bool styled = (pos >= 0 && (size_t)pos < mEntryStyleArray.size()) ?
         mEntryStyleArray[pos].spans.size() : 0;
     if (first || styled || !mergeDuplicates) {
         pos = mEntryArray.add(eidx);
         if (first) {
-            mValues[value] = pos;
+            vidx = mValues.add(value, pos);
         }
         entry& ent = mEntries.editItemAt(eidx);
         ent.indices.add(pos);
     }
 
     if (kIsDebug) {
-        printf("Adding string %s to pool: pos=%zd eidx=%zd\n",
-                String8(value).string(), SSIZE(pos), SSIZE(eidx));
+        printf("Adding string %s to pool: pos=%zd eidx=%zd vidx=%zd\n",
+                String8(value).string(), SSIZE(pos), SSIZE(eidx), SSIZE(vidx));
     }
 
     return pos;
@@ -349,18 +345,14 @@ void StringPool::sortByConfig()
 
     // Now trim any entries at the end of the new style array that are
     // not needed.
-    ssize_t i;
-    for (i=newEntryStyleArray.size()-1; i>=0; i--) {
+    for (ssize_t i=newEntryStyleArray.size()-1; i>=0; i--) {
         const entry_style& style = newEntryStyleArray[i];
         if (style.spans.size() > 0) {
             // That's it.
             break;
         }
-    }
-
-    ssize_t nToRemove=newEntryStyleArray.size()-(i+1);
-    if (nToRemove) {
-        newEntryStyleArray.removeItemsAt(i+1, nToRemove);
+        // This one is not needed; remove.
+        newEntryStyleArray.removeAt(i);
     }
 
     // All done, install the new data structures and upate mValues with
@@ -371,7 +363,7 @@ void StringPool::sortByConfig()
     mValues.clear();
     for (size_t i=0; i<mEntries.size(); i++) {
         const entry& ent = mEntries[i];
-        mValues[ent.value] = ent.indices[0];
+        mValues.add(ent.value, ent.indices[0]);
     }
 
 #if 0
@@ -394,12 +386,12 @@ sp<AaptFile> StringPool::createStringBlock()
 
 #define ENCODE_LENGTH(str, chrsz, strSize) \
 { \
-    size_t maxMask = 1 << ((chrsz*8)-1); \
+    size_t maxMask = 1 << (((chrsz)*8)-1); \
     size_t maxSize = maxMask-1; \
-    if (strSize > maxSize) { \
-        *str++ = maxMask | ((strSize>>(chrsz*8))&maxSize); \
+    if ((strSize) > maxSize) { \
+        *(str)++ = maxMask | (((strSize)>>((chrsz)*8))&maxSize); \
     } \
-    *str++ = strSize; \
+    *(str)++ = strSize; \
 }
 
 status_t StringPool::writeStringBlock(const sp<AaptFile>& pool)
@@ -614,10 +606,9 @@ ssize_t StringPool::offsetForString(const String16& val) const
 
 const Vector<size_t>* StringPool::offsetsForString(const String16& val) const
 {
-    auto it = mValues.find(val);
-    if (it == mValues.end()) {
+    ssize_t pos = mValues.valueFor(val);
+    if (pos < 0) {
         return NULL;
     }
-    ssize_t pos = it->second;
     return &mEntries[mEntryArray[pos]].indices;
 }

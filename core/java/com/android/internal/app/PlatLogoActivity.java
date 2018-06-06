@@ -42,6 +42,7 @@ import android.os.Bundle;
 import android.provider.Settings;
 import android.util.DisplayMetrics;
 import android.util.Log;
+import android.util.MathUtils;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
@@ -52,6 +53,8 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 
 public class PlatLogoActivity extends Activity {
+    public static final boolean FINISH = true;
+
     FrameLayout mLayout;
     int mTapCount;
     int mKeyCount;
@@ -72,62 +75,31 @@ public class PlatLogoActivity extends Activity {
         final int size = (int)
                 (Math.min(Math.min(dm.widthPixels, dm.heightPixels), 600*dp) - 100*dp);
 
-        final View im = new View(this);
+        final ImageView im = new ImageView(this);
+        final int pad = (int)(40*dp);
+        im.setPadding(pad, pad, pad, pad);
         im.setTranslationZ(20);
         im.setScaleX(0.5f);
         im.setScaleY(0.5f);
         im.setAlpha(0f);
-        im.setOutlineProvider(new ViewOutlineProvider() {
-            @Override
-            public void getOutline(View view, Outline outline) {
-                final int pad = (int) (8 * dp);
-                outline.setOval(pad, pad, view.getWidth() - pad, view.getHeight() - pad);
-            }
-        });
-        final float hue = (float) Math.random();
-        final Paint bgPaint = new Paint();
-        bgPaint.setColor(Color.HSBtoColor(hue, 0.4f, 1f));
-        final Paint fgPaint = new Paint();
-        fgPaint.setColor(Color.HSBtoColor(hue, 0.5f, 1f));
-        final Drawable M = getDrawable(com.android.internal.R.drawable.platlogo_m);
-        final Drawable platlogo = new Drawable() {
-            @Override
-            public void setAlpha(int alpha) { }
 
-            @Override
-            public void setColorFilter(@Nullable ColorFilter colorFilter) { }
-
-            @Override
-            public int getOpacity() {
-                return PixelFormat.TRANSLUCENT;
-            }
-
-            @Override
-            public void draw(Canvas c) {
-                final float r = c.getWidth() / 2f;
-                c.drawCircle(r, r, r, bgPaint);
-                c.drawArc(0, 0, 2 * r, 2 * r, 135, 180, false, fgPaint);
-                M.setBounds(0, 0, c.getWidth(), c.getHeight());
-                M.draw(c);
-            }
-        };
         im.setBackground(new RippleDrawable(
-                ColorStateList.valueOf(0xFFFFFFFF),
-                platlogo,
+                ColorStateList.valueOf(0xFF776677),
+                getDrawable(com.android.internal.R.drawable.platlogo),
                 null));
         im.setOutlineProvider(new ViewOutlineProvider() {
             @Override
             public void getOutline(View view, Outline outline) {
-                outline.setOval(0, 0, view.getWidth(), view.getHeight());
+                final int w = view.getWidth();
+                final int h = view.getHeight();
+                outline.setOval((int)(w*.125), (int)(h*.125), (int)(w*.96), (int)(h*.96));
             }
         });
+        im.setElevation(12f*dp);
         im.setClickable(true);
         im.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if (mTapCount == 0) {
-                    showMarshmallow(im);
-                }
                 im.setOnLongClickListener(new View.OnLongClickListener() {
                     @Override
                     public boolean onLongClick(View v) {
@@ -157,7 +129,7 @@ public class PlatLogoActivity extends Activity {
                                 } catch (ActivityNotFoundException ex) {
                                     Log.e("PlatLogoActivity", "No more eggs.");
                                 }
-                                finish();
+                                if (FINISH) finish();
                             }
                         });
                         return true;
@@ -174,9 +146,6 @@ public class PlatLogoActivity extends Activity {
             @Override
             public boolean onKey(View v, int keyCode, KeyEvent event) {
                 if (keyCode != KeyEvent.KEYCODE_BACK && event.getAction() == KeyEvent.ACTION_DOWN) {
-                    if (mKeyCount == 0) {
-                        showMarshmallow(im);
-                    }
                     ++mKeyCount;
                     if (mKeyCount > 2) {
                         if (mTapCount > 5) {
@@ -200,17 +169,4 @@ public class PlatLogoActivity extends Activity {
                 .setStartDelay(800)
                 .start();
     }
-
-    public void showMarshmallow(View im) {
-        final Drawable fg = getDrawable(com.android.internal.R.drawable.platlogo);
-        fg.setBounds(0, 0, im.getWidth(), im.getHeight());
-        fg.setAlpha(0);
-        im.getOverlay().add(fg);
-
-        final Animator fadeIn = ObjectAnimator.ofInt(fg, "alpha", 255);
-        fadeIn.setInterpolator(mInterpolator);
-        fadeIn.setDuration(300);
-        fadeIn.start();
-    }
-
 }

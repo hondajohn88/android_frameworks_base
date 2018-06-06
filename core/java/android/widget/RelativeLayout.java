@@ -16,20 +16,14 @@
 
 package android.widget;
 
+import static android.os.Build.VERSION_CODES.JELLY_BEAN_MR1;
+
 import android.annotation.NonNull;
-import android.util.ArrayMap;
-import com.android.internal.R;
-
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.SortedSet;
-import java.util.TreeSet;
-
 import android.content.Context;
 import android.content.res.TypedArray;
 import android.graphics.Rect;
 import android.os.Build;
+import android.util.ArrayMap;
 import android.util.AttributeSet;
 import android.util.Pools.SynchronizedPool;
 import android.util.SparseArray;
@@ -41,7 +35,13 @@ import android.view.ViewHierarchyEncoder;
 import android.view.accessibility.AccessibilityEvent;
 import android.widget.RemoteViews.RemoteView;
 
-import static android.os.Build.VERSION_CODES.JELLY_BEAN_MR1;
+import com.android.internal.R;
+
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.SortedSet;
+import java.util.TreeSet;
 
 /**
  * A Layout where the positions of the children can be described in relation to each other or to the
@@ -209,7 +209,7 @@ public class RelativeLayout extends ViewGroup {
     private int mIgnoreGravity;
 
     private SortedSet<View> mTopToBottomLeftToRightSet = null;
-    
+
     private boolean mDirtyHierarchy;
     private View[] mSortedHorizontalChildren;
     private View[] mSortedVerticalChildren;
@@ -486,7 +486,7 @@ public class RelativeLayout extends ViewGroup {
                         if (targetSdkVersion < Build.VERSION_CODES.KITKAT) {
                             width = Math.max(width, myWidth - params.mLeft);
                         } else {
-                            width = Math.max(width, myWidth - params.mLeft - params.leftMargin);
+                            width = Math.max(width, myWidth - params.mLeft + params.leftMargin);
                         }
                     } else {
                         if (targetSdkVersion < Build.VERSION_CODES.KITKAT) {
@@ -833,23 +833,26 @@ public class RelativeLayout extends ViewGroup {
                 if (!wrapContent) {
                     centerHorizontal(child, params, myWidth);
                 } else {
-                    params.mLeft = mPaddingLeft + params.leftMargin;
-                    params.mRight = params.mLeft + child.getMeasuredWidth();
+                    positionAtEdge(child, params, myWidth);
                 }
                 return true;
             } else {
                 // This is the default case. For RTL we start from the right and for LTR we start
                 // from the left. This will give LEFT/TOP for LTR and RIGHT/TOP for RTL.
-                if (isLayoutRtl()) {
-                    params.mRight = myWidth - mPaddingRight- params.rightMargin;
-                    params.mLeft = params.mRight - child.getMeasuredWidth();
-                } else {
-                    params.mLeft = mPaddingLeft + params.leftMargin;
-                    params.mRight = params.mLeft + child.getMeasuredWidth();
-                }
+                positionAtEdge(child, params, myWidth);
             }
         }
         return rules[ALIGN_PARENT_END] != 0;
+    }
+
+    private void positionAtEdge(View child, LayoutParams params, int myWidth) {
+        if (isLayoutRtl()) {
+            params.mRight = myWidth - mPaddingRight - params.rightMargin;
+            params.mLeft = params.mRight - child.getMeasuredWidth();
+        } else {
+            params.mLeft = mPaddingLeft + params.leftMargin;
+            params.mRight = params.mLeft + child.getMeasuredWidth();
+        }
     }
 
     private boolean positionChildVertical(View child, LayoutParams params, int myHeight,
@@ -1013,7 +1016,8 @@ public class RelativeLayout extends ViewGroup {
             while (v.getVisibility() == View.GONE) {
                 rules = ((LayoutParams) v.getLayoutParams()).getRules(v.getLayoutDirection());
                 node = mGraph.mKeyNodes.get((rules[relation]));
-                if (node == null) return null;
+                // ignore self dependency. for more info look in git commit: da3003
+                if (node == null || v == node.view) return null;
                 v = node.view;
             }
 
@@ -1103,8 +1107,15 @@ public class RelativeLayout extends ViewGroup {
     }
 
     @Override
-    protected ViewGroup.LayoutParams generateLayoutParams(ViewGroup.LayoutParams p) {
-        return new LayoutParams(p);
+    protected ViewGroup.LayoutParams generateLayoutParams(ViewGroup.LayoutParams lp) {
+        if (sPreserveMarginParamsInLayoutParamConversion) {
+            if (lp instanceof LayoutParams) {
+                return new LayoutParams((LayoutParams) lp);
+            } else if (lp instanceof MarginLayoutParams) {
+                return new LayoutParams((MarginLayoutParams) lp);
+            }
+        }
+        return new LayoutParams(lp);
     }
 
     /** @hide */
@@ -1166,7 +1177,19 @@ public class RelativeLayout extends ViewGroup {
     }
 
     /**
-     * Per-child layout information associated with RelativeLayout.
+     * Specifies how a view is positioned within a {@link RelativeLayout}.
+     * The relative layout containing the view uses the value of these layout parameters to
+     * determine where to position the view on the screen.  If the view is not contained
+     * within a relative layout, these attributes are ignored.
+     *
+     * See the <a href=“https://developer.android.com/guide/topics/ui/layout/relative.html”>
+     * Relative Layout</a> guide for example code demonstrating how to use relative layout’s
+     * layout parameters in a layout XML.
+     *
+     * To learn more about layout parameters and how they differ from typical view attributes,
+     * see the <a href=“https://developer.android.com/guide/topics/ui/declaring-layout.html#attributes”>
+     *     Layouts guide</a>.
+     *
      *
      * @attr ref android.R.styleable#RelativeLayout_Layout_layout_alignWithParentIfMissing
      * @attr ref android.R.styleable#RelativeLayout_Layout_layout_toLeftOf
@@ -1225,6 +1248,12 @@ public class RelativeLayout extends ViewGroup {
         private int[] mInitialRules = new int[VERB_COUNT];
 
         private int mLeft, mTop, mRight, mBottom;
+
+        /**
+         * Whether this view had any relative rules modified following the most
+         * recent resolution of layout direction.
+         */
+        private boolean mNeedsLayoutResolution;
 
         private boolean mRulesChanged = false;
         private boolean mIsRtlCompatibilityMode = false;
@@ -1374,47 +1403,69 @@ public class RelativeLayout extends ViewGroup {
         }
 
         /**
-         * Adds a layout rule to be interpreted by the RelativeLayout. This
-         * method should only be used for constraints that don't refer to another sibling
-         * (e.g., CENTER_IN_PARENT) or take a boolean value ({@link RelativeLayout#TRUE}
-         * for true or 0 for false). To specify a verb that takes a subject, use
-         * {@link #addRule(int, int)} instead.
+         * Adds a layout rule to be interpreted by the RelativeLayout.
+         * <p>
+         * This method should only be used for verbs that don't refer to a
+         * sibling (ex. {@link #ALIGN_RIGHT}) or take a boolean
+         * value ({@link #TRUE} for true or 0 for false). To
+         * specify a verb that takes a subject, use {@link #addRule(int, int)}.
+         * <p>
+         * If the rule is relative to the layout direction (ex.
+         * {@link #ALIGN_PARENT_START}), then the layout direction must be
+         * resolved using {@link #resolveLayoutDirection(int)} before calling
+         * {@link #getRule(int)} an absolute rule (ex.
+         * {@link #ALIGN_PARENT_LEFT}.
          *
-         * @param verb One of the verbs defined by
-         *        {@link android.widget.RelativeLayout RelativeLayout}, such as
-         *        ALIGN_WITH_PARENT_LEFT.
+         * @param verb a layout verb, such as {@link #ALIGN_PARENT_LEFT}
          * @see #addRule(int, int)
+         * @see #removeRule(int)
          * @see #getRule(int)
          */
         public void addRule(int verb) {
-            mRules[verb] = TRUE;
-            mInitialRules[verb] = TRUE;
-            mRulesChanged = true;
+            addRule(verb, TRUE);
         }
 
         /**
-         * Adds a layout rule to be interpreted by the RelativeLayout. Use this for
-         * verbs that take a target, such as a sibling (ALIGN_RIGHT) or a boolean
-         * value (VISIBLE).
+         * Adds a layout rule to be interpreted by the RelativeLayout.
+         * <p>
+         * Use this for verbs that refer to a sibling (ex.
+         * {@link #ALIGN_RIGHT}) or take a boolean value (ex.
+         * {@link #CENTER_IN_PARENT}).
+         * <p>
+         * If the rule is relative to the layout direction (ex.
+         * {@link #START_OF}), then the layout direction must be resolved using
+         * {@link #resolveLayoutDirection(int)} before calling
+         * {@link #getRule(int)} with an absolute rule (ex. {@link #LEFT_OF}.
          *
-         * @param verb One of the verbs defined by
-         *        {@link android.widget.RelativeLayout RelativeLayout}, such as
-         *         ALIGN_WITH_PARENT_LEFT.
-         * @param anchor The id of another view to use as an anchor,
-         *        or a boolean value (represented as {@link RelativeLayout#TRUE}
-         *        for true or 0 for false).  For verbs that don't refer to another sibling
-         *        (for example, ALIGN_WITH_PARENT_BOTTOM) just use -1.
+         * @param verb a layout verb, such as {@link #ALIGN_RIGHT}
+         * @param subject the ID of another view to use as an anchor, or a
+         *                boolean value (represented as {@link #TRUE} for true
+         *                or 0 for false)
          * @see #addRule(int)
+         * @see #removeRule(int)
          * @see #getRule(int)
          */
-        public void addRule(int verb, int anchor) {
-            mRules[verb] = anchor;
-            mInitialRules[verb] = anchor;
+        public void addRule(int verb, int subject) {
+            // If we're removing a relative rule, we'll need to force layout
+            // resolution the next time it's requested.
+            if (!mNeedsLayoutResolution && isRelativeRule(verb)
+                    && mInitialRules[verb] != 0 && subject == 0) {
+                mNeedsLayoutResolution = true;
+            }
+
+            mRules[verb] = subject;
+            mInitialRules[verb] = subject;
             mRulesChanged = true;
         }
 
         /**
          * Removes a layout rule to be interpreted by the RelativeLayout.
+         * <p>
+         * If the rule is relative to the layout direction (ex.
+         * {@link #START_OF}, {@link #ALIGN_PARENT_START}, etc.) then the
+         * layout direction must be resolved using
+         * {@link #resolveLayoutDirection(int)} before before calling
+         * {@link #getRule(int)} with an absolute rule (ex. {@link #LEFT_OF}.
          *
          * @param verb One of the verbs defined by
          *        {@link android.widget.RelativeLayout RelativeLayout}, such as
@@ -1424,9 +1475,7 @@ public class RelativeLayout extends ViewGroup {
          * @see #getRule(int)
          */
         public void removeRule(int verb) {
-            mRules[verb] = 0;
-            mInitialRules[verb] = 0;
-            mRulesChanged = true;
+            addRule(verb, 0);
         }
 
         /**
@@ -1449,6 +1498,12 @@ public class RelativeLayout extends ViewGroup {
             return (mInitialRules[START_OF] != 0 || mInitialRules[END_OF] != 0 ||
                     mInitialRules[ALIGN_START] != 0 || mInitialRules[ALIGN_END] != 0 ||
                     mInitialRules[ALIGN_PARENT_START] != 0 || mInitialRules[ALIGN_PARENT_END] != 0);
+        }
+
+        private boolean isRelativeRule(int rule) {
+            return rule == START_OF || rule == END_OF
+                    || rule == ALIGN_START || rule == ALIGN_END
+                    || rule == ALIGN_PARENT_START || rule == ALIGN_PARENT_END;
         }
 
         // The way we are resolving rules depends on the layout direction and if we are pre JB MR1
@@ -1578,7 +1633,9 @@ public class RelativeLayout extends ViewGroup {
                     mRules[ALIGN_PARENT_END] = 0;
                 }
             }
+
             mRulesChanged = false;
+            mNeedsLayoutResolution = false;
         }
 
         /**
@@ -1596,13 +1653,7 @@ public class RelativeLayout extends ViewGroup {
          * @hide
          */
         public int[] getRules(int layoutDirection) {
-            if (hasRelativeRules() &&
-                    (mRulesChanged || layoutDirection != getLayoutDirection())) {
-                resolveRules(layoutDirection);
-                if (layoutDirection != getLayoutDirection()) {
-                    setLayoutDirection(layoutDirection);
-                }
-            }
+            resolveLayoutDirection(layoutDirection);
             return mRules;
         }
 
@@ -1618,14 +1669,28 @@ public class RelativeLayout extends ViewGroup {
             return mRules;
         }
 
+        /**
+         * This will be called by {@link android.view.View#requestLayout()} to
+         * resolve layout parameters that are relative to the layout direction.
+         * <p>
+         * After this method is called, any rules using layout-relative verbs
+         * (ex. {@link #START_OF}) previously added via {@link #addRule(int)}
+         * may only be accessed via their resolved absolute verbs (ex.
+         * {@link #LEFT_OF}).
+         */
         @Override
         public void resolveLayoutDirection(int layoutDirection) {
-            final boolean isLayoutRtl = isLayoutRtl();
-            if (hasRelativeRules() && layoutDirection != getLayoutDirection()) {
+            if (shouldResolveLayoutDirection(layoutDirection)) {
                 resolveRules(layoutDirection);
             }
-            // This will set the layout direction
+
+            // This will set the layout direction.
             super.resolveLayoutDirection(layoutDirection);
+        }
+
+        private boolean shouldResolveLayoutDirection(int layoutDirection) {
+            return (mNeedsLayoutResolution || hasRelativeRules())
+                    && (mRulesChanged || layoutDirection != getLayoutDirection());
         }
 
         /** @hide */

@@ -26,18 +26,20 @@ namespace android {
 namespace uirenderer {
 namespace renderthread {
 
+class Frame;
 class RenderThread;
 
 // This class contains the shared global EGL objects, such as EGLDisplay
 // and EGLConfig, which are re-used by CanvasContext
 class EglManager {
 public:
+    static const char* eglErrorString();
     // Returns true on success, false on failure
     void initialize();
 
     bool hasEglContext();
 
-    EGLSurface createSurface(EGLNativeWindowType window);
+    EGLSurface createSurface(EGLNativeWindowType window, bool wideColorGamut);
     void destroySurface(EGLSurface surface);
 
     void destroy();
@@ -45,43 +47,47 @@ public:
     bool isCurrent(EGLSurface surface) { return mCurrentSurface == surface; }
     // Returns true if the current surface changed, false if it was already current
     bool makeCurrent(EGLSurface surface, EGLint* errOut = nullptr);
-    void beginFrame(EGLSurface surface, EGLint* width, EGLint* height);
-    bool swapBuffers(EGLSurface surface, const SkRect& dirty, EGLint width, EGLint height);
+    Frame beginFrame(EGLSurface surface);
+    void damageFrame(const Frame& frame, const SkRect& dirty);
+    // If this returns true it is mandatory that swapBuffers is called
+    // if damageFrame is called without subsequent calls to damageFrame().
+    // See EGL_KHR_partial_update for more information
+    bool damageRequiresSwap();
+    bool swapBuffers(const Frame& frame, const SkRect& screenDirty);
 
     // Returns true iff the surface is now preserving buffers.
     bool setPreserveBuffer(EGLSurface surface, bool preserve);
-
-    void setTextureAtlas(const sp<GraphicBuffer>& buffer, int64_t* map, size_t mapSize);
 
     void fence();
 
 private:
     friend class RenderThread;
-
-    EglManager(RenderThread& thread);
+    explicit EglManager(RenderThread& thread);
     // EglContext is never destroyed, method is purposely not implemented
     ~EglManager();
 
+    void initExtensions();
     void createPBufferSurface();
-    void loadConfig();
+    void loadConfigs();
     void createContext();
-    void initAtlas();
+    EGLint queryBufferAge(EGLSurface surface);
 
     RenderThread& mRenderThread;
 
     EGLDisplay mEglDisplay;
     EGLConfig mEglConfig;
+    EGLConfig mEglConfigWideGamut;
     EGLContext mEglContext;
     EGLSurface mPBufferSurface;
 
-    const bool mAllowPreserveBuffer;
-    bool mCanSetPreserveBuffer;
-
     EGLSurface mCurrentSurface;
 
-    sp<GraphicBuffer> mAtlasBuffer;
-    int64_t* mAtlasMap;
-    size_t mAtlasMapSize;
+    enum class SwapBehavior {
+        Discard,
+        Preserved,
+        BufferAge,
+    };
+    SwapBehavior mSwapBehavior = SwapBehavior::Discard;
 };
 
 } /* namespace renderthread */

@@ -16,15 +16,19 @@
 
 package com.android.internal.app;
 
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
 import android.animation.ObjectAnimator;
 import android.annotation.NonNull;
 import android.app.Activity;
+import android.app.usage.UsageStatsManager;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentSender;
 import android.content.IntentSender.SendIntentException;
 import android.content.ServiceConnection;
+import android.content.SharedPreferences;
 import android.content.pm.ActivityInfo;
 import android.content.pm.LabeledIntent;
 import android.content.pm.PackageManager;
@@ -35,15 +39,17 @@ import android.graphics.Color;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.Icon;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Message;
 import android.os.Parcelable;
+import android.os.Process;
 import android.os.RemoteException;
 import android.os.ResultReceiver;
 import android.os.UserHandle;
 import android.os.UserManager;
-import android.provider.DocumentsContract;
+import android.os.storage.StorageManager;
 import android.service.chooser.ChooserTarget;
 import android.service.chooser.ChooserTargetService;
 import android.service.chooser.IChooserTargetResult;
@@ -63,10 +69,18 @@ import android.view.animation.AnimationUtils;
 import android.view.animation.Interpolator;
 import android.widget.AbsListView;
 import android.widget.BaseAdapter;
+import android.widget.LinearLayout;
 import android.widget.ListView;
-import com.android.internal.R;
-import com.android.internal.logging.MetricsLogger;
+import android.widget.Space;
 
+import com.android.internal.R;
+import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.app.ResolverActivity.TargetInfo;
+import com.android.internal.logging.MetricsLogger;
+import com.android.internal.logging.nano.MetricsProto.MetricsEvent;
+import com.google.android.collect.Lists;
+
+import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -75,20 +89,39 @@ import java.util.List;
 public class ChooserActivity extends ResolverActivity {
     private static final String TAG = "ChooserActivity";
 
+    /**
+     * Boolean extra to change the following behavior: Normally, ChooserActivity finishes itself
+     * in onStop when launched in a new task. If this extra is set to true, we do not finish
+     * ourselves when onStop gets called.
+     */
+    public static final String EXTRA_PRIVATE_RETAIN_IN_ON_STOP
+            = "com.android.internal.app.ChooserActivity.EXTRA_PRIVATE_RETAIN_IN_ON_STOP";
+
     private static final boolean DEBUG = false;
 
     private static final int QUERY_TARGET_SERVICE_LIMIT = 5;
-    private static final int WATCHDOG_TIMEOUT_MILLIS = 5000;
+    private static final int WATCHDOG_TIMEOUT_MILLIS = 2000;
 
     private Bundle mReplacementExtras;
     private IntentSender mChosenComponentSender;
     private IntentSender mRefinementIntentSender;
     private RefinementResultReceiver mRefinementResultReceiver;
+    private ChooserTarget[] mCallerChooserTargets;
+    private ComponentName[] mFilteredComponentNames;
 
     private Intent mReferrerFillInIntent;
 
+    private long mChooserShownTime;
+    protected boolean mIsSuccessfullySelected;
+
     private ChooserListAdapter mChooserListAdapter;
     private ChooserRowAdapter mChooserRowAdapter;
+
+    private SharedPreferences mPinnedSharedPrefs;
+    private static final float PINNED_TARGET_SCORE_BOOST = 1000.f;
+    private static final float CALLER_TARGET_SCORE_BOOST = 900.f;
+    private static final String PINNED_SHARED_PREFS_NAME = "chooser_pin_settings";
+    private static final String TARGET_DETAILS_FRAGMENT_TAG = "targetDetailsFragment";
 
     private final List<ChooserTargetServiceConnection> mServiceConnections = new ArrayList<>();
 
@@ -119,6 +152,7 @@ public class ChooserActivity extends ResolverActivity {
                     if (mServiceConnections.isEmpty()) {
                         mChooserHandler.removeMessages(CHOOSER_TARGET_SERVICE_WATCHDOG_TIMEOUT);
                         sendVoiceChoicesIfNeeded();
+                        mChooserListAdapter.setShowServiceTargets(true);
                     }
                     break;
 
@@ -128,6 +162,7 @@ public class ChooserActivity extends ResolverActivity {
                     }
                     unbindRemainingServices();
                     sendVoiceChoicesIfNeeded();
+                    mChooserListAdapter.setShowServiceTargets(true);
                     break;
 
                 default:
@@ -138,6 +173,8 @@ public class ChooserActivity extends ResolverActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        final long intentReceivedTime = System.currentTimeMillis();
+        mIsSuccessfullySelected = false;
         Intent intent = getIntent();
         Parcelable targetParcelable = intent.getParcelableExtra(Intent.EXTRA_INTENT);
         if (!(targetParcelable instanceof Intent)) {
@@ -206,10 +243,64 @@ public class ChooserActivity extends ResolverActivity {
         mRefinementIntentSender = intent.getParcelableExtra(
                 Intent.EXTRA_CHOOSER_REFINEMENT_INTENT_SENDER);
         setSafeForwardingMode(true);
+
+        pa = intent.getParcelableArrayExtra(Intent.EXTRA_EXCLUDE_COMPONENTS);
+        if (pa != null) {
+            ComponentName[] names = new ComponentName[pa.length];
+            for (int i = 0; i < pa.length; i++) {
+                if (!(pa[i] instanceof ComponentName)) {
+                    Log.w(TAG, "Filtered component #" + i + " not a ComponentName: " + pa[i]);
+                    names = null;
+                    break;
+                }
+                names[i] = (ComponentName) pa[i];
+            }
+            mFilteredComponentNames = names;
+        }
+
+        pa = intent.getParcelableArrayExtra(Intent.EXTRA_CHOOSER_TARGETS);
+        if (pa != null) {
+            ChooserTarget[] targets = new ChooserTarget[pa.length];
+            for (int i = 0; i < pa.length; i++) {
+                if (!(pa[i] instanceof ChooserTarget)) {
+                    Log.w(TAG, "Chooser target #" + i + " not a ChooserTarget: " + pa[i]);
+                    targets = null;
+                    break;
+                }
+                targets[i] = (ChooserTarget) pa[i];
+            }
+            mCallerChooserTargets = targets;
+        }
+
+        mPinnedSharedPrefs = getPinnedSharedPrefs(this);
+        setRetainInOnStop(intent.getBooleanExtra(EXTRA_PRIVATE_RETAIN_IN_ON_STOP, false));
         super.onCreate(savedInstanceState, target, title, defaultTitleRes, initialIntents,
                 null, false);
 
-        MetricsLogger.action(this, MetricsLogger.ACTION_ACTIVITY_CHOOSER_SHOWN);
+        MetricsLogger.action(this, MetricsEvent.ACTION_ACTIVITY_CHOOSER_SHOWN);
+
+        mChooserShownTime = System.currentTimeMillis();
+        final long systemCost = mChooserShownTime - intentReceivedTime;
+        MetricsLogger.histogram(null, "system_cost_for_smart_sharing", (int) systemCost);
+        if (DEBUG) {
+            Log.d(TAG, "System Time Cost is " + systemCost);
+        }
+    }
+
+    static SharedPreferences getPinnedSharedPrefs(Context context) {
+        // The code below is because in the android:ui process, no one can hear you scream.
+        // The package info in the context isn't initialized in the way it is for normal apps,
+        // so the standard, name-based context.getSharedPreferences doesn't work. Instead, we
+        // build the path manually below using the same policy that appears in ContextImpl.
+        // This fails silently under the hood if there's a problem, so if we find ourselves in
+        // the case where we don't have access to credential encrypted storage we just won't
+        // have our pinned target info.
+        final File prefsFile = new File(new File(
+                Environment.getDataUserCePackageDirectory(StorageManager.UUID_PRIVATE_INTERNAL,
+                        context.getUserId(), context.getPackageName()),
+                "shared_prefs"),
+                PINNED_SHARED_PREFS_NAME + ".xml");
+        return context.getSharedPreferences(prefsFile, MODE_PRIVATE);
     }
 
     @Override
@@ -233,16 +324,21 @@ public class ChooserActivity extends ResolverActivity {
                 result.putExtras(replExtras);
             }
         }
-        if (aInfo.name.equals(IntentForwarderActivity.FORWARD_INTENT_TO_USER_OWNER)
+        if (aInfo.name.equals(IntentForwarderActivity.FORWARD_INTENT_TO_PARENT)
                 || aInfo.name.equals(IntentForwarderActivity.FORWARD_INTENT_TO_MANAGED_PROFILE)) {
             result = Intent.createChooser(result,
                     getIntent().getCharSequenceExtra(Intent.EXTRA_TITLE));
+
+            // Don't auto-launch single intents if the intent is being forwarded. This is done
+            // because automatically launching a resolving application as a response to the user
+            // action of switching accounts is pretty unexpected.
+            result.putExtra(Intent.EXTRA_AUTO_LAUNCH_SINGLE_CHOICE, false);
         }
         return result;
     }
 
     @Override
-    void onActivityStarted(TargetInfo cti) {
+    public void onActivityStarted(TargetInfo cti) {
         if (mChosenComponentSender != null) {
             final ComponentName target = cti.getResolvedComponentName();
             if (target != null) {
@@ -258,10 +354,12 @@ public class ChooserActivity extends ResolverActivity {
     }
 
     @Override
-    void onPrepareAdapterView(AbsListView adapterView, ResolveListAdapter adapter,
-            boolean alwaysUseOption) {
+    public void onPrepareAdapterView(AbsListView adapterView, ResolveListAdapter adapter) {
         final ListView listView = adapterView instanceof ListView ? (ListView) adapterView : null;
         mChooserListAdapter = (ChooserListAdapter) adapter;
+        if (mCallerChooserTargets != null && mCallerChooserTargets.length > 0) {
+            mChooserListAdapter.addServiceResults(null, Lists.newArrayList(mCallerChooserTargets));
+        }
         mChooserRowAdapter = new ChooserRowAdapter(mChooserListAdapter);
         mChooserRowAdapter.registerDataSetObserver(new OffsetDataSetObserver(adapterView));
         adapterView.setAdapter(mChooserRowAdapter);
@@ -271,31 +369,32 @@ public class ChooserActivity extends ResolverActivity {
     }
 
     @Override
-    int getLayoutResource() {
+    public int getLayoutResource() {
         return R.layout.chooser_grid;
     }
 
     @Override
-    boolean shouldGetActivityMetadata() {
+    public boolean shouldGetActivityMetadata() {
         return true;
     }
 
     @Override
-    boolean shouldAutoLaunchSingleChoice(TargetInfo target) {
-        final Intent intent = target.getResolvedIntent();
-        final ResolveInfo resolve = target.getResolveInfo();
+    public boolean shouldAutoLaunchSingleChoice(TargetInfo target) {
+        // Note that this is only safe because the Intent handled by the ChooserActivity is
+        // guaranteed to contain no extras unknown to the local ClassLoader. That is why this
+        // method can not be replaced in the ResolverActivity whole hog.
+        return getIntent().getBooleanExtra(Intent.EXTRA_AUTO_LAUNCH_SINGLE_CHOICE,
+                super.shouldAutoLaunchSingleChoice(target));
+    }
 
-        // When GET_CONTENT is handled by the DocumentsUI system component,
-        // we're okay automatically launching it, since it offers it's own
-        // intent disambiguation UI.
-        if (intent != null && Intent.ACTION_GET_CONTENT.equals(intent.getAction())
-                && resolve != null && resolve.priority > 0
-                && resolve.activityInfo != null && DocumentsContract.PACKAGE_DOCUMENTS_UI
-                        .equals(resolve.activityInfo.packageName)) {
-            return true;
-        }
-
-        return false;
+    @Override
+    public void showTargetDetails(ResolveInfo ri) {
+        ComponentName name = ri.activityInfo.getComponentName();
+        boolean pinned = mPinnedSharedPrefs.getBoolean(name.flattenToString(), false);
+        ResolverTargetActionsDialogFragment f =
+                new ResolverTargetActionsDialogFragment(ri.loadLabel(getPackageManager()),
+                        name, pinned);
+        f.show(getFragmentManager(), TARGET_DETAILS_FRAGMENT_TAG);
     }
 
     private void modifyTargetIntent(Intent in) {
@@ -335,11 +434,13 @@ public class ChooserActivity extends ResolverActivity {
                 }
             }
         }
+        updateModelAndChooserCounts(target);
         return super.onTargetSelected(target, alwaysCheck);
     }
 
     @Override
-    void startSelected(int which, boolean always, boolean filtered) {
+    public void startSelected(int which, boolean always, boolean filtered) {
+        final long selectionCost = System.currentTimeMillis() - mChooserShownTime;
         super.startSelected(which, always, filtered);
 
         if (mChooserListAdapter != null) {
@@ -349,14 +450,14 @@ public class ChooserActivity extends ResolverActivity {
             int value = which;
             switch (mChooserListAdapter.getPositionTargetType(which)) {
                 case ChooserListAdapter.TARGET_CALLER:
-                    cat = MetricsLogger.ACTION_ACTIVITY_CHOOSER_PICKED_APP_TARGET;
+                    cat = MetricsEvent.ACTION_ACTIVITY_CHOOSER_PICKED_APP_TARGET;
                     break;
                 case ChooserListAdapter.TARGET_SERVICE:
-                    cat = MetricsLogger.ACTION_ACTIVITY_CHOOSER_PICKED_SERVICE_TARGET;
+                    cat = MetricsEvent.ACTION_ACTIVITY_CHOOSER_PICKED_SERVICE_TARGET;
                     value -= mChooserListAdapter.getCallerTargetCount();
                     break;
                 case ChooserListAdapter.TARGET_STANDARD:
-                    cat = MetricsLogger.ACTION_ACTIVITY_CHOOSER_PICKED_STANDARD_TARGET;
+                    cat = MetricsEvent.ACTION_ACTIVITY_CHOOSER_PICKED_STANDARD_TARGET;
                     value -= mChooserListAdapter.getCallerTargetCount()
                             + mChooserListAdapter.getServiceTargetCount();
                     break;
@@ -364,6 +465,17 @@ public class ChooserActivity extends ResolverActivity {
 
             if (cat != 0) {
                 MetricsLogger.action(this, cat, value);
+            }
+
+            if (mIsSuccessfullySelected) {
+                if (DEBUG) {
+                    Log.d(TAG, "User Selection Time Cost is " + selectionCost);
+                    Log.d(TAG, "position of selected app/service/caller is " +
+                            Integer.toString(value));
+                }
+                MetricsLogger.histogram(null, "user_selection_cost_for_smart_sharing",
+                        (int) selectionCost);
+                MetricsLogger.histogram(null, "app_position_for_smart_sharing", value);
             }
         }
     }
@@ -405,14 +517,19 @@ public class ChooserActivity extends ResolverActivity {
                         continue;
                     }
                 } catch (NameNotFoundException e) {
-                    Log.e(TAG, "Could not look up service " + serviceComponent, e);
+                    Log.e(TAG, "Could not look up service " + serviceComponent
+                            + "; component name not found");
                     continue;
                 }
 
                 final ChooserTargetServiceConnection conn =
                         new ChooserTargetServiceConnection(this, dri);
+
+                // Explicitly specify Process.myUserHandle instead of calling bindService
+                // to avoid the warning from calling from the system process without an explicit
+                // user handle
                 if (bindServiceAsUser(serviceIntent, conn, BIND_AUTO_CREATE | BIND_NOT_FOREGROUND,
-                        UserHandle.CURRENT)) {
+                        Process.myUserHandle())) {
                     if (DEBUG) {
                         Log.d(TAG, "Binding service connection for target " + dri
                                 + " intent " + serviceIntent);
@@ -470,8 +587,29 @@ public class ChooserActivity extends ResolverActivity {
         mChooserHandler.removeMessages(CHOOSER_TARGET_SERVICE_WATCHDOG_TIMEOUT);
     }
 
-    void onSetupVoiceInteraction() {
+    public void onSetupVoiceInteraction() {
         // Do nothing. We'll send the voice stuff ourselves.
+    }
+
+    void updateModelAndChooserCounts(TargetInfo info) {
+        if (info != null) {
+            final ResolveInfo ri = info.getResolveInfo();
+            Intent targetIntent = getTargetIntent();
+            if (ri != null && ri.activityInfo != null && targetIntent != null) {
+                if (mAdapter != null) {
+                    mAdapter.updateModel(info.getResolvedComponentName());
+                    mAdapter.updateChooserCounts(ri.activityInfo.packageName, getUserId(),
+                            targetIntent.getAction());
+                }
+                if (DEBUG) {
+                    Log.d(TAG, "ResolveInfo Package is " + ri.activityInfo.packageName);
+                    Log.d(TAG, "Action to be updated is " + targetIntent.getAction());
+                }
+            } else if(DEBUG) {
+                Log.d(TAG, "Can not log Chooser Counts of null ResovleInfo");
+            }
+        }
+        mIsSuccessfullySelected = true;
     }
 
     void onRefinementResult(TargetInfo selectedTarget, Intent matchingIntent) {
@@ -479,15 +617,18 @@ public class ChooserActivity extends ResolverActivity {
             mRefinementResultReceiver.destroy();
             mRefinementResultReceiver = null;
         }
-
         if (selectedTarget == null) {
             Log.e(TAG, "Refinement result intent did not match any known targets; canceling");
         } else if (!checkTargetSourceIntent(selectedTarget, matchingIntent)) {
             Log.e(TAG, "onRefinementResult: Selected target " + selectedTarget
                     + " cannot match refined source intent " + matchingIntent);
-        } else if (super.onTargetSelected(selectedTarget.cloneFilledIn(matchingIntent, 0), false)) {
-            finish();
-            return;
+        } else {
+            TargetInfo clonedTarget = selectedTarget.cloneFilledIn(matchingIntent, 0);
+            if (super.onTargetSelected(clonedTarget, false)) {
+                updateModelAndChooserCounts(clonedTarget);
+                finish();
+                return;
+            }
         }
         onRefinementCanceled();
     }
@@ -541,15 +682,63 @@ public class ChooserActivity extends ResolverActivity {
         }
     }
 
+    public class ChooserListController extends ResolverListController {
+        public ChooserListController(Context context,
+                PackageManager pm,
+                Intent targetIntent,
+                String referrerPackageName,
+                int launchedFromUid) {
+            super(context, pm, targetIntent, referrerPackageName, launchedFromUid);
+        }
+
+        @Override
+        boolean isComponentPinned(ComponentName name) {
+            return mPinnedSharedPrefs.getBoolean(name.flattenToString(), false);
+        }
+
+        @Override
+        boolean isComponentFiltered(ComponentName name) {
+            if (mFilteredComponentNames == null) {
+                return false;
+            }
+            for (ComponentName filteredComponentName : mFilteredComponentNames) {
+                if (name.equals(filteredComponentName)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        @Override
+        public float getScore(DisplayResolveInfo target) {
+            if (target == null) {
+                return CALLER_TARGET_SCORE_BOOST;
+            }
+            float score = super.getScore(target);
+            if (target.isPinned()) {
+                score += PINNED_TARGET_SCORE_BOOST;
+            }
+            return score;
+        }
+    }
+
     @Override
-    ResolveListAdapter createAdapter(Context context, List<Intent> payloadIntents,
+    public ResolveListAdapter createAdapter(Context context, List<Intent> payloadIntents,
             Intent[] initialIntents, List<ResolveInfo> rList, int launchedFromUid,
             boolean filterLastUsed) {
         final ChooserListAdapter adapter = new ChooserListAdapter(context, payloadIntents,
-                initialIntents, rList, launchedFromUid, filterLastUsed);
-        if (DEBUG) Log.d(TAG, "Adapter created; querying services");
-        queryTargetServices(adapter);
+                initialIntents, rList, launchedFromUid, filterLastUsed, createListController());
         return adapter;
+    }
+
+    @VisibleForTesting
+    protected ResolverListController createListController() {
+        return new ChooserListController(
+                this,
+                mPm,
+                getTargetIntent(),
+                getReferrerPackageName(),
+                mLaunchedFromUid);
     }
 
     final class ChooserTargetInfo implements TargetInfo {
@@ -614,7 +803,11 @@ public class ChooserActivity extends ResolverActivity {
             if (mSourceInfo != null) {
                 return mSourceInfo.getResolvedIntent();
             }
-            return getTargetIntent();
+
+            final Intent targetIntent = new Intent(getTargetIntent());
+            targetIntent.setComponent(mChooserTarget.getComponentName());
+            targetIntent.putExtras(mChooserTarget.getIntentExtras());
+            return targetIntent;
         }
 
         @Override
@@ -629,8 +822,7 @@ public class ChooserActivity extends ResolverActivity {
         }
 
         private Intent getBaseIntentToSend() {
-            Intent result = mSourceInfo != null
-                    ? mSourceInfo.getResolvedIntent() : getTargetIntent();
+            Intent result = getResolvedIntent();
             if (result == null) {
                 Log.e(TAG, "ChooserTargetInfo: no base intent available to send");
             } else {
@@ -656,7 +848,19 @@ public class ChooserActivity extends ResolverActivity {
             }
             intent.setComponent(mChooserTarget.getComponentName());
             intent.putExtras(mChooserTarget.getIntentExtras());
-            activity.startActivityAsCaller(intent, options, true, userId);
+
+            // Important: we will ignore the target security checks in ActivityManager
+            // if and only if the ChooserTarget's target package is the same package
+            // where we got the ChooserTargetService that provided it. This lets a
+            // ChooserTargetService provide a non-exported or permission-guarded target
+            // to the chooser for the user to pick.
+            //
+            // If mSourceInfo is null, we got this ChooserTarget from the caller or elsewhere
+            // so we'll obey the caller's normal security checks.
+            final boolean ignoreTargetSecurity = mSourceInfo != null
+                    && mSourceInfo.getResolvedComponentName().getPackageName()
+                    .equals(mChooserTarget.getComponentName().getPackageName());
+            activity.startActivityAsCaller(intent, options, ignoreTargetSecurity, userId);
             return true;
         }
 
@@ -710,6 +914,11 @@ public class ChooserActivity extends ResolverActivity {
             }
             return results;
         }
+
+        @Override
+        public boolean isPinned() {
+            return mSourceInfo != null ? mSourceInfo.isPinned() : false;
+        }
     }
 
     public class ChooserListAdapter extends ResolveListAdapter {
@@ -719,9 +928,11 @@ public class ChooserActivity extends ResolverActivity {
         public static final int TARGET_STANDARD = 2;
 
         private static final int MAX_SERVICE_TARGETS = 8;
+        private static final int MAX_TARGETS_PER_SERVICE = 4;
 
         private final List<ChooserTargetInfo> mServiceTargets = new ArrayList<>();
         private final List<TargetInfo> mCallerTargets = new ArrayList<>();
+        private boolean mShowServiceTargets;
 
         private float mLateFee = 1.f;
 
@@ -730,10 +941,11 @@ public class ChooserActivity extends ResolverActivity {
 
         public ChooserListAdapter(Context context, List<Intent> payloadIntents,
                 Intent[] initialIntents, List<ResolveInfo> rList, int launchedFromUid,
-                boolean filterLastUsed) {
+                boolean filterLastUsed, ResolverListController resolverListController) {
             // Don't send the initial intents through the shared ResolverActivity path,
             // we want to separate them into a different section.
-            super(context, payloadIntents, null, rList, launchedFromUid, filterLastUsed);
+            super(context, payloadIntents, null, rList, launchedFromUid, filterLastUsed,
+                    resolverListController);
 
             if (initialIntents != null) {
                 final PackageManager pm = getPackageManager();
@@ -742,13 +954,31 @@ public class ChooserActivity extends ResolverActivity {
                     if (ii == null) {
                         continue;
                     }
-                    final ActivityInfo ai = ii.resolveActivityInfo(pm, 0);
+
+                    // We reimplement Intent#resolveActivityInfo here because if we have an
+                    // implicit intent, we want the ResolveInfo returned by PackageManager
+                    // instead of one we reconstruct ourselves. The ResolveInfo returned might
+                    // have extra metadata and resolvePackageName set and we want to respect that.
+                    ResolveInfo ri = null;
+                    ActivityInfo ai = null;
+                    final ComponentName cn = ii.getComponent();
+                    if (cn != null) {
+                        try {
+                            ai = pm.getActivityInfo(ii.getComponent(), 0);
+                            ri = new ResolveInfo();
+                            ri.activityInfo = ai;
+                        } catch (PackageManager.NameNotFoundException ignored) {
+                            // ai will == null below
+                        }
+                    }
+                    if (ai == null) {
+                        ri = pm.resolveActivity(ii, PackageManager.MATCH_DEFAULT_ONLY);
+                        ai = ri != null ? ri.activityInfo : null;
+                    }
                     if (ai == null) {
                         Log.w(TAG, "No activity found for " + ii);
                         continue;
                     }
-                    ResolveInfo ri = new ResolveInfo();
-                    ri.activityInfo = ai;
                     UserManager userManager =
                             (UserManager) getSystemService(Context.USER_SERVICE);
                     if (ii instanceof LabeledIntent) {
@@ -776,6 +1006,11 @@ public class ChooserActivity extends ResolverActivity {
         }
 
         @Override
+        public boolean isComponentPinned(ComponentName name) {
+            return mPinnedSharedPrefs.getBoolean(name.flattenToString(), false);
+        }
+
+        @Override
         public View onCreateView(ViewGroup parent) {
             return mInflater.inflate(
                     com.android.internal.R.layout.resolve_grid_item, parent, false);
@@ -786,6 +1021,8 @@ public class ChooserActivity extends ResolverActivity {
             if (mServiceTargets != null) {
                 pruneServiceTargets();
             }
+            if (DEBUG) Log.d(TAG, "List built querying services");
+            queryTargetServices(this);
         }
 
         @Override
@@ -808,6 +1045,9 @@ public class ChooserActivity extends ResolverActivity {
         }
 
         public int getServiceTargetCount() {
+            if (!mShowServiceTargets) {
+                return 0;
+            }
             return Math.min(mServiceTargets.size(), MAX_SERVICE_TARGETS);
         }
 
@@ -869,7 +1109,7 @@ public class ChooserActivity extends ResolverActivity {
             final float parentScore = getScore(origTarget);
             Collections.sort(targets, mBaseTargetComparator);
             float lastScore = 0;
-            for (int i = 0, N = targets.size(); i < N; i++) {
+            for (int i = 0, N = Math.min(targets.size(), MAX_TARGETS_PER_SERVICE); i < N; i++) {
                 final ChooserTarget target = targets.get(i);
                 float targetScore = target.getScore();
                 targetScore *= parentScore;
@@ -895,6 +1135,16 @@ public class ChooserActivity extends ResolverActivity {
             mLateFee *= 0.95f;
 
             notifyDataSetChanged();
+        }
+
+        /**
+         * Set to true to reveal all service targets at once.
+         */
+        public void setShowServiceTargets(boolean show) {
+            if (show != mShowServiceTargets) {
+                mShowServiceTargets = show;
+                notifyDataSetChanged();
+            }
         }
 
         private void insertServiceTarget(ChooserTargetInfo chooserTargetInfo) {
@@ -958,7 +1208,18 @@ public class ChooserActivity extends ResolverActivity {
                 return;
             }
 
-            mAnimator = ObjectAnimator.ofFloat(this, PROPERTY, from, to).setDuration(DURATION);
+            mAnimator = ObjectAnimator.ofFloat(this, PROPERTY, from, to)
+                .setDuration(DURATION);
+            mAnimator.addListener(new AnimatorListenerAdapter() {
+                @Override
+                public void onAnimationStart(Animator animation) {
+                    mAdapter.onAnimationStart();
+                }
+                @Override
+                public void onAnimationEnd(Animator animation) {
+                    mAdapter.onAnimationEnd();
+                }
+            });
         }
 
         public RowScale setInterpolator(Interpolator interpolator) {
@@ -991,6 +1252,7 @@ public class ChooserActivity extends ResolverActivity {
         private final int mColumnCount = 4;
         private RowScale[] mServiceTargetScale;
         private final Interpolator mInterpolator;
+        private int mAnimationCount = 0;
 
         public ChooserRowAdapter(ChooserListAdapter wrappedAdapter) {
             mChooserListAdapter = wrappedAdapter;
@@ -1059,6 +1321,21 @@ public class ChooserActivity extends ResolverActivity {
             return 1.f;
         }
 
+        public void onAnimationStart() {
+            final boolean lock = mAnimationCount == 0;
+            mAnimationCount++;
+            if (lock) {
+                mResolverDrawerLayout.setDismissLocked(true);
+            }
+        }
+
+        public void onAnimationEnd() {
+            mAnimationCount--;
+            if (mAnimationCount == 0) {
+                mResolverDrawerLayout.setDismissLocked(false);
+            }
+        }
+
         @Override
         public int getCount() {
             return (int) (
@@ -1120,7 +1397,7 @@ public class ChooserActivity extends ResolverActivity {
                 v.setOnLongClickListener(new OnLongClickListener() {
                     @Override
                     public boolean onLongClick(View v) {
-                        showAppDetails(
+                        showTargetDetails(
                                 mChooserListAdapter.resolveInfoForPosition(
                                         holder.itemIndices[column], true));
                         return true;
@@ -1137,6 +1414,10 @@ public class ChooserActivity extends ResolverActivity {
                     row.setLayoutParams(lp);
                 } else {
                     lp.height = v.getMeasuredHeight();
+                }
+                if (i != (mColumnCount - 1)) {
+                    row.addView(new Space(ChooserActivity.this),
+                            new LinearLayout.LayoutParams(0, 0, 1));
                 }
             }
 
@@ -1165,8 +1446,32 @@ public class ChooserActivity extends ResolverActivity {
             if (startType == ChooserListAdapter.TARGET_SERVICE) {
                 holder.row.setBackgroundColor(
                         getColor(R.color.chooser_service_row_background_color));
+                int nextStartType = mChooserListAdapter.getPositionTargetType(
+                        getFirstRowPosition(rowPosition + 1));
+                int serviceSpacing = holder.row.getContext().getResources()
+                        .getDimensionPixelSize(R.dimen.chooser_service_spacing);
+                if (rowPosition == 0 && nextStartType != ChooserListAdapter.TARGET_SERVICE) {
+                    // if the row is the only row for target service
+                    setVertPadding(holder, 0, 0);
+                } else {
+                    int top = rowPosition == 0 ? serviceSpacing : 0;
+                    if (nextStartType != ChooserListAdapter.TARGET_SERVICE) {
+                        setVertPadding(holder, top, serviceSpacing);
+                    } else {
+                        setVertPadding(holder, top, 0);
+                    }
+                }
             } else {
                 holder.row.setBackgroundColor(Color.TRANSPARENT);
+                int lastStartType = mChooserListAdapter.getPositionTargetType(
+                        getFirstRowPosition(rowPosition - 1));
+                if (lastStartType == ChooserListAdapter.TARGET_SERVICE || rowPosition == 0) {
+                    int serviceSpacing = holder.row.getContext().getResources()
+                            .getDimensionPixelSize(R.dimen.chooser_service_spacing);
+                    setVertPadding(holder, serviceSpacing, 0);
+                } else {
+                    setVertPadding(holder, 0, 0);
+                }
             }
 
             final int oldHeight = holder.row.getLayoutParams().height;
@@ -1183,9 +1488,14 @@ public class ChooserActivity extends ResolverActivity {
                     holder.itemIndices[i] = start + i;
                     mChooserListAdapter.bindView(holder.itemIndices[i], v);
                 } else {
-                    v.setVisibility(View.GONE);
+                    v.setVisibility(View.INVISIBLE);
                 }
             }
+        }
+
+        private void setVertPadding(RowViewHolder holder, int top, int bottom) {
+            holder.row.setPadding(holder.row.getPaddingLeft(), top,
+                    holder.row.getPaddingRight(), bottom);
         }
 
         int getFirstRowPosition(int row) {
@@ -1228,7 +1538,7 @@ public class ChooserActivity extends ResolverActivity {
     }
 
     static class ChooserTargetServiceConnection implements ServiceConnection {
-        private final DisplayResolveInfo mOriginalTarget;
+        private DisplayResolveInfo mOriginalTarget;
         private ComponentName mConnectedComponent;
         private ChooserActivity mChooserActivity;
         private final Object mLock = new Object();
@@ -1275,8 +1585,8 @@ public class ChooserActivity extends ResolverActivity {
                 } catch (RemoteException e) {
                     Log.e(TAG, "Querying ChooserTargetService " + name + " failed.", e);
                     mChooserActivity.unbindService(this);
-                    destroy();
                     mChooserActivity.mServiceConnections.remove(this);
+                    destroy();
                 }
             }
         }
@@ -1292,7 +1602,6 @@ public class ChooserActivity extends ResolverActivity {
                 }
 
                 mChooserActivity.unbindService(this);
-                destroy();
                 mChooserActivity.mServiceConnections.remove(this);
                 if (mChooserActivity.mServiceConnections.isEmpty()) {
                     mChooserActivity.mChooserHandler.removeMessages(
@@ -1300,12 +1609,14 @@ public class ChooserActivity extends ResolverActivity {
                     mChooserActivity.sendVoiceChoicesIfNeeded();
                 }
                 mConnectedComponent = null;
+                destroy();
             }
         }
 
         public void destroy() {
             synchronized (mLock) {
                 mChooserActivity = null;
+                mOriginalTarget = null;
             }
         }
 
@@ -1313,7 +1624,9 @@ public class ChooserActivity extends ResolverActivity {
         public String toString() {
             return "ChooserTargetServiceConnection{service="
                     + mConnectedComponent + ", activity="
-                    + mOriginalTarget.getResolveInfo().activityInfo.toString() + "}";
+                    + (mOriginalTarget != null
+                    ? mOriginalTarget.getResolveInfo().activityInfo.toString()
+                    : "<connection destroyed>") + "}";
         }
     }
 

@@ -18,71 +18,67 @@ package com.android.systemui.statusbar.phone;
 
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
+import android.animation.AnimatorSet;
 import android.animation.ObjectAnimator;
-import android.animation.PropertyValuesHolder;
 import android.animation.ValueAnimator;
-import android.content.ContentResolver;
 import android.app.ActivityManager;
+import android.app.Fragment;
 import android.app.StatusBarManager;
-import android.content.ContentResolver;
 import android.content.Context;
 import android.content.pm.ResolveInfo;
 import android.content.res.Configuration;
-import android.database.ContentObserver;
+import android.content.res.Resources;
 import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.drawable.ColorDrawable;
 import android.graphics.Paint;
 import android.graphics.Rect;
-import android.net.Uri;
-import android.os.Handler;
 import android.os.PowerManager;
-import android.os.UserHandle;
-import android.provider.Settings;
 import android.util.AttributeSet;
+import android.util.FloatProperty;
 import android.util.MathUtils;
-import android.view.GestureDetector;
+import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.VelocityTracker;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
 import android.view.WindowInsets;
 import android.view.accessibility.AccessibilityEvent;
-import android.view.animation.AnimationUtils;
-import android.view.animation.Interpolator;
-import android.view.animation.PathInterpolator;
 import android.widget.FrameLayout;
-import android.widget.TextView;
 
 import com.android.internal.logging.MetricsLogger;
-import com.android.internal.widget.LockPatternUtils;
+import com.android.internal.logging.nano.MetricsProto.MetricsEvent;
 import com.android.keyguard.KeyguardStatusView;
-import com.android.keyguard.KeyguardUpdateMonitor;
 import com.android.systemui.DejankUtils;
-import com.android.systemui.EventLogConstants;
-import com.android.systemui.EventLogTags;
+import com.android.systemui.Interpolators;
 import com.android.systemui.R;
-import com.android.systemui.qs.QSContainer;
-import com.android.systemui.qs.QSPanel;
+import com.android.systemui.classifier.FalsingManager;
+import com.android.systemui.fragments.FragmentHostManager;
+import com.android.systemui.fragments.FragmentHostManager.FragmentListener;
+import com.android.systemui.plugins.qs.QS;
 import com.android.systemui.statusbar.ExpandableNotificationRow;
 import com.android.systemui.statusbar.ExpandableView;
 import com.android.systemui.statusbar.FlingAnimationUtils;
 import com.android.systemui.statusbar.GestureRecorder;
 import com.android.systemui.statusbar.KeyguardAffordanceView;
+import com.android.systemui.statusbar.KeyguardIndicationController;
 import com.android.systemui.statusbar.NotificationData;
+import com.android.systemui.statusbar.NotificationShelf;
 import com.android.systemui.statusbar.StatusBarState;
+import com.android.systemui.statusbar.notification.NotificationUtils;
 import com.android.systemui.statusbar.policy.HeadsUpManager;
 import com.android.systemui.statusbar.policy.KeyguardUserSwitcher;
+import com.android.systemui.statusbar.policy.OnHeadsUpChangedListener;
 import com.android.systemui.statusbar.stack.NotificationStackScrollLayout;
 import com.android.systemui.statusbar.stack.StackStateAnimator;
 
 import java.util.List;
 
 public class NotificationPanelView extends PanelView implements
-        ExpandableView.OnHeightChangedListener, ObservableScrollView.Listener,
+        ExpandableView.OnHeightChangedListener,
         View.OnClickListener, NotificationStackScrollLayout.OnOverscrollTopChangedListener,
         KeyguardAffordanceHelper.Callback, NotificationStackScrollLayout.OnEmptySpaceClickListener,
-        HeadsUpManager.OnHeadsUpChangedListener {
+        OnHeadsUpChangedListener, QS.HeightListener {
 
     private static final boolean DEBUG = false;
 
@@ -91,39 +87,44 @@ public class NotificationPanelView extends PanelView implements
     private static final int CAP_HEIGHT = 1456;
     private static final int FONT_HEIGHT = 2163;
 
-    private static final float HEADER_RUBBERBAND_FACTOR = 2.05f;
     private static final float LOCK_ICON_ACTIVE_SCALE = 1.2f;
 
-    private static final String COUNTER_PANEL_OPEN = "panel_open";
-    private static final String COUNTER_PANEL_OPEN_QS = "panel_open_qs";
+    static final String COUNTER_PANEL_OPEN = "panel_open";
+    static final String COUNTER_PANEL_OPEN_QS = "panel_open_qs";
     private static final String COUNTER_PANEL_OPEN_PEEK = "panel_open_peek";
 
     private static final Rect mDummyDirtyRect = new Rect(0, 0, 1, 1);
 
     public static final long DOZE_ANIMATION_DURATION = 700;
 
-    private static final int ONE_FINGER_QS_INTERCEPT_OFF   = 0;
-    private static final int ONE_FINGER_QS_INTERCEPT_END   = 1;
-    private static final int ONE_FINGER_QS_INTERCEPT_START = 2;
+    private static final FloatProperty<NotificationPanelView> SET_DARK_AMOUNT_PROPERTY =
+            new FloatProperty<NotificationPanelView>("mDarkAmount") {
+                @Override
+                public void setValue(NotificationPanelView object, float value) {
+                    object.setDarkAmount(value);
+                }
 
-    private KeyguardAffordanceHelper mAfforanceHelper;
-    private StatusBarHeaderView mHeader;
+                @Override
+                public Float get(NotificationPanelView object) {
+                    return object.mDarkAmount;
+                }
+            };
+    private final PowerManager mPowerManager;
+
+    private KeyguardAffordanceHelper mAffordanceHelper;
     private KeyguardUserSwitcher mKeyguardUserSwitcher;
     private KeyguardStatusBarView mKeyguardStatusBar;
-    private QSContainer mQsContainer;
-    private QSPanel mQsPanel;
+    private QS mQs;
+    private FrameLayout mQsFrame;
     private KeyguardStatusView mKeyguardStatusView;
-    private ObservableScrollView mScrollView;
-    private TextView mClockView;
     private View mReserveNotificationSpace;
     private View mQsNavbarScrim;
-    private NotificationsQuickSettingsContainer mNotificationContainerParent;
-    private NotificationStackScrollLayout mNotificationStackScroller;
-    private int mNotificationTopPadding;
+    protected NotificationsQuickSettingsContainer mNotificationContainerParent;
+    protected NotificationStackScrollLayout mNotificationStackScroller;
     private boolean mAnimateNextTopPaddingChange;
 
     private int mTrackingPointer;
-    private VelocityTracker mVelocityTracker;
+    private VelocityTracker mQsVelocityTracker;
     private boolean mQsTracking;
 
     /**
@@ -142,23 +143,22 @@ public class NotificationPanelView extends PanelView implements
     private boolean mQsExpandedWhenExpandingStarted;
     private boolean mQsFullyExpanded;
     private boolean mKeyguardShowing;
-    private boolean mKeyguardOrShadeShowing;
     private boolean mDozing;
     private boolean mDozingOnDown;
-    private int mStatusBarState;
+    protected int mStatusBarState;
     private float mInitialHeightOnTouch;
     private float mInitialTouchX;
     private float mInitialTouchY;
     private float mLastTouchX;
     private float mLastTouchY;
-    private float mQsExpansionHeight;
-    private int mQsMinExpansionHeight;
-    private int mQsMaxExpansionHeight;
+    protected float mQsExpansionHeight;
+    protected int mQsMinExpansionHeight;
+    protected int mQsMaxExpansionHeight;
     private int mQsPeekHeight;
     private boolean mStackScrollerOverscrolling;
     private boolean mQsExpansionFromOverscroll;
     private float mLastOverscroll;
-    private boolean mQsExpansionEnabled = true;
+    protected boolean mQsExpansionEnabled = true;
     private ValueAnimator mQsExpansionAnimator;
     private FlingAnimationUtils mFlingAnimationUtils;
     private int mStatusBarMinHeight;
@@ -167,11 +167,9 @@ public class NotificationPanelView extends PanelView implements
     private int mUnlockMoveDistance;
     private float mEmptyDragAmount;
 
-    private Interpolator mFastOutSlowInInterpolator;
-    private Interpolator mFastOutLinearInterpolator;
-    private Interpolator mDozeAnimationInterpolator;
-    private ObjectAnimator mClockAnimator;
-    private int mClockAnimationTarget = -1;
+    private Animator mClockAnimator;
+    private int mClockAnimationTargetX = Integer.MIN_VALUE;
+    private int mClockAnimationTargetY = Integer.MIN_VALUE;
     private int mTopPaddingAdjustment;
     private KeyguardClockPositionAlgorithm mClockPositionAlgorithm =
             new KeyguardClockPositionAlgorithm();
@@ -189,29 +187,23 @@ public class NotificationPanelView extends PanelView implements
      * If we are in a panel collapsing motion, we reset scrollY of our scroll view but still
      * need to take this into account in our panel height calculation.
      */
-    private int mScrollYOverride = -1;
     private boolean mQsAnimatorExpand;
     private boolean mIsLaunchTransitionFinished;
     private boolean mIsLaunchTransitionRunning;
     private Runnable mLaunchAnimationEndRunnable;
     private boolean mOnlyAffordanceInThisMotion;
     private boolean mKeyguardStatusViewAnimating;
-    private boolean mHeaderAnimating;
-    private ObjectAnimator mQsContainerAnimator;
     private ValueAnimator mQsSizeChangeAnimator;
 
-    private boolean mShadeEmpty;
+    private boolean mShowEmptyShadeView;
 
     private boolean mQsScrimEnabled = true;
     private boolean mLastAnnouncementWasQuickSettings;
     private boolean mQsTouchAboveFalsingThreshold;
     private int mQsFalsingThreshold;
 
-    private Handler mHandler = new Handler();
-    private SettingsObserver mSettingsObserver;
-    private int mOneFingerQuickSettingsInterceptMode;
-
     private float mKeyguardStatusBarAnimateAlpha = 1f;
+    private float mQsClockAlphaOverride = 1f;
     private int mOldLayoutDirection;
     private HeadsUpTouchHelper mHeadsUpTouchHelper;
     private boolean mIsExpansionFromHeadsUp;
@@ -220,53 +212,52 @@ public class NotificationPanelView extends PanelView implements
     private boolean mExpandingFromHeadsUp;
     private boolean mCollapsedOnDown;
     private int mPositionMinSideMargin;
+    private int mMaxFadeoutHeight;
     private int mLastOrientation = -1;
     private boolean mClosingWithAlphaFadeOut;
     private boolean mHeadsUpAnimatingAway;
     private boolean mLaunchingAffordance;
+    private FalsingManager mFalsingManager;
     private String mLastCameraLaunchSource = KeyguardBottomAreaView.CAMERA_LAUNCH_SOURCE_AFFORDANCE;
-    private LockPatternUtils mLockPatternUtils;
-
-    private boolean mStatusBarLockedOnSecureKeyguard;
 
     private Runnable mHeadsUpExistenceChangedRunnable = new Runnable() {
         @Override
         public void run() {
-            mHeadsUpAnimatingAway = false;
+            setHeadsUpAnimatingAway(false);
             notifyBarPanelExpansionChanged();
         }
     };
-
-    /** Interpolator to be used for animations that respond directly to a touch */
-    private final Interpolator mTouchResponseInterpolator =
-            new PathInterpolator(0.3f, 0f, 0.1f, 1f);
+    private NotificationGroupManager mGroupManager;
+    private boolean mShowIconsWhenExpanded;
+    private int mIndicationBottomPadding;
+    private int mAmbientIndicationBottomPadding;
+    private boolean mIsFullWidth;
+    private float mDarkAmount;
+    private float mDarkAmountTarget;
+    private LockscreenGestureLogger mLockscreenGestureLogger = new LockscreenGestureLogger();
+    private boolean mNoVisibleNotifications = true;
+    private ValueAnimator mDarkAnimator;
+    private StatusBarKeyguardViewManager mStatusBarKeyguardViewManager;
+    private boolean mUserSetupComplete;
 
     public NotificationPanelView(Context context, AttributeSet attrs) {
         super(context, attrs);
         setWillNotDraw(!DEBUG);
-
-        mSettingsObserver = new SettingsObserver(mHandler);
-        mLockPatternUtils = new LockPatternUtils(mContext);
+        mFalsingManager = FalsingManager.getInstance(context);
+        mPowerManager = context.getSystemService(PowerManager.class);
     }
 
-    public void setStatusBar(PhoneStatusBar bar) {
+    public void setStatusBar(StatusBar bar) {
         mStatusBar = bar;
+        mKeyguardBottomArea.setStatusBar(mStatusBar);
     }
 
     @Override
     protected void onFinishInflate() {
         super.onFinishInflate();
-        mHeader = (StatusBarHeaderView) findViewById(R.id.header);
-        mHeader.setOnClickListener(this);
-        mKeyguardStatusBar = (KeyguardStatusBarView) findViewById(R.id.keyguard_header);
-        mKeyguardStatusView = (KeyguardStatusView) findViewById(R.id.keyguard_status_view);
-        mQsContainer = (QSContainer) findViewById(R.id.quick_settings_container);
-        mQsPanel = (QSPanel) findViewById(R.id.quick_settings_panel);
-        mClockView = (TextView) findViewById(R.id.clock_view);
-        mScrollView = (ObservableScrollView) findViewById(R.id.scroll_view);
-        mScrollView.setListener(this);
-        mScrollView.setFocusable(false);
-        mReserveNotificationSpace = findViewById(R.id.reserve_notification_space);
+        mKeyguardStatusBar = findViewById(R.id.keyguard_header);
+        mKeyguardStatusView = findViewById(R.id.keyguard_status_view);
+
         mNotificationContainerParent = (NotificationsQuickSettingsContainer)
                 findViewById(R.id.notification_container_parent);
         mNotificationStackScroller = (NotificationStackScrollLayout)
@@ -274,38 +265,30 @@ public class NotificationPanelView extends PanelView implements
         mNotificationStackScroller.setOnHeightChangedListener(this);
         mNotificationStackScroller.setOverscrollTopChangedListener(this);
         mNotificationStackScroller.setOnEmptySpaceClickListener(this);
-        mNotificationStackScroller.setScrollView(mScrollView);
-        mFastOutSlowInInterpolator = AnimationUtils.loadInterpolator(getContext(),
-                android.R.interpolator.fast_out_slow_in);
-        mFastOutLinearInterpolator = AnimationUtils.loadInterpolator(getContext(),
-                android.R.interpolator.fast_out_linear_in);
-        mDozeAnimationInterpolator = AnimationUtils.loadInterpolator(getContext(),
-                android.R.interpolator.linear_out_slow_in);
-        mKeyguardBottomArea = (KeyguardBottomAreaView) findViewById(R.id.keyguard_bottom_area);
+        mKeyguardBottomArea = findViewById(R.id.keyguard_bottom_area);
         mQsNavbarScrim = findViewById(R.id.qs_navbar_scrim);
-        mAfforanceHelper = new KeyguardAffordanceHelper(this, getContext());
         mLastOrientation = getResources().getConfiguration().orientation;
 
-        // recompute internal state when qspanel height changes
-        mQsContainer.addOnLayoutChangeListener(new OnLayoutChangeListener() {
-            @Override
-            public void onLayoutChange(View v, int left, int top, int right, int bottom,
-                    int oldLeft, int oldTop, int oldRight, int oldBottom) {
-                final int height = bottom - top;
-                final int oldHeight = oldBottom - oldTop;
-                if (height != oldHeight) {
-                    onScrollChanged();
-                }
-            }
-        });
-        mSettingsObserver = new SettingsObserver(mHandler);
+        initBottomArea();
+
+        mQsFrame = findViewById(R.id.qs_frame);
+    }
+
+    @Override
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        FragmentHostManager.get(this).addTagListener(QS.TAG, mFragmentListener);
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        super.onDetachedFromWindow();
+        FragmentHostManager.get(this).removeTagListener(QS.TAG, mFragmentListener);
     }
 
     @Override
     protected void loadDimens() {
         super.loadDimens();
-        mNotificationTopPadding = getResources().getDimensionPixelSize(
-                R.dimen.notifications_top_padding);
         mFlingAnimationUtils = new FlingAnimationUtils(getContext(), 0.4f);
         mStatusBarMinHeight = getResources().getDimensionPixelSize(
                 com.android.internal.R.dimen.status_bar_height);
@@ -320,46 +303,85 @@ public class NotificationPanelView extends PanelView implements
                 R.dimen.qs_falsing_threshold);
         mPositionMinSideMargin = getResources().getDimensionPixelSize(
                 R.dimen.notification_panel_min_side_margin);
+        mMaxFadeoutHeight = getResources().getDimensionPixelSize(
+                R.dimen.max_notification_fadeout_height);
+        mIndicationBottomPadding = getResources().getDimensionPixelSize(
+                R.dimen.keyguard_indication_bottom_padding);
     }
 
     public void updateResources() {
-        int panelWidth = getResources().getDimensionPixelSize(R.dimen.notification_panel_width);
+        Resources res = getResources();
+        int qsWidth = res.getDimensionPixelSize(R.dimen.qs_panel_width);
         int panelGravity = getResources().getInteger(R.integer.notification_panel_layout_gravity);
-        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) mHeader.getLayoutParams();
-        if (lp.width != panelWidth) {
-            lp.width = panelWidth;
+        FrameLayout.LayoutParams lp =
+                (FrameLayout.LayoutParams) mQsFrame.getLayoutParams();
+        if (lp.width != qsWidth || lp.gravity != panelGravity) {
+            lp.width = qsWidth;
             lp.gravity = panelGravity;
-            mHeader.setLayoutParams(lp);
-            mHeader.post(mUpdateHeader);
+            mQsFrame.setLayoutParams(lp);
         }
 
+        int panelWidth = res.getDimensionPixelSize(R.dimen.notification_panel_width);
         lp = (FrameLayout.LayoutParams) mNotificationStackScroller.getLayoutParams();
-        if (lp.width != panelWidth) {
+        if (lp.width != panelWidth || lp.gravity != panelGravity) {
             lp.width = panelWidth;
             lp.gravity = panelGravity;
             mNotificationStackScroller.setLayoutParams(lp);
         }
+    }
 
-        lp = (FrameLayout.LayoutParams) mScrollView.getLayoutParams();
-        if (lp.width != panelWidth) {
-            lp.width = panelWidth;
-            lp.gravity = panelGravity;
-            mScrollView.setLayoutParams(lp);
-        }
+    public void onOverlayChanged() {
+        // Re-inflate the status view group.
+        int index = indexOfChild(mKeyguardStatusView);
+        removeView(mKeyguardStatusView);
+        mKeyguardStatusView = (KeyguardStatusView) LayoutInflater.from(mContext).inflate(
+                R.layout.keyguard_status_view,
+                this,
+                false);
+        addView(mKeyguardStatusView, index);
+
+        // Update keyguard bottom area
+        index = indexOfChild(mKeyguardBottomArea);
+        removeView(mKeyguardBottomArea);
+        mKeyguardBottomArea = (KeyguardBottomAreaView) LayoutInflater.from(mContext).inflate(
+                R.layout.keyguard_bottom_area,
+                this,
+                false);
+        addView(mKeyguardBottomArea, index);
+        initBottomArea();
+        setDarkAmount(mDarkAmount);
+
+        setKeyguardStatusViewVisibility(mStatusBarState, false, false);
+        setKeyguardBottomAreaVisibility(mStatusBarState, false);
+    }
+
+    private void initBottomArea() {
+        mAffordanceHelper = new KeyguardAffordanceHelper(this, getContext());
+        mKeyguardBottomArea.setAffordanceHelper(mAffordanceHelper);
+        mKeyguardBottomArea.setStatusBar(mStatusBar);
+        mKeyguardBottomArea.setUserSetupComplete(mUserSetupComplete);
+    }
+
+    public void setKeyguardIndicationController(KeyguardIndicationController indicationController) {
+        mKeyguardBottomArea.setKeyguardIndicationController(indicationController);
     }
 
     @Override
     protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
         super.onLayout(changed, left, top, right, bottom);
+        setIsFullWidth(mNotificationStackScroller.getWidth() == getWidth());
 
         // Update Clock Pivot
         mKeyguardStatusView.setPivotX(getWidth() / 2);
-        mKeyguardStatusView.setPivotY((FONT_HEIGHT - CAP_HEIGHT) / 2048f * mClockView.getTextSize());
+        mKeyguardStatusView.setPivotY((FONT_HEIGHT - CAP_HEIGHT) / 2048f *
+                mKeyguardStatusView.getClockTextSize());
 
         // Calculate quick setting heights.
         int oldMaxHeight = mQsMaxExpansionHeight;
-        mQsMinExpansionHeight = mKeyguardShowing ? 0 : mHeader.getCollapsedHeight() + mQsPeekHeight;
-        mQsMaxExpansionHeight = mHeader.getExpandedHeight() + mQsContainer.getDesiredHeight();
+        if (mQs != null) {
+            mQsMinExpansionHeight = mKeyguardShowing ? 0 : mQs.getQsMinExpansionHeight();
+            mQsMaxExpansionHeight = mQs.getDesiredHeight();
+        }
         positionClockAndNotifications();
         if (mQsExpanded && mQsFullyExpanded) {
             mQsExpansionHeight = mQsMaxExpansionHeight;
@@ -373,30 +395,23 @@ public class NotificationPanelView extends PanelView implements
         } else if (!mQsExpanded) {
             setQsExpansion(mQsMinExpansionHeight + mLastOverscroll);
         }
-        updateStackHeight(getExpandedHeight());
+        updateExpandedHeight(getExpandedHeight());
         updateHeader();
-        mNotificationStackScroller.updateIsSmallScreen(
-                mHeader.getCollapsedHeight() + mQsPeekHeight);
 
         // If we are running a size change animation, the animation takes care of the height of
         // the container. However, if we are not animating, we always need to make the QS container
         // the desired height so when closing the QS detail, it stays smaller after the size change
         // animation is finished but the detail view is still being animated away (this animation
         // takes longer than the size change animation).
-        if (mQsSizeChangeAnimator == null) {
-            mQsContainer.setHeightOverride(mQsContainer.getDesiredHeight());
+        if (mQsSizeChangeAnimator == null && mQs != null) {
+            mQs.setHeightOverride(mQs.getDesiredHeight());
         }
         updateMaxHeadsUpTranslation();
     }
 
-    @Override
-    public void onAttachedToWindow() {
-        mSettingsObserver.observe();
-    }
-
-    @Override
-    public void onDetachedFromWindow() {
-        mSettingsObserver.unobserve();
+    private void setIsFullWidth(boolean isFullWidth) {
+        mIsFullWidth = isFullWidth;
+        mNotificationStackScroller.setIsFullWidth(isFullWidth);
     }
 
     private void startQsSizeChangeAnimation(int oldHeight, final int newHeight) {
@@ -406,14 +421,14 @@ public class NotificationPanelView extends PanelView implements
         }
         mQsSizeChangeAnimator = ValueAnimator.ofInt(oldHeight, newHeight);
         mQsSizeChangeAnimator.setDuration(300);
-        mQsSizeChangeAnimator.setInterpolator(mFastOutSlowInInterpolator);
+        mQsSizeChangeAnimator.setInterpolator(Interpolators.FAST_OUT_SLOW_IN);
         mQsSizeChangeAnimator.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
             @Override
             public void onAnimationUpdate(ValueAnimator animation) {
                 requestScrollerTopPaddingUpdate(false /* animate */);
                 requestPanelHeightUpdate();
                 int height = (int) mQsSizeChangeAnimator.getAnimatedValue();
-                mQsContainer.setHeightOverride(height - mHeader.getExpandedHeight());
+                mQs.setHeightOverride(height);
             }
         });
         mQsSizeChangeAnimator.addListener(new AnimatorListenerAdapter() {
@@ -433,10 +448,7 @@ public class NotificationPanelView extends PanelView implements
         boolean animate = mNotificationStackScroller.isAddOrRemoveAnimationPending();
         int stackScrollerPadding;
         if (mStatusBarState != StatusBarState.KEYGUARD) {
-            int bottom = mHeader.getCollapsedHeight();
-            stackScrollerPadding = mStatusBarState == StatusBarState.SHADE
-                    ? bottom + mQsPeekHeight + mNotificationTopPadding
-                    : mKeyguardStatusBar.getHeight() + mNotificationTopPadding;
+            stackScrollerPadding = (mQs != null ? mQs.getHeader().getHeight() : 0) + mQsPeekHeight;
             mTopPaddingAdjustment = 0;
         } else {
             mClockPositionAlgorithm.setup(
@@ -446,11 +458,14 @@ public class NotificationPanelView extends PanelView implements
                     mNotificationStackScroller.getNotGoneChildCount(),
                     getHeight(),
                     mKeyguardStatusView.getHeight(),
-                    mEmptyDragAmount);
+                    mEmptyDragAmount,
+                    mKeyguardStatusView.getClockBottom(),
+                    mDarkAmount);
             mClockPositionAlgorithm.run(mClockPositionResult);
             if (animate || mClockAnimator != null) {
-                startClockAnimation(mClockPositionResult.clockY);
+                startClockAnimation(mClockPositionResult.clockX, mClockPositionResult.clockY);
             } else {
+                mKeyguardStatusView.setX(mClockPositionResult.clockX);
                 mKeyguardStatusView.setY(mClockPositionResult.clockY);
             }
             updateClock(mClockPositionResult.clockAlpha, mClockPositionResult.clockScale);
@@ -458,14 +473,69 @@ public class NotificationPanelView extends PanelView implements
             mTopPaddingAdjustment = mClockPositionResult.stackScrollerPaddingAdjustment;
         }
         mNotificationStackScroller.setIntrinsicPadding(stackScrollerPadding);
+        mNotificationStackScroller.setDarkShelfOffsetX(mClockPositionResult.clockX);
         requestScrollerTopPaddingUpdate(animate);
     }
 
-    private void startClockAnimation(int y) {
-        if (mClockAnimationTarget == y) {
+    /**
+     * @param maximum the maximum to return at most
+     * @return the maximum keyguard notifications that can fit on the screen
+     */
+    public int computeMaxKeyguardNotifications(int maximum) {
+        float minPadding = mClockPositionAlgorithm.getMinStackScrollerPadding(getHeight(),
+                mKeyguardStatusView.getHeight());
+        int notificationPadding = Math.max(1, getResources().getDimensionPixelSize(
+                R.dimen.notification_divider_height));
+        NotificationShelf shelf = mNotificationStackScroller.getNotificationShelf();
+        float shelfSize = shelf.getVisibility() == GONE ? 0
+                : shelf.getIntrinsicHeight() + notificationPadding;
+        float availableSpace = mNotificationStackScroller.getHeight() - minPadding - shelfSize
+                - Math.max(mIndicationBottomPadding, mAmbientIndicationBottomPadding);
+        int count = 0;
+        for (int i = 0; i < mNotificationStackScroller.getChildCount(); i++) {
+            ExpandableView child = (ExpandableView) mNotificationStackScroller.getChildAt(i);
+            if (!(child instanceof ExpandableNotificationRow)) {
+                continue;
+            }
+            ExpandableNotificationRow row = (ExpandableNotificationRow) child;
+            boolean suppressedSummary = mGroupManager.isSummaryOfSuppressedGroup(
+                    row.getStatusBarNotification());
+            if (suppressedSummary) {
+                continue;
+            }
+            if (!mStatusBar.shouldShowOnKeyguard(row.getStatusBarNotification())) {
+                continue;
+            }
+            if (row.isRemoved()) {
+                continue;
+            }
+            availableSpace -= child.getMinHeight(true /* ignoreTemporaryStates */)
+                    + notificationPadding;
+            if (availableSpace >= 0 && count < maximum) {
+                count++;
+            } else if (availableSpace > -shelfSize) {
+                // if we are exactly the last view, then we can show us still!
+                for (int j = i + 1; j < mNotificationStackScroller.getChildCount(); j++) {
+                    if (mNotificationStackScroller.getChildAt(j)
+                            instanceof ExpandableNotificationRow) {
+                        return count;
+                    }
+                }
+                count++;
+                return count;
+            } else {
+                return count;
+            }
+        }
+        return count;
+    }
+
+    private void startClockAnimation(int x, int y) {
+        if (mClockAnimationTargetX == x && mClockAnimationTargetY == y) {
             return;
         }
-        mClockAnimationTarget = y;
+        mClockAnimationTargetX = x;
+        mClockAnimationTargetY = y;
         getViewTreeObserver().addOnPreDrawListener(new ViewTreeObserver.OnPreDrawListener() {
             @Override
             public boolean onPreDraw() {
@@ -474,15 +544,20 @@ public class NotificationPanelView extends PanelView implements
                     mClockAnimator.removeAllListeners();
                     mClockAnimator.cancel();
                 }
-                mClockAnimator = ObjectAnimator
-                        .ofFloat(mKeyguardStatusView, View.Y, mClockAnimationTarget);
-                mClockAnimator.setInterpolator(mFastOutSlowInInterpolator);
+                AnimatorSet set = new AnimatorSet();
+                set.play(ObjectAnimator.ofFloat(
+                        mKeyguardStatusView, View.Y, mClockAnimationTargetY))
+                        .with(ObjectAnimator.ofFloat(
+                                mKeyguardStatusView, View.X, mClockAnimationTargetX));
+                mClockAnimator = set;
+                mClockAnimator.setInterpolator(Interpolators.FAST_OUT_SLOW_IN);
                 mClockAnimator.setDuration(StackStateAnimator.ANIMATION_DURATION_STANDARD);
                 mClockAnimator.addListener(new AnimatorListenerAdapter() {
                     @Override
                     public void onAnimationEnd(Animator animation) {
                         mClockAnimator = null;
-                        mClockAnimationTarget = -1;
+                        mClockAnimationTargetX = Integer.MIN_VALUE;
+                        mClockAnimationTargetY = Integer.MIN_VALUE;
                     }
                 });
                 mClockAnimator.start();
@@ -493,7 +568,7 @@ public class NotificationPanelView extends PanelView implements
 
     private void updateClock(float alpha, float scale) {
         if (!mKeyguardStatusViewAnimating) {
-            mKeyguardStatusView.setAlpha(alpha);
+            mKeyguardStatusView.setAlpha(alpha * mQsClockAlphaOverride);
         }
         mKeyguardStatusView.setScaleX(scale);
         mKeyguardStatusView.setScaleY(scale);
@@ -505,14 +580,10 @@ public class NotificationPanelView extends PanelView implements
         requestLayout();
     }
 
-    private boolean isQSEventBlocked() {
-        return mLockPatternUtils.isSecure(KeyguardUpdateMonitor.getCurrentUser())
-            && mStatusBarLockedOnSecureKeyguard && mKeyguardOrShadeShowing;
-    }
-
     public void setQsExpansionEnabled(boolean qsExpansionEnabled) {
-        mQsExpansionEnabled = qsExpansionEnabled && !isQSEventBlocked();
-        mHeader.setClickable(mQsExpansionEnabled);
+        mQsExpansionEnabled = qsExpansionEnabled;
+        if (mQs == null) return;
+        mQs.setHeaderClickable(qsExpansionEnabled);
     }
 
     @Override
@@ -521,11 +592,12 @@ public class NotificationPanelView extends PanelView implements
         mBlockTouches = false;
         mUnlockIconActive = false;
         if (!mLaunchingAffordance) {
-            mAfforanceHelper.reset(false);
+            mAffordanceHelper.reset(false);
             mLastCameraLaunchSource = KeyguardBottomAreaView.CAMERA_LAUNCH_SOURCE_AFFORDANCE;
         }
         closeQs();
-        mStatusBar.dismissPopups();
+        mStatusBar.closeAndSaveGuts(true /* leavebehind */, true /* force */,
+                true /* controls */, -1 /* x */, -1 /* y */, true /* resetMenu */);
         mNotificationStackScroller.setOverScrollAmount(0f, true /* onTop */, false /* animate */,
                 true /* cancelAnimators */);
         mNotificationStackScroller.resetScrollPosition();
@@ -559,7 +631,7 @@ public class NotificationPanelView extends PanelView implements
         if (mQsExpansionEnabled) {
             mQsExpandImmediate = true;
         }
-        expand();
+        expand(true /* animate */);
     }
 
     @Override
@@ -591,7 +663,7 @@ public class NotificationPanelView extends PanelView implements
 
     @Override
     public boolean onInterceptTouchEvent(MotionEvent event) {
-        if (mBlockTouches) {
+        if (mBlockTouches || mQs.isCustomizing()) {
             return false;
         }
         initDownStates(event);
@@ -601,6 +673,7 @@ public class NotificationPanelView extends PanelView implements
             MetricsLogger.count(mContext, COUNTER_PANEL_OPEN_PEEK, 1);
             return true;
         }
+
         if (!isFullyCollapsed() && onQsIntercept(event)) {
             return true;
         }
@@ -703,19 +776,8 @@ public class NotificationPanelView extends PanelView implements
         }
     }
 
-    @Override
-    public void requestDisallowInterceptTouchEvent(boolean disallowIntercept) {
-
-        // Block request when interacting with the scroll view so we can still intercept the
-        // scrolling when QS is expanded.
-        if (mScrollView.isHandlingTouchEvent()) {
-            return;
-        }
-        super.requestDisallowInterceptTouchEvent(disallowIntercept);
-    }
-
     private void flingQsWithCurrentVelocity(float y, boolean isCancelMotionEvent) {
-        float vel = getCurrentVelocity();
+        float vel = getCurrentQSVelocity();
         final boolean expandsQs = flingExpandsQs(vel);
         if (expandsQs) {
             logQsSwipeDown(y);
@@ -724,18 +786,17 @@ public class NotificationPanelView extends PanelView implements
     }
 
     private void logQsSwipeDown(float y) {
-        float vel = getCurrentVelocity();
+        float vel = getCurrentQSVelocity();
         final int gesture = mStatusBarState == StatusBarState.KEYGUARD
-                ? EventLogConstants.SYSUI_LOCKSCREEN_GESTURE_SWIPE_DOWN_QS
-                : EventLogConstants.SYSUI_SHADE_GESTURE_SWIPE_DOWN_QS;
-        EventLogTags.writeSysuiLockscreenGesture(
-                gesture,
+                ? MetricsEvent.ACTION_LS_QS
+                : MetricsEvent.ACTION_SHADE_QS_PULL;
+        mLockscreenGestureLogger.write(gesture,
                 (int) ((y - mInitialTouchY) / mStatusBar.getDisplayDensity()),
                 (int) (vel / mStatusBar.getDisplayDensity()));
     }
 
     private boolean flingExpandsQs(float vel) {
-        if (isBelowFalsingThreshold()) {
+        if (isFalseTouch()) {
             return false;
         }
         if (Math.abs(vel) < mFlingAnimationUtils.getMinVelocityPxPerSecond()) {
@@ -745,8 +806,14 @@ public class NotificationPanelView extends PanelView implements
         }
     }
 
-    private boolean isBelowFalsingThreshold() {
-        return !mQsTouchAboveFalsingThreshold && mStatusBarState == StatusBarState.KEYGUARD;
+    private boolean isFalseTouch() {
+        if (!needsAntiFalsing()) {
+            return false;
+        }
+        if (mFalsingManager.isClassiferEnabled()) {
+            return mFalsingManager.isFalseTouch();
+        }
+        return !mQsTouchAboveFalsingThreshold;
     }
 
     private float getQsExpansionFraction() {
@@ -755,8 +822,13 @@ public class NotificationPanelView extends PanelView implements
     }
 
     @Override
+    protected float getOpeningHeight() {
+        return mNotificationStackScroller.getOpeningHeight();
+    }
+
+    @Override
     public boolean onTouchEvent(MotionEvent event) {
-        if (mBlockTouches) {
+        if (mBlockTouches || (mQs != null && mQs.isCustomizing())) {
             return false;
         }
         initDownStates(event);
@@ -765,24 +837,28 @@ public class NotificationPanelView extends PanelView implements
             mIsExpansionFromHeadsUp = true;
             MetricsLogger.count(mContext, COUNTER_PANEL_OPEN_PEEK, 1);
         }
+        boolean handled = false;
         if ((!mIsExpanding || mHintAnimationRunning)
                 && !mQsExpanded
-                && mStatusBar.getBarState() != StatusBarState.SHADE) {
-            mAfforanceHelper.onTouchEvent(event);
+                && mStatusBar.getBarState() != StatusBarState.SHADE
+                && !mDozing) {
+            handled |= mAffordanceHelper.onTouchEvent(event);
         }
         if (mOnlyAffordanceInThisMotion) {
             return true;
         }
-        mHeadsUpTouchHelper.onTouchEvent(event);
+        handled |= mHeadsUpTouchHelper.onTouchEvent(event);
+
         if (!mHeadsUpTouchHelper.isTrackingHeadsUp() && handleQsTouch(event)) {
             return true;
         }
         if (event.getActionMasked() == MotionEvent.ACTION_DOWN && isFullyCollapsed()) {
             MetricsLogger.count(mContext, COUNTER_PANEL_OPEN, 1);
             updateVerticalPanelPosition(event.getX());
+            handled = true;
         }
-        super.onTouchEvent(event);
-        return true;
+        handled |= super.onTouchEvent(event);
+        return mDozing ? handled : true;
     }
 
     private boolean handleQsTouch(MotionEvent event) {
@@ -829,18 +905,15 @@ public class NotificationPanelView extends PanelView implements
     }
 
     private boolean isInQsArea(float x, float y) {
-        return (x >= mScrollView.getX() && x <= mScrollView.getX() + mScrollView.getWidth()) &&
-                (y <= mNotificationStackScroller.getBottomMostNotificationBottom()
-                || y <= mQsContainer.getY() + mQsContainer.getHeight());
+        return (x >= mQsFrame.getX()
+                && x <= mQsFrame.getX() + mQsFrame.getWidth())
+                && (y <= mNotificationStackScroller.getBottomMostNotificationBottom()
+                || y <= mQs.getView().getY() + mQs.getView().getHeight());
     }
 
     private boolean isOpenQsEvent(MotionEvent event) {
         final int pointerCount = event.getPointerCount();
         final int action = event.getActionMasked();
-
-        final boolean oneFingerDrag = action == MotionEvent.ACTION_DOWN
-                && mOneFingerQuickSettingsInterceptMode > ONE_FINGER_QS_INTERCEPT_OFF
-                && shouldQuickSettingsIntercept (event.getX(), event.getY(), -1, false);
 
         final boolean twoFingerDrag = action == MotionEvent.ACTION_POINTER_DOWN
                 && pointerCount == 2;
@@ -853,12 +926,13 @@ public class NotificationPanelView extends PanelView implements
                 && (event.isButtonPressed(MotionEvent.BUTTON_SECONDARY)
                         || event.isButtonPressed(MotionEvent.BUTTON_TERTIARY));
 
-        return oneFingerDrag || twoFingerDrag || stylusButtonClickDrag || mouseButtonClickDrag;
+        return twoFingerDrag || stylusButtonClickDrag || mouseButtonClickDrag;
     }
 
     private void handleQsDown(MotionEvent event) {
         if (event.getActionMasked() == MotionEvent.ACTION_DOWN
                 && shouldQuickSettingsIntercept(event.getX(), event.getY(), -1)) {
+            mFalsingManager.onQsDown();
             mQsTracking = true;
             onQsExpansionStarted();
             mInitialHeightOnTouch = mQsExpansionHeight;
@@ -888,7 +962,7 @@ public class NotificationPanelView extends PanelView implements
 
     @Override
     protected boolean shouldGestureIgnoreXTouchSlop(float x, float y) {
-        return !mAfforanceHelper.isOnAffordanceIcon(x, y);
+        return !mAffordanceHelper.isOnAffordanceIcon(x, y);
     }
 
     private void onQsTouch(MotionEvent event) {
@@ -940,17 +1014,13 @@ public class NotificationPanelView extends PanelView implements
                 mTrackingPointer = -1;
                 trackMovement(event);
                 float fraction = getQsExpansionFraction();
-                if ((fraction != 0f || y >= mInitialTouchY)
-                        && (fraction != 1f || y <= mInitialTouchY)) {
+                if (fraction != 0f || y >= mInitialTouchY) {
                     flingQsWithCurrentVelocity(y,
                             event.getActionMasked() == MotionEvent.ACTION_CANCEL);
-                } else {
-                    logQsSwipeDown(y);
-                    mScrollYOverride = -1;
                 }
-                if (mVelocityTracker != null) {
-                    mVelocityTracker.recycle();
-                    mVelocityTracker = null;
+                if (mQsVelocityTracker != null) {
+                    mQsVelocityTracker.recycle();
+                    mQsVelocityTracker = null;
                 }
                 break;
         }
@@ -962,25 +1032,13 @@ public class NotificationPanelView extends PanelView implements
     }
 
     @Override
-    public void onOverscrolled(float lastTouchX, float lastTouchY, int amount) {
-        if (mIntercepting && shouldQuickSettingsIntercept(lastTouchX, lastTouchY,
-                -1 /* yDiff: Not relevant here */)) {
-            mQsTracking = true;
-            onQsExpansionStarted(amount);
-            mInitialHeightOnTouch = mQsExpansionHeight;
-            mInitialTouchY = mLastTouchY;
-            mInitialTouchX = mLastTouchX;
-        }
-    }
-
-    @Override
     public void onOverscrollTopChanged(float amount, boolean isRubberbanded) {
         cancelQsAnimation();
         if (!mQsExpansionEnabled) {
             amount = 0f;
         }
         float rounded = amount >= 1f ? amount : 0f;
-        mStackScrollerOverscrolling = rounded != 0f && isRubberbanded;
+        setOverScrolling(rounded != 0f && isRubberbanded);
         mQsExpansionFromOverscroll = rounded != 0f;
         mLastOverscroll = rounded;
         updateQsState();
@@ -990,34 +1048,38 @@ public class NotificationPanelView extends PanelView implements
     @Override
     public void flingTopOverscroll(float velocity, boolean open) {
         mLastOverscroll = 0f;
+        mQsExpansionFromOverscroll = false;
         setQsExpansion(mQsExpansionHeight);
         flingSettings(!mQsExpansionEnabled && open ? 0f : velocity, open && mQsExpansionEnabled,
                 new Runnable() {
                     @Override
                     public void run() {
                         mStackScrollerOverscrolling = false;
-                        mQsExpansionFromOverscroll = false;
+                        setOverScrolling(false);
                         updateQsState();
                     }
                 }, false /* isClick */);
+    }
+
+    private void setOverScrolling(boolean overscrolling) {
+        mStackScrollerOverscrolling = overscrolling;
+        if (mQs == null) return;
+        mQs.setOverscrolling(overscrolling);
     }
 
     private void onQsExpansionStarted() {
         onQsExpansionStarted(0);
     }
 
-    private void onQsExpansionStarted(int overscrollAmount) {
+    protected void onQsExpansionStarted(int overscrollAmount) {
         cancelQsAnimation();
         cancelHeightAnimator();
 
         // Reset scroll position and apply that position to the expanded height.
-        float height = mQsExpansionHeight - mScrollView.getScrollY() - overscrollAmount;
-        if (mScrollView.getScrollY() != 0) {
-            mScrollYOverride = mScrollView.getScrollY();
-        }
-        mScrollView.scrollTo(0, 0);
+        float height = mQsExpansionHeight - overscrollAmount;
         setQsExpansion(height);
         requestPanelHeightUpdate();
+        mNotificationStackScroller.checkSnoozeLeavebehind();
     }
 
     private void setQsExpanded(boolean expanded) {
@@ -1026,9 +1088,8 @@ public class NotificationPanelView extends PanelView implements
             mQsExpanded = expanded;
             updateQsState();
             requestPanelHeightUpdate();
-            mNotificationStackScroller.setInterceptDelegateEnabled(expanded);
+            mFalsingManager.setQsExpanded(expanded);
             mStatusBar.setQsExpanded(expanded);
-            mQsPanel.setExpanded(expanded);
             mNotificationContainerParent.setQsExpanded(expanded);
         }
     }
@@ -1037,29 +1098,33 @@ public class NotificationPanelView extends PanelView implements
             boolean goingToFullShade) {
         int oldState = mStatusBarState;
         boolean keyguardShowing = statusBarState == StatusBarState.KEYGUARD;
-	boolean keyguardOrShadeShowing = statusBarState == StatusBarState.KEYGUARD
-                || statusBarState == StatusBarState.SHADE_LOCKED;
         setKeyguardStatusViewVisibility(statusBarState, keyguardFadingAway, goingToFullShade);
         setKeyguardBottomAreaVisibility(statusBarState, goingToFullShade);
 
         mStatusBarState = statusBarState;
         mKeyguardShowing = keyguardShowing;
-        mKeyguardOrShadeShowing = keyguardOrShadeShowing;
+        if (mQs != null) {
+            mQs.setKeyguardShowing(mKeyguardShowing);
+        }
 
-        if (goingToFullShade || (oldState == StatusBarState.KEYGUARD
-                && statusBarState == StatusBarState.SHADE_LOCKED)) {
+        if (oldState == StatusBarState.KEYGUARD
+                && (goingToFullShade || statusBarState == StatusBarState.SHADE_LOCKED)) {
             animateKeyguardStatusBarOut();
-            animateHeaderSlidingIn();
+            long delay = mStatusBarState == StatusBarState.SHADE_LOCKED
+                    ? 0 : mStatusBar.calculateGoingToFullShadeDelay();
+            mQs.animateHeaderSlidingIn(delay);
         } else if (oldState == StatusBarState.SHADE_LOCKED
                 && statusBarState == StatusBarState.KEYGUARD) {
             animateKeyguardStatusBarIn(StackStateAnimator.ANIMATION_DURATION_STANDARD);
-            animateHeaderSlidingOut();
+            mQs.animateHeaderSlidingOut();
         } else {
             mKeyguardStatusBar.setAlpha(1f);
             mKeyguardStatusBar.setVisibility(keyguardShowing ? View.VISIBLE : View.INVISIBLE);
             if (keyguardShowing && oldState != mStatusBarState) {
-                mKeyguardBottomArea.updateLeftAffordance();
-                mAfforanceHelper.updatePreviews();
+                mKeyguardBottomArea.onKeyguardShowingChanged();
+                if (mQs != null) {
+                    mQs.hideImmediately();
+                }
             }
         }
         if (keyguardShowing) {
@@ -1084,95 +1149,6 @@ public class NotificationPanelView extends PanelView implements
         }
     };
 
-    private final Animator.AnimatorListener mAnimateHeaderSlidingInListener
-            = new AnimatorListenerAdapter() {
-        @Override
-        public void onAnimationEnd(Animator animation) {
-            mHeaderAnimating = false;
-            mQsContainerAnimator = null;
-            mQsContainer.removeOnLayoutChangeListener(mQsContainerAnimatorUpdater);
-        }
-    };
-
-    private final OnLayoutChangeListener mQsContainerAnimatorUpdater
-            = new OnLayoutChangeListener() {
-        @Override
-        public void onLayoutChange(View v, int left, int top, int right, int bottom, int oldLeft,
-                int oldTop, int oldRight, int oldBottom) {
-            int oldHeight = oldBottom - oldTop;
-            int height = bottom - top;
-            if (height != oldHeight && mQsContainerAnimator != null) {
-                PropertyValuesHolder[] values = mQsContainerAnimator.getValues();
-                float newEndValue = mHeader.getCollapsedHeight() + mQsPeekHeight - height - top;
-                float newStartValue = -height - top;
-                values[0].setFloatValues(newStartValue, newEndValue);
-                mQsContainerAnimator.setCurrentPlayTime(mQsContainerAnimator.getCurrentPlayTime());
-            }
-        }
-    };
-
-    private final ViewTreeObserver.OnPreDrawListener mStartHeaderSlidingIn
-            = new ViewTreeObserver.OnPreDrawListener() {
-        @Override
-        public boolean onPreDraw() {
-            getViewTreeObserver().removeOnPreDrawListener(this);
-            long delay = mStatusBarState == StatusBarState.SHADE_LOCKED
-                    ? 0
-                    : mStatusBar.calculateGoingToFullShadeDelay();
-            mHeader.setTranslationY(-mHeader.getCollapsedHeight() - mQsPeekHeight);
-            mHeader.animate()
-                    .translationY(0f)
-                    .setStartDelay(delay)
-                    .setDuration(StackStateAnimator.ANIMATION_DURATION_GO_TO_FULL_SHADE)
-                    .setInterpolator(mFastOutSlowInInterpolator)
-                    .start();
-            mQsContainer.setY(-mQsContainer.getHeight());
-            mQsContainerAnimator = ObjectAnimator.ofFloat(mQsContainer, View.TRANSLATION_Y,
-                    mQsContainer.getTranslationY(),
-                    mHeader.getCollapsedHeight() + mQsPeekHeight - mQsContainer.getHeight()
-                            - mQsContainer.getTop());
-            mQsContainerAnimator.setStartDelay(delay);
-            mQsContainerAnimator.setDuration(StackStateAnimator.ANIMATION_DURATION_GO_TO_FULL_SHADE);
-            mQsContainerAnimator.setInterpolator(mFastOutSlowInInterpolator);
-            mQsContainerAnimator.addListener(mAnimateHeaderSlidingInListener);
-            mQsContainerAnimator.start();
-            mQsContainer.addOnLayoutChangeListener(mQsContainerAnimatorUpdater);
-            return true;
-        }
-    };
-
-    private void animateHeaderSlidingIn() {
-        // If the QS is already expanded we don't need to slide in the header as it's already
-        // visible.
-        if (!mQsExpanded) {
-            mHeaderAnimating = true;
-            getViewTreeObserver().addOnPreDrawListener(mStartHeaderSlidingIn);
-        }
-    }
-
-    private void animateHeaderSlidingOut() {
-        mHeaderAnimating = true;
-        mHeader.animate().y(-mHeader.getHeight())
-                .setStartDelay(0)
-                .setDuration(StackStateAnimator.ANIMATION_DURATION_STANDARD)
-                .setInterpolator(mFastOutSlowInInterpolator)
-                .setListener(new AnimatorListenerAdapter() {
-                    @Override
-                    public void onAnimationEnd(Animator animation) {
-                        mHeader.animate().setListener(null);
-                        mHeaderAnimating = false;
-                        updateQsState();
-                    }
-                })
-                .start();
-        mQsContainer.animate()
-                .y(-mQsContainer.getHeight())
-                .setStartDelay(0)
-                .setDuration(StackStateAnimator.ANIMATION_DURATION_STANDARD)
-                .setInterpolator(mFastOutSlowInInterpolator)
-                .start();
-    }
-
     private final Runnable mAnimateKeyguardStatusBarInvisibleEndRunnable = new Runnable() {
         @Override
         public void run() {
@@ -1191,7 +1167,7 @@ public class NotificationPanelView extends PanelView implements
         anim.setDuration(mStatusBar.isKeyguardFadingAway()
                 ? mStatusBar.getKeyguardFadingAwayDuration() / 2
                 : StackStateAnimator.ANIMATION_DURATION_STANDARD);
-        anim.setInterpolator(mDozeAnimationInterpolator);
+        anim.setInterpolator(Interpolators.LINEAR_OUT_SLOW_IN);
         anim.addListener(new AnimatorListenerAdapter() {
             @Override
             public void onAnimationEnd(Animator animation) {
@@ -1216,7 +1192,7 @@ public class NotificationPanelView extends PanelView implements
         ValueAnimator anim = ValueAnimator.ofFloat(0f, 1f);
         anim.addUpdateListener(mStatusBarAnimateAlphaListener);
         anim.setDuration(duration);
-        anim.setInterpolator(mDozeAnimationInterpolator);
+        anim.setInterpolator(Interpolators.LINEAR_OUT_SLOW_IN);
         anim.start();
     }
 
@@ -1229,24 +1205,20 @@ public class NotificationPanelView extends PanelView implements
 
     private void setKeyguardBottomAreaVisibility(int statusBarState,
             boolean goingToFullShade) {
+        mKeyguardBottomArea.animate().cancel();
         if (goingToFullShade) {
-            mKeyguardBottomArea.animate().cancel();
             mKeyguardBottomArea.animate()
                     .alpha(0f)
                     .setStartDelay(mStatusBar.getKeyguardFadingAwayDelay())
                     .setDuration(mStatusBar.getKeyguardFadingAwayDuration() / 2)
-                    .setInterpolator(PhoneStatusBar.ALPHA_OUT)
+                    .setInterpolator(Interpolators.ALPHA_OUT)
                     .withEndAction(mAnimateKeyguardBottomAreaInvisibleEndRunnable)
                     .start();
         } else if (statusBarState == StatusBarState.KEYGUARD
                 || statusBarState == StatusBarState.SHADE_LOCKED) {
-            mKeyguardBottomArea.animate().cancel();
-            if (!mDozing) {
-                mKeyguardBottomArea.setVisibility(View.VISIBLE);
-            }
+            mKeyguardBottomArea.setVisibility(View.VISIBLE);
             mKeyguardBottomArea.setAlpha(1f);
         } else {
-            mKeyguardBottomArea.animate().cancel();
             mKeyguardBottomArea.setVisibility(View.GONE);
             mKeyguardBottomArea.setAlpha(1f);
         }
@@ -1262,7 +1234,7 @@ public class NotificationPanelView extends PanelView implements
                     .alpha(0f)
                     .setStartDelay(0)
                     .setDuration(160)
-                    .setInterpolator(PhoneStatusBar.ALPHA_OUT)
+                    .setInterpolator(Interpolators.ALPHA_OUT)
                     .withEndAction(mAnimateKeyguardStatusViewInvisibleEndRunnable);
             if (keyguardFadingAway) {
                 mKeyguardStatusView.animate()
@@ -1280,7 +1252,7 @@ public class NotificationPanelView extends PanelView implements
                     .alpha(1f)
                     .setStartDelay(0)
                     .setDuration(320)
-                    .setInterpolator(PhoneStatusBar.ALPHA_IN)
+                    .setInterpolator(Interpolators.ALPHA_IN)
                     .withEndAction(mAnimateKeyguardStatusViewVisibleEndRunnable);
         } else if (statusBarState == StatusBarState.KEYGUARD) {
             mKeyguardStatusView.animate().cancel();
@@ -1296,19 +1268,10 @@ public class NotificationPanelView extends PanelView implements
     }
 
     private void updateQsState() {
-        boolean expandVisually = mQsExpanded || mStackScrollerOverscrolling || mHeaderAnimating;
-        mHeader.setVisibility((mQsExpanded || !mKeyguardShowing || mHeaderAnimating)
-                ? View.VISIBLE
-                : View.INVISIBLE);
-        mHeader.setExpanded((mKeyguardShowing && !mHeaderAnimating)
-                || (mQsExpanded && !mStackScrollerOverscrolling));
+        mNotificationStackScroller.setQsExpanded(mQsExpanded);
         mNotificationStackScroller.setScrollingEnabled(
                 mStatusBarState != StatusBarState.KEYGUARD && (!mQsExpanded
                         || mQsExpansionFromOverscroll));
-        mQsPanel.setVisibility(expandVisually ? View.VISIBLE : View.INVISIBLE);
-        mQsContainer.setVisibility(
-                mKeyguardShowing && !expandVisually ? View.INVISIBLE : View.VISIBLE);
-        mScrollView.setTouchEnabled(mQsExpanded);
         updateEmptyShadeView();
         mQsNavbarScrim.setVisibility(mStatusBarState == StatusBarState.SHADE && mQsExpanded
                 && !mStackScrollerOverscrolling && mQsScrimEnabled
@@ -1317,11 +1280,13 @@ public class NotificationPanelView extends PanelView implements
         if (mKeyguardUserSwitcher != null && mQsExpanded && !mStackScrollerOverscrolling) {
             mKeyguardUserSwitcher.hideIfNotSimple(true /* animate */);
         }
+        if (mQs == null) return;
+        mQs.setExpanded(mQsExpanded);
     }
 
     private void setQsExpansion(float height) {
         height = Math.min(Math.max(height, mQsMinExpansionHeight), mQsMaxExpansionHeight);
-        mQsFullyExpanded = height == mQsMaxExpansionHeight;
+        mQsFullyExpanded = height == mQsMaxExpansionHeight && mQsMaxExpansionHeight != 0;
         if (height > mQsMinExpansionHeight && !mQsExpanded && !mStackScrollerOverscrolling) {
             setQsExpanded(true);
         } else if (height <= mQsMinExpansionHeight && mQsExpanded) {
@@ -1332,12 +1297,10 @@ public class NotificationPanelView extends PanelView implements
             }
         }
         mQsExpansionHeight = height;
-        mHeader.setExpansion(getHeaderExpansionFraction());
-        setQsTranslation(height);
+        updateQsExpansion();
         requestScrollerTopPaddingUpdate(false /* animate */);
-        updateNotificationScrim(height);
         if (mKeyguardShowing) {
-            updateHeaderKeyguard();
+            updateHeaderKeyguardAlpha();
         }
         if (mStatusBarState == StatusBarState.SHADE_LOCKED
                 || mStatusBarState == StatusBarState.KEYGUARD) {
@@ -1348,6 +1311,15 @@ public class NotificationPanelView extends PanelView implements
             mQsNavbarScrim.setAlpha(getQsExpansionFraction());
         }
 
+        // Fade clock when QS is on top of it
+        float newClockAlpha = (height - mKeyguardStatusView.getY()) /
+                mKeyguardStatusView.getHeight();
+        newClockAlpha = 1 - MathUtils.constrain(newClockAlpha, 0, 1);
+        if (newClockAlpha != mQsClockAlphaOverride) {
+            mQsClockAlphaOverride = Interpolators.ALPHA_OUT.getInterpolation(newClockAlpha);
+            updateClock(mClockPositionResult.clockAlpha, mClockPositionResult.clockScale);
+        }
+
         // Upon initialisation when we are not layouted yet we don't want to announce that we are
         // fully expanded, hence the != 0.0f check.
         if (height != 0.0f && mQsFullyExpanded && !mLastAnnouncementWasQuickSettings) {
@@ -1355,39 +1327,27 @@ public class NotificationPanelView extends PanelView implements
                     R.string.accessibility_desc_quick_settings));
             mLastAnnouncementWasQuickSettings = true;
         }
+        if (mQsFullyExpanded && mFalsingManager.shouldEnforceBouncer()) {
+            mStatusBar.executeRunnableDismissingKeyguard(null, null /* cancelAction */,
+                    false /* dismissShade */, true /* afterKeyguardGone */, false /* deferred */);
+        }
         if (DEBUG) {
             invalidate();
         }
     }
 
+    protected void updateQsExpansion() {
+        if (mQs == null) return;
+        mQs.setQsExpansion(getQsExpansionFraction(), getHeaderTranslation());
+    }
+
     private String getKeyguardOrLockScreenString() {
-        if (mStatusBarState == StatusBarState.KEYGUARD) {
+        if (mQs != null && mQs.isCustomizing()) {
+            return getContext().getString(R.string.accessibility_desc_quick_settings_edit);
+        } else if (mStatusBarState == StatusBarState.KEYGUARD) {
             return getContext().getString(R.string.accessibility_desc_lock_screen);
         } else {
             return getContext().getString(R.string.accessibility_desc_notification_shade);
-        }
-    }
-
-    private void updateNotificationScrim(float height) {
-        int startDistance = mQsMinExpansionHeight + mNotificationScrimWaitDistance;
-        float progress = (height - startDistance) / (mQsMaxExpansionHeight - startDistance);
-        progress = Math.max(0.0f, Math.min(progress, 1.0f));
-    }
-
-    private float getHeaderExpansionFraction() {
-        if (!mKeyguardShowing) {
-            return getQsExpansionFraction();
-        } else {
-            return 1f;
-        }
-    }
-
-    private void setQsTranslation(float height) {
-        if (!mHeaderAnimating) {
-            mQsContainer.setY(height - mQsContainer.getDesiredHeight() + getHeaderTranslation());
-        }
-        if (mKeyguardShowing && !mHeaderAnimating) {
-            mHeader.setY(interpolate(getQsExpansionFraction(), -mHeader.getHeight(), 0));
         }
     }
 
@@ -1400,8 +1360,7 @@ public class NotificationPanelView extends PanelView implements
             // on Keyguard, maxQs denotes the top padding from the quick settings panel. We need to
             // take the maximum and linearly interpolate with the panel expansion for a nice motion.
             int maxNotifications = mClockPositionResult.stackScrollerPadding
-                    - mClockPositionResult.stackScrollerPaddingAdjustment
-                    - mNotificationTopPadding;
+                    - mClockPositionResult.stackScrollerPaddingAdjustment;
             int maxQs = getTempQsMaxExpansion();
             int max = mStatusBarState == StatusBarState.KEYGUARD
                     ? Math.max(maxNotifications, maxQs)
@@ -1410,21 +1369,20 @@ public class NotificationPanelView extends PanelView implements
                     mQsMinExpansionHeight, max);
         } else if (mQsSizeChangeAnimator != null) {
             return (int) mQsSizeChangeAnimator.getAnimatedValue();
-        } else if (mKeyguardShowing && mScrollYOverride == -1) {
+        } else if (mKeyguardShowing) {
 
             // We can only do the smoother transition on Keyguard when we also are not collapsing
             // from a scrolled quick settings.
             return interpolate(getQsExpansionFraction(),
-                    mNotificationStackScroller.getIntrinsicPadding() - mNotificationTopPadding,
+                    mNotificationStackScroller.getIntrinsicPadding(),
                     mQsMaxExpansionHeight);
         } else {
             return mQsExpansionHeight;
         }
     }
 
-    private void requestScrollerTopPaddingUpdate(boolean animate) {
+    protected void requestScrollerTopPaddingUpdate(boolean animate) {
         mNotificationStackScroller.updateTopPadding(calculateQsTopPadding(),
-                mScrollView.getScrollY(),
                 mAnimateNextTopPaddingChange || animate,
                 mKeyguardShowing
                         && (mQsExpandImmediate || mIsExpanding && mQsExpandedWhenExpandingStarted));
@@ -1432,24 +1390,24 @@ public class NotificationPanelView extends PanelView implements
     }
 
     private void trackMovement(MotionEvent event) {
-        if (mVelocityTracker != null) mVelocityTracker.addMovement(event);
+        if (mQsVelocityTracker != null) mQsVelocityTracker.addMovement(event);
         mLastTouchX = event.getX();
         mLastTouchY = event.getY();
     }
 
     private void initVelocityTracker() {
-        if (mVelocityTracker != null) {
-            mVelocityTracker.recycle();
+        if (mQsVelocityTracker != null) {
+            mQsVelocityTracker.recycle();
         }
-        mVelocityTracker = VelocityTracker.obtain();
+        mQsVelocityTracker = VelocityTracker.obtain();
     }
 
-    private float getCurrentVelocity() {
-        if (mVelocityTracker == null) {
+    private float getCurrentQSVelocity() {
+        if (mQsVelocityTracker == null) {
             return 0;
         }
-        mVelocityTracker.computeCurrentVelocity(1000);
-        return mVelocityTracker.getYVelocity();
+        mQsVelocityTracker.computeCurrentVelocity(1000);
+        return mQsVelocityTracker.getYVelocity();
     }
 
     private void cancelQsAnimation() {
@@ -1458,33 +1416,34 @@ public class NotificationPanelView extends PanelView implements
         }
     }
 
-    private void flingSettings(float vel, boolean expand) {
+    public void flingSettings(float vel, boolean expand) {
         flingSettings(vel, expand, null, false /* isClick */);
     }
 
-    private void flingSettings(float vel, boolean expand, final Runnable onFinishRunnable,
+    protected void flingSettings(float vel, boolean expand, final Runnable onFinishRunnable,
             boolean isClick) {
         float target = expand ? mQsMaxExpansionHeight : mQsMinExpansionHeight;
         if (target == mQsExpansionHeight) {
-            mScrollYOverride = -1;
             if (onFinishRunnable != null) {
                 onFinishRunnable.run();
             }
             return;
         }
-        boolean belowFalsingThreshold = isBelowFalsingThreshold();
-        if (belowFalsingThreshold) {
+
+        // If we move in the opposite direction, reset velocity and use a different duration.
+        boolean oppositeDirection = false;
+        if (vel > 0 && !expand || vel < 0 && expand) {
             vel = 0;
+            oppositeDirection = true;
         }
-        mScrollView.setBlockFlinging(true);
         ValueAnimator animator = ValueAnimator.ofFloat(mQsExpansionHeight, target);
         if (isClick) {
-            animator.setInterpolator(mTouchResponseInterpolator);
+            animator.setInterpolator(Interpolators.TOUCH_RESPONSE);
             animator.setDuration(368);
         } else {
             mFlingAnimationUtils.apply(animator, mQsExpansionHeight, target, vel);
         }
-        if (belowFalsingThreshold) {
+        if (oppositeDirection) {
             animator.setDuration(350);
         }
         animator.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
@@ -1496,8 +1455,7 @@ public class NotificationPanelView extends PanelView implements
         animator.addListener(new AnimatorListenerAdapter() {
             @Override
             public void onAnimationEnd(Animator animation) {
-                mScrollView.setBlockFlinging(false);
-                mScrollYOverride = -1;
+                mNotificationStackScroller.resetCheckSnoozeLeavebehind();
                 mQsExpansionAnimator = null;
                 if (onFinishRunnable != null) {
                     onFinishRunnable.run();
@@ -1513,35 +1471,17 @@ public class NotificationPanelView extends PanelView implements
      * @return Whether we should intercept a gesture to open Quick Settings.
      */
     private boolean shouldQuickSettingsIntercept(float x, float y, float yDiff) {
-        return shouldQuickSettingsIntercept(x, y, yDiff, true);
-    }
-
-    /**
-     * @return Whether we should intercept a gesture to open Quick Settings.
-     */
-    private boolean shouldQuickSettingsIntercept(float x, float y, float yDiff, boolean useHeader) {
-        if (!mQsExpansionEnabled) {
+        if (!mQsExpansionEnabled || mCollapsedOnDown) {
             return false;
         }
-        View header = mKeyguardShowing ? mKeyguardStatusBar : mHeader;
-        boolean onHeader = useHeader && x >= header.getX() && x <= header.getX() + header.getWidth()
+        View header = mKeyguardShowing ? mKeyguardStatusBar : mQs.getHeader();
+        final boolean onHeader = x >= mQsFrame.getX()
+                && x <= mQsFrame.getX() + mQsFrame.getWidth()
                 && y >= header.getTop() && y <= header.getBottom();
-
-        final float w = (header.getX() + header.getWidth());
-        float region = (w * (1.f/4.f)); // TODO overlay region fraction?
-
-        boolean showQsOverride = false;
-
-        if (mOneFingerQuickSettingsInterceptMode == ONE_FINGER_QS_INTERCEPT_END) {
-            showQsOverride = isLayoutRtl() ? (x < region) : (w - region < x);
-        } else if (mOneFingerQuickSettingsInterceptMode == ONE_FINGER_QS_INTERCEPT_START) {
-            showQsOverride = isLayoutRtl() ? (w - region < x) : (x < region);
-        }
-
         if (mQsExpanded) {
-            return onHeader || (mScrollView.isScrolledToBottom() && yDiff < 0) && isInQsArea(x, y);
+            return onHeader || (yDiff < 0 && isInQsArea(x, y));
         } else {
-            return onHeader || (showQsOverride && mStatusBarState == StatusBarState.SHADE);
+            return onHeader;
         }
     }
 
@@ -1551,7 +1491,7 @@ public class NotificationPanelView extends PanelView implements
             return mStatusBar.getBarState() == StatusBarState.KEYGUARD
                     || mNotificationStackScroller.isScrolledToBottom();
         } else {
-            return mScrollView.isScrolledToBottom();
+            return true;
         }
     }
 
@@ -1560,8 +1500,7 @@ public class NotificationPanelView extends PanelView implements
         int min = mStatusBarMinHeight;
         if (mStatusBar.getBarState() != StatusBarState.KEYGUARD
                 && mNotificationStackScroller.getNotGoneChildCount() == 0) {
-            int minHeight = (int) ((mQsMinExpansionHeight + getOverExpansionAmount())
-                    * HEADER_RUBBERBAND_FACTOR);
+            int minHeight = (int) (mQsMinExpansionHeight + getOverExpansionAmount());
             min = Math.max(min, minHeight);
         }
         int maxHeight;
@@ -1574,8 +1513,12 @@ public class NotificationPanelView extends PanelView implements
         return maxHeight;
     }
 
-    private boolean isInSettings() {
+    public boolean isInSettings() {
         return mQsExpanded;
+    }
+
+    public boolean isExpanding() {
+        return mIsExpanding;
     }
 
     @Override
@@ -1589,13 +1532,13 @@ public class NotificationPanelView extends PanelView implements
             if (mKeyguardShowing) {
 
                 // On Keyguard, interpolate the QS expansion linearly to the panel expansion
-                t = expandedHeight / getMaxPanelHeight();
+                t = expandedHeight / (getMaxPanelHeight());
             } else {
 
                 // In Shade, interpolate linearly such that QS is closed whenever panel height is
                 // minimum QS expansion + minStackHeight
                 float panelHeightQsCollapsed = mNotificationStackScroller.getIntrinsicPadding()
-                        + mNotificationStackScroller.getMinStackHeight();
+                        + mNotificationStackScroller.getLayoutMinHeight();
                 float panelHeightQsExpanded = calculatePanelHeightQsExpanded();
                 t = (expandedHeight - panelHeightQsCollapsed)
                         / (panelHeightQsExpanded - panelHeightQsCollapsed);
@@ -1603,7 +1546,7 @@ public class NotificationPanelView extends PanelView implements
             setQsExpansion(mQsMinExpansionHeight
                     + t * (getTempQsMaxExpansion() - mQsMinExpansionHeight));
         }
-        updateStackHeight(expandedHeight);
+        updateExpandedHeight(expandedHeight);
         updateHeader();
         updateUnlockIcon();
         updateNotificationTranslucency();
@@ -1628,11 +1571,7 @@ public class NotificationPanelView extends PanelView implements
      *         collapsing QS / the panel when QS was scrolled
      */
     private int getTempQsMaxExpansion() {
-        int qsTempMaxExpansion = mQsMaxExpansionHeight;
-        if (mScrollYOverride != -1) {
-            qsTempMaxExpansion -= mScrollYOverride;
-        }
-        return qsTempMaxExpansion;
+        return mQsMaxExpansionHeight;
     }
 
     private int calculatePanelHeightShade() {
@@ -1652,10 +1591,8 @@ public class NotificationPanelView extends PanelView implements
         // it in expanded QS state as well so we don't run into troubles when fading the view in/out
         // and expanding/collapsing the whole panel from/to quick settings.
         if (mNotificationStackScroller.getNotGoneChildCount() == 0
-                && mShadeEmpty) {
-            notificationHeight = mNotificationStackScroller.getEmptyShadeViewHeight()
-                    + mNotificationStackScroller.getBottomStackPeekSize()
-                    + mNotificationStackScroller.getCollapseSecondCardPadding();
+                && mShowEmptyShadeView) {
+            notificationHeight = mNotificationStackScroller.getEmptyShadeViewHeight();
         }
         int maxQsHeight = mQsMaxExpansionHeight;
 
@@ -1664,28 +1601,18 @@ public class NotificationPanelView extends PanelView implements
             maxQsHeight = (int) mQsSizeChangeAnimator.getAnimatedValue();
         }
         float totalHeight = Math.max(
-                maxQsHeight + mNotificationStackScroller.getNotificationTopPadding(),
-                mStatusBarState == StatusBarState.KEYGUARD
+                maxQsHeight, mStatusBarState == StatusBarState.KEYGUARD
                         ? mClockPositionResult.stackScrollerPadding - mTopPaddingAdjustment
                         : 0)
-                + notificationHeight;
+                + notificationHeight + mNotificationStackScroller.getTopPaddingOverflow();
         if (totalHeight > mNotificationStackScroller.getHeight()) {
             float fullyCollapsedHeight = maxQsHeight
-                    + mNotificationStackScroller.getMinStackHeight()
-                    + mNotificationStackScroller.getNotificationTopPadding()
-                    - getScrollViewScrollY();
+                    + mNotificationStackScroller.getLayoutMinHeight();
             totalHeight = Math.max(fullyCollapsedHeight, mNotificationStackScroller.getHeight());
         }
         return (int) totalHeight;
     }
 
-    private int getScrollViewScrollY() {
-        if (mScrollYOverride != -1 && !mQsTracking) {
-            return mScrollYOverride;
-        } else {
-            return mScrollView.getScrollY();
-        }
-    }
     private void updateNotificationTranslucency() {
         float alpha = 1f;
         if (mClosingWithAlphaFadeOut && !mExpandingFromHeadsUp && !mHeadsUpManager.hasPinnedHeadsUp()) {
@@ -1695,9 +1622,8 @@ public class NotificationPanelView extends PanelView implements
     }
 
     private float getFadeoutAlpha() {
-        float alpha = (getNotificationsTopY() + mNotificationStackScroller.getItemHeight())
-                / (mQsMinExpansionHeight + mNotificationStackScroller.getBottomStackPeekSize()
-                - mNotificationStackScroller.getCollapseSecondCardPadding());
+        float alpha = (getNotificationsTopY() + mNotificationStackScroller.getFirstItemMinHeight())
+                / mQsMinExpansionHeight;
         alpha = Math.max(0, Math.min(alpha, 1));
         alpha = (float) Math.pow(alpha, 0.75);
         return alpha;
@@ -1719,14 +1645,14 @@ public class NotificationPanelView extends PanelView implements
             boolean active = getMaxPanelHeight() - getExpandedHeight() > mUnlockMoveDistance;
             KeyguardAffordanceView lockIcon = mKeyguardBottomArea.getLockIcon();
             if (active && !mUnlockIconActive && mTracking) {
-                lockIcon.setImageAlpha(1.0f, true, 150, mFastOutLinearInterpolator, null);
+                lockIcon.setImageAlpha(1.0f, true, 150, Interpolators.FAST_OUT_LINEAR_IN, null);
                 lockIcon.setImageScale(LOCK_ICON_ACTIVE_SCALE, true, 150,
-                        mFastOutLinearInterpolator);
+                        Interpolators.FAST_OUT_LINEAR_IN);
             } else if (!active && mUnlockIconActive && mTracking) {
                 lockIcon.setImageAlpha(lockIcon.getRestingAlpha(), true /* animate */,
-                        150, mFastOutLinearInterpolator, null);
+                        150, Interpolators.FAST_OUT_LINEAR_IN, null);
                 lockIcon.setImageScale(1.0f, true, 150,
-                        mFastOutLinearInterpolator);
+                        Interpolators.FAST_OUT_LINEAR_IN);
             }
             mUnlockIconActive = active;
         }
@@ -1737,37 +1663,17 @@ public class NotificationPanelView extends PanelView implements
      */
     private void updateHeader() {
         if (mStatusBar.getBarState() == StatusBarState.KEYGUARD) {
-            updateHeaderKeyguard();
-        } else {
-            updateHeaderShade();
+            updateHeaderKeyguardAlpha();
         }
-
+        updateQsExpansion();
     }
 
-    private void updateHeaderShade() {
-        if (!mHeaderAnimating) {
-            mHeader.setTranslationY(getHeaderTranslation());
-        }
-        setQsTranslation(mQsExpansionHeight);
-    }
-
-    private float getHeaderTranslation() {
+    protected float getHeaderTranslation() {
         if (mStatusBar.getBarState() == StatusBarState.KEYGUARD) {
             return 0;
         }
-        if (mNotificationStackScroller.getNotGoneChildCount() == 0) {
-            if (mExpandedHeight / HEADER_RUBBERBAND_FACTOR >= mQsMinExpansionHeight) {
-                return 0;
-            } else {
-                return mExpandedHeight / HEADER_RUBBERBAND_FACTOR - mQsMinExpansionHeight;
-            }
-        }
-        float stackTranslation = mNotificationStackScroller.getStackTranslation();
-        float translation = stackTranslation / HEADER_RUBBERBAND_FACTOR;
-        if (mHeadsUpManager.hasPinnedHeadsUp() || mIsExpansionFromHeadsUp) {
-            translation = mNotificationStackScroller.getTopPadding() + stackTranslation
-                    - mNotificationTopPadding - mQsMinExpansionHeight;
-        }
+        float translation = NotificationUtils.interpolate(-mQsMinExpansionHeight, 0,
+                mNotificationStackScroller.getAppearFraction(mExpandedHeight));
         return Math.min(0, translation);
     }
 
@@ -1803,17 +1709,16 @@ public class NotificationPanelView extends PanelView implements
                 && !mDozing ? VISIBLE : INVISIBLE);
     }
 
-    private void updateHeaderKeyguard() {
-        updateHeaderKeyguardAlpha();
-        setQsTranslation(mQsExpansionHeight);
-    }
-
     private void updateKeyguardBottomAreaAlpha() {
         float alpha = Math.min(getKeyguardContentsAlpha(), 1 - getQsExpansionFraction());
         mKeyguardBottomArea.setAlpha(alpha);
         mKeyguardBottomArea.setImportantForAccessibility(alpha == 0f
                 ? IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
                 : IMPORTANT_FOR_ACCESSIBILITY_AUTO);
+        View ambientIndicationContainer = mStatusBar.getAmbientIndicationContainer();
+        if (ambientIndicationContainer != null) {
+            ambientIndicationContainer.setAlpha(alpha);
+        }
     }
 
     private float getNotificationsTopY() {
@@ -1832,6 +1737,10 @@ public class NotificationPanelView extends PanelView implements
         if (mQsExpanded) {
             onQsExpansionStarted();
         }
+        // Since there are QS tiles in the header now, we need to make sure we start listening
+        // immediately so they can be up to date.
+        if (mQs == null) return;
+        mQs.setHeaderListening(true);
     }
 
     @Override
@@ -1840,7 +1749,6 @@ public class NotificationPanelView extends PanelView implements
         mNotificationStackScroller.onExpansionStopped();
         mHeadsUpManager.onExpandingFinished();
         mIsExpanding = false;
-        mScrollYOverride = -1;
         if (isFullyCollapsed()) {
             DejankUtils.postAfterTraversal(new Runnable() {
                 @Override
@@ -1870,13 +1778,14 @@ public class NotificationPanelView extends PanelView implements
     }
 
     private void setListening(boolean listening) {
-        mHeader.setListening(listening);
-        mQsPanel.setListening(listening);
+        mKeyguardStatusBar.setListening(listening);
+        if (mQs == null) return;
+        mQs.setListening(listening);
     }
 
     @Override
-    public void instantExpand() {
-        super.instantExpand();
+    public void expand(boolean animate) {
+        super.expand(animate);
         setListening(true);
     }
 
@@ -1900,19 +1809,21 @@ public class NotificationPanelView extends PanelView implements
 
     @Override
     protected void onTrackingStarted() {
+        mFalsingManager.onTrackingStarted();
         super.onTrackingStarted();
         if (mQsFullyExpanded) {
             mQsExpandImmediate = true;
         }
         if (mStatusBar.getBarState() == StatusBarState.KEYGUARD
                 || mStatusBar.getBarState() == StatusBarState.SHADE_LOCKED) {
-            mAfforanceHelper.animateHideLeftRightIcon();
+            mAffordanceHelper.animateHideLeftRightIcon();
         }
         mNotificationStackScroller.onPanelTrackingStarted();
     }
 
     @Override
     protected void onTrackingStopped(boolean expand) {
+        mFalsingManager.onTrackingStopped();
         super.onTrackingStopped(expand);
         if (expand) {
             mNotificationStackScroller.setOverScrolledPixels(
@@ -1922,14 +1833,14 @@ public class NotificationPanelView extends PanelView implements
         if (expand && (mStatusBar.getBarState() == StatusBarState.KEYGUARD
                 || mStatusBar.getBarState() == StatusBarState.SHADE_LOCKED)) {
             if (!mHintAnimationRunning) {
-                mAfforanceHelper.reset(true);
+                mAffordanceHelper.reset(true);
             }
         }
         if (!expand && (mStatusBar.getBarState() == StatusBarState.KEYGUARD
                 || mStatusBar.getBarState() == StatusBarState.SHADE_LOCKED)) {
             KeyguardAffordanceView lockIcon = mKeyguardBottomArea.getLockIcon();
-            lockIcon.setImageAlpha(0.0f, true, 100, mFastOutLinearInterpolator, null);
-            lockIcon.setImageScale(2.0f, true, 100, mFastOutLinearInterpolator);
+            lockIcon.setImageAlpha(0.0f, true, 100, Interpolators.FAST_OUT_LINEAR_IN, null);
+            lockIcon.setImageScale(2.0f, true, 100, Interpolators.FAST_OUT_LINEAR_IN);
         }
     }
 
@@ -1941,6 +1852,14 @@ public class NotificationPanelView extends PanelView implements
         if (view == null && mQsExpanded) {
             return;
         }
+        ExpandableView firstChildNotGone = mNotificationStackScroller.getFirstChildNotGone();
+        ExpandableNotificationRow firstRow = firstChildNotGone instanceof ExpandableNotificationRow
+                ? (ExpandableNotificationRow) firstChildNotGone
+                : null;
+        if (firstRow != null
+                && (view == firstRow || (firstRow.getNotificationParent() == firstRow))) {
+            requestScrollerTopPaddingUpdate(false);
+        }
         requestPanelHeightUpdate();
     }
 
@@ -1948,9 +1867,10 @@ public class NotificationPanelView extends PanelView implements
     public void onReset(ExpandableView view) {
     }
 
-    @Override
-    public void onScrollChanged() {
-        if (mQsExpanded) {
+    public void onQsHeightChanged() {
+        mQsMaxExpansionHeight = mQs != null ? mQs.getDesiredHeight() : 0;
+        if (mQsExpanded && mQsFullyExpanded) {
+            mQsExpansionHeight = mQsMaxExpansionHeight;
             requestScrollerTopPaddingUpdate(false /* animate */);
             requestPanelHeightUpdate();
         }
@@ -1959,7 +1879,7 @@ public class NotificationPanelView extends PanelView implements
     @Override
     protected void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
-        mAfforanceHelper.onConfigurationChanged();
+        mAffordanceHelper.onConfigurationChanged();
         if (newConfig.orientation != mLastOrientation) {
             resetVerticalPanelPosition();
         }
@@ -1968,7 +1888,7 @@ public class NotificationPanelView extends PanelView implements
 
     @Override
     public WindowInsets onApplyWindowInsets(WindowInsets insets) {
-        mNavigationBarBottomHeight = insets.getSystemWindowInsetBottom();
+        mNavigationBarBottomHeight = insets.getStableInsetBottom();
         updateMaxHeadsUpTranslation();
         return insets;
     }
@@ -1980,21 +1900,19 @@ public class NotificationPanelView extends PanelView implements
     @Override
     public void onRtlPropertiesChanged(int layoutDirection) {
         if (layoutDirection != mOldLayoutDirection) {
-            mAfforanceHelper.onRtlPropertiesChanged();
+            mAffordanceHelper.onRtlPropertiesChanged();
             mOldLayoutDirection = layoutDirection;
         }
     }
 
     @Override
     public void onClick(View v) {
-        if (v == mHeader) {
+        if (v.getId() == R.id.expand_indicator) {
             onQsExpansionStarted();
             if (mQsExpanded) {
                 flingSettings(0 /* vel */, false /* expand */, null, true /* isClick */);
             } else if (mQsExpansionEnabled) {
-                EventLogTags.writeSysuiLockscreenGesture(
-                        EventLogConstants.SYSUI_TAP_TO_OPEN_QS,
-                        0, 0);
+                mLockscreenGestureLogger.write(MetricsEvent.ACTION_SHADE_QS_TAP, 0, 0);
                 flingSettings(0 /* vel */, true /* expand */, null, true /* isClick */);
             }
         }
@@ -2009,17 +1927,39 @@ public class NotificationPanelView extends PanelView implements
         int lengthDp = Math.abs((int) (translation / displayDensity));
         int velocityDp = Math.abs((int) (vel / displayDensity));
         if (start) {
-            EventLogTags.writeSysuiLockscreenGesture(
-                    EventLogConstants.SYSUI_LOCKSCREEN_GESTURE_SWIPE_DIALER, lengthDp, velocityDp);
-            mKeyguardBottomArea.launchLeftAffordance();
+            mLockscreenGestureLogger.write(MetricsEvent.ACTION_LS_DIALER, lengthDp, velocityDp);
+
+            mFalsingManager.onLeftAffordanceOn();
+            if (mFalsingManager.shouldEnforceBouncer()) {
+                mStatusBar.executeRunnableDismissingKeyguard(new Runnable() {
+                    @Override
+                    public void run() {
+                        mKeyguardBottomArea.launchLeftAffordance();
+                    }
+                }, null, true /* dismissShade */, false /* afterKeyguardGone */,
+                        true /* deferred */);
+            }
+            else {
+                mKeyguardBottomArea.launchLeftAffordance();
+            }
         } else {
             if (KeyguardBottomAreaView.CAMERA_LAUNCH_SOURCE_AFFORDANCE.equals(
                     mLastCameraLaunchSource)) {
-                EventLogTags.writeSysuiLockscreenGesture(
-                        EventLogConstants.SYSUI_LOCKSCREEN_GESTURE_SWIPE_CAMERA,
-                        lengthDp, velocityDp);
+                mLockscreenGestureLogger.write(MetricsEvent.ACTION_LS_CAMERA, lengthDp, velocityDp);
             }
-            mKeyguardBottomArea.launchCamera(mLastCameraLaunchSource);
+            mFalsingManager.onCameraOn();
+            if (mFalsingManager.shouldEnforceBouncer()) {
+                mStatusBar.executeRunnableDismissingKeyguard(new Runnable() {
+                    @Override
+                    public void run() {
+                        mKeyguardBottomArea.launchCamera(mLastCameraLaunchSource);
+                    }
+                }, null, true /* dismissShade */, false /* afterKeyguardGone */,
+                    true /* deferred */);
+            }
+            else {
+                mKeyguardBottomArea.launchCamera(mLastCameraLaunchSource);
+            }
         }
         mStatusBar.startLaunchTransitionTimeout();
         mBlockTouches = true;
@@ -2033,10 +1973,16 @@ public class NotificationPanelView extends PanelView implements
             mLaunchAnimationEndRunnable.run();
             mLaunchAnimationEndRunnable = null;
         }
+        mStatusBar.readyForKeyguardDone();
     }
 
     @Override
     protected void startUnlockHintAnimation() {
+        if (mPowerManager.isPowerSaveMode()) {
+            onUnlockHintStarted();
+            onUnlockHintFinished();
+            return;
+        }
         super.startUnlockHintAnimation();
         startHighlightIconAnimation(getCenterIcon());
     }
@@ -2046,12 +1992,12 @@ public class NotificationPanelView extends PanelView implements
      */
     private void startHighlightIconAnimation(final KeyguardAffordanceView icon) {
         icon.setImageAlpha(1.0f, true, KeyguardAffordanceHelper.HINT_PHASE1_DURATION,
-                mFastOutSlowInInterpolator, new Runnable() {
+                Interpolators.FAST_OUT_SLOW_IN, new Runnable() {
                     @Override
                     public void run() {
                         icon.setImageAlpha(icon.getRestingAlpha(),
                                 true /* animate */, KeyguardAffordanceHelper.HINT_PHASE1_DURATION,
-                                mFastOutSlowInInterpolator, null);
+                                Interpolators.FAST_OUT_SLOW_IN, null);
                     }
                 });
     }
@@ -2063,6 +2009,7 @@ public class NotificationPanelView extends PanelView implements
 
     @Override
     public void onSwipingStarted(boolean rightIcon) {
+        mFalsingManager.onAffordanceSwipingStarted(rightIcon);
         boolean camera = getLayoutDirection() == LAYOUT_DIRECTION_RTL ? !rightIcon
                 : rightIcon;
         if (camera) {
@@ -2075,6 +2022,7 @@ public class NotificationPanelView extends PanelView implements
 
     @Override
     public void onSwipingAborted() {
+        mFalsingManager.onAffordanceSwipingAborted();
         mKeyguardBottomArea.unbindCameraPrewarmService(false /* launched */);
     }
 
@@ -2084,7 +2032,7 @@ public class NotificationPanelView extends PanelView implements
             return;
         }
         mHintAnimationRunning = true;
-        mAfforanceHelper.startHintAnimation(rightIcon, new Runnable() {
+        mAffordanceHelper.startHintAnimation(rightIcon, new Runnable() {
             @Override
             public void run() {
                 mHintAnimationRunning = false;
@@ -2093,10 +2041,26 @@ public class NotificationPanelView extends PanelView implements
         });
         rightIcon = getLayoutDirection() == LAYOUT_DIRECTION_RTL ? !rightIcon : rightIcon;
         if (rightIcon) {
-            mStatusBar.onCameraHintStarted(mKeyguardBottomArea.getRightHint());
+            mStatusBar.onCameraHintStarted();
         } else {
-            mStatusBar.onLeftHintStarted(mKeyguardBottomArea.getLeftHint());
+            if (mKeyguardBottomArea.isLeftVoiceAssist()) {
+                mStatusBar.onVoiceAssistHintStarted();
+            } else {
+                mStatusBar.onPhoneHintStarted();
+            }
         }
+    }
+
+    @Override
+    protected void onUnlockHintFinished() {
+        super.onUnlockHintFinished();
+        mNotificationStackScroller.setUnlockHintRunning(false);
+    }
+
+    @Override
+    protected void onUnlockHintStarted() {
+        super.onUnlockHintStarted();
+        mNotificationStackScroller.setUnlockHintRunning(true);
     }
 
     @Override
@@ -2138,21 +2102,23 @@ public class NotificationPanelView extends PanelView implements
     }
 
     @Override
+    public boolean needsAntiFalsing() {
+        return mStatusBarState == StatusBarState.KEYGUARD;
+    }
+
+    @Override
     protected float getPeekHeight() {
         if (mNotificationStackScroller.getNotGoneChildCount() > 0) {
             return mNotificationStackScroller.getPeekHeight();
         } else {
-            return mQsMinExpansionHeight * HEADER_RUBBERBAND_FACTOR;
+            return mQsMinExpansionHeight;
         }
     }
 
     @Override
-    protected float getCannedFlingDurationFactor() {
-        if (mQsExpanded) {
-            return 0.7f;
-        } else {
-            return 0.6f;
-        }
+    protected boolean shouldUseDismissingAnimation() {
+        return mStatusBarState != StatusBarState.SHADE
+                && (!mStatusBar.isKeyguardCurrentlySecure() || !isTracking());
     }
 
     @Override
@@ -2176,24 +2142,16 @@ public class NotificationPanelView extends PanelView implements
         return mConflictingQsExpansionGesture && mQsExpanded;
     }
 
-    public void notifyVisibleChildrenChanged() {
-        if (mNotificationStackScroller.getNotGoneChildCount() != 0) {
-            mReserveNotificationSpace.setVisibility(View.VISIBLE);
-        } else {
-            mReserveNotificationSpace.setVisibility(View.GONE);
-        }
-    }
-
     public boolean isQsExpanded() {
         return mQsExpanded;
     }
 
     public boolean isQsDetailShowing() {
-        return mQsPanel.isShowingDetail();
+        return mQs.isShowingDetail();
     }
 
     public void closeQsDetail() {
-        mQsPanel.closeDetail();
+        mQs.closeDetail();
     }
 
     @Override
@@ -2239,13 +2197,12 @@ public class NotificationPanelView extends PanelView implements
     private void updateDozingVisibilities(boolean animate) {
         if (mDozing) {
             mKeyguardStatusBar.setVisibility(View.INVISIBLE);
-            mKeyguardBottomArea.setVisibility(View.INVISIBLE);
+            mKeyguardBottomArea.setDozing(mDozing, animate);
         } else {
-            mKeyguardBottomArea.setVisibility(View.VISIBLE);
             mKeyguardStatusBar.setVisibility(View.VISIBLE);
+            mKeyguardBottomArea.setDozing(mDozing, animate);
             if (animate) {
                 animateKeyguardStatusBarIn(DOZE_ANIMATION_DURATION);
-                mKeyguardBottomArea.startFinishDozeAnimation();
             }
         }
     }
@@ -2255,15 +2212,15 @@ public class NotificationPanelView extends PanelView implements
         return mDozing;
     }
 
-    public void setShadeEmpty(boolean shadeEmpty) {
-        mShadeEmpty = shadeEmpty;
+    public void showEmptyShadeView(boolean emptyShadeViewVisible) {
+        mShowEmptyShadeView = emptyShadeViewVisible;
         updateEmptyShadeView();
     }
 
     private void updateEmptyShadeView() {
 
         // Hide "No notifications" in QS.
-        mNotificationStackScroller.updateEmptyShadeView(mShadeEmpty && !mQsExpanded);
+        mNotificationStackScroller.updateEmptyShadeView(mShowEmptyShadeView && !mQsExpanded);
     }
 
     public void setQsScrimEnabled(boolean qsScrimEnabled) {
@@ -2278,13 +2235,6 @@ public class NotificationPanelView extends PanelView implements
         mKeyguardUserSwitcher = keyguardUserSwitcher;
     }
 
-    private final Runnable mUpdateHeader = new Runnable() {
-        @Override
-        public void run() {
-            mHeader.updateEverything();
-        }
-    };
-
     public void onScreenTurningOn() {
         mKeyguardStatusView.refreshTime();
     }
@@ -2294,12 +2244,13 @@ public class NotificationPanelView extends PanelView implements
         onEmptySpaceClick(x);
     }
 
+    @Override
     protected boolean onMiddleClicked() {
         switch (mStatusBar.getBarState()) {
             case StatusBarState.KEYGUARD:
                 if (!mDozingOnDown) {
-                    EventLogTags.writeSysuiLockscreenGesture(
-                            EventLogConstants.SYSUI_LOCKSCREEN_GESTURE_TAP_UNLOCK_HINT,
+                    mLockscreenGestureLogger.write(
+                            MetricsEvent.ACTION_LS_HINT,
                             0 /* lengthDp - N/A */, 0 /* velocityDp - N/A */);
                     startUnlockHintAnimation();
                 }
@@ -2348,14 +2299,20 @@ public class NotificationPanelView extends PanelView implements
 
     @Override
     public void onHeadsUpPinnedModeChanged(final boolean inPinnedMode) {
+        mNotificationStackScroller.setInHeadsUpPinnedMode(inPinnedMode);
         if (inPinnedMode) {
             mHeadsUpExistenceChangedRunnable.run();
             updateNotificationTranslucency();
         } else {
-            mHeadsUpAnimatingAway = true;
+            setHeadsUpAnimatingAway(true);
             mNotificationStackScroller.runAfterAnimationFinished(
                     mHeadsUpExistenceChangedRunnable);
         }
+    }
+
+    public void setHeadsUpAnimatingAway(boolean headsUpAnimatingAway) {
+        mHeadsUpAnimatingAway = headsUpAnimatingAway;
+        mNotificationStackScroller.setHeadsUpAnimatingAway(headsUpAnimatingAway);
     }
 
     @Override
@@ -2405,7 +2362,7 @@ public class NotificationPanelView extends PanelView implements
      *
      * @param x the x-coordinate the touch event
      */
-    private void updateVerticalPanelPosition(float x) {
+    protected void updateVerticalPanelPosition(float x) {
         if (mNotificationStackScroller.getWidth() * 1.75f > getWidth()) {
             resetVerticalPanelPosition();
             return;
@@ -2425,69 +2382,55 @@ public class NotificationPanelView extends PanelView implements
         setVerticalPanelTranslation(0f);
     }
 
-    private void setVerticalPanelTranslation(float translation) {
+    protected void setVerticalPanelTranslation(float translation) {
         mNotificationStackScroller.setTranslationX(translation);
-        mScrollView.setTranslationX(translation);
-        mHeader.setTranslationX(translation);
+        mQsFrame.setTranslationX(translation);
     }
 
-    private void updateStackHeight(float stackHeight) {
-        mNotificationStackScroller.setStackHeight(stackHeight);
+    protected void updateExpandedHeight(float expandedHeight) {
+        if (mTracking) {
+            mNotificationStackScroller.setExpandingVelocity(getCurrentExpandVelocity());
+        }
+        mNotificationStackScroller.setExpandedHeight(expandedHeight);
         updateKeyguardBottomAreaAlpha();
+        updateStatusBarIcons();
+    }
+
+    /**
+     * @return whether the notifications are displayed full width and don't have any margins on
+     *         the side.
+     */
+    public boolean isFullWidth() {
+        return mIsFullWidth;
+    }
+
+    private void updateStatusBarIcons() {
+        boolean showIconsWhenExpanded = isFullWidth() && getExpandedHeight() < getOpeningHeight();
+        if (showIconsWhenExpanded && mNoVisibleNotifications && isOnKeyguard()) {
+            showIconsWhenExpanded = false;
+        }
+        if (showIconsWhenExpanded != mShowIconsWhenExpanded) {
+            mShowIconsWhenExpanded = showIconsWhenExpanded;
+            mStatusBar.recomputeDisableFlags(false);
+        }
+    }
+
+    private boolean isOnKeyguard() {
+        return mStatusBar.getBarState() == StatusBarState.KEYGUARD;
     }
 
     public void setPanelScrimMinFraction(float minFraction) {
         mBar.panelScrimMinFractionChanged(minFraction);
     }
 
-    public void clearNotificattonEffects() {
+    public void clearNotificationEffects() {
         mStatusBar.clearNotificationEffects();
     }
 
+    @Override
     protected boolean isPanelVisibleBecauseOfHeadsUp() {
         return mHeadsUpManager.hasPinnedHeadsUp() || mHeadsUpAnimatingAway;
     }
-
-    class SettingsObserver extends ContentObserver {
-        SettingsObserver(Handler handler) {
-            super(handler);
-        }
-
-        void observe() {
-            ContentResolver resolver = mContext.getContentResolver();
-            resolver.registerContentObserver(Settings.System.getUriFor(
-                    Settings.System.STATUS_BAR_QUICK_QS_PULLDOWN), false, this);
-            resolver.registerContentObserver(Settings.Secure.getUriFor(
-                    Settings.Secure.STATUS_BAR_LOCKED_ON_SECURE_KEYGUARD),
-                    false, this, UserHandle.USER_ALL);
-            update();
-        }
-
-        void unobserve() {
-            ContentResolver resolver = mContext.getContentResolver();
-            resolver.unregisterContentObserver(this);
-        }
-
-        @Override
-        public void onChange(boolean selfChange) {
-            update();
-        }
-
-        @Override
-        public void onChange(boolean selfChange, Uri uri) {
-            update();
-        }
-
-        public void update() {
-            ContentResolver resolver = mContext.getContentResolver();
-            mOneFingerQuickSettingsInterceptMode = Settings.System.getIntForUser(
-                    resolver, Settings.System.STATUS_BAR_QUICK_QS_PULLDOWN,
-                    ONE_FINGER_QS_INTERCEPT_END, UserHandle.USER_CURRENT);
-            mStatusBarLockedOnSecureKeyguard = Settings.Secure.getIntForUser(
-                    resolver, Settings.Secure.STATUS_BAR_LOCKED_ON_SECURE_KEYGUARD, 1,
-                    UserHandle.USER_CURRENT) == 1;
-        }
-}
 
     @Override
     public boolean hasOverlappingRendering() {
@@ -2499,6 +2442,8 @@ public class NotificationPanelView extends PanelView implements
             mLastCameraLaunchSource = KeyguardBottomAreaView.CAMERA_LAUNCH_SOURCE_POWER_DOUBLE_TAP;
         } else if (source == StatusBarManager.CAMERA_LAUNCH_SOURCE_WIGGLE) {
             mLastCameraLaunchSource = KeyguardBottomAreaView.CAMERA_LAUNCH_SOURCE_WIGGLE;
+        } else if (source == StatusBarManager.CAMERA_LAUNCH_SOURCE_LIFT_TRIGGER) {
+            mLastCameraLaunchSource = KeyguardBottomAreaView.CAMERA_LAUNCH_SOURCE_LIFT_TRIGGER;
         } else {
 
             // Default.
@@ -2514,12 +2459,38 @@ public class NotificationPanelView extends PanelView implements
         } else {
             animate = false;
         }
-        mAfforanceHelper.launchAffordance(animate, getLayoutDirection() == LAYOUT_DIRECTION_RTL);
+        mAffordanceHelper.launchAffordance(animate, getLayoutDirection() == LAYOUT_DIRECTION_RTL);
     }
 
     public void onAffordanceLaunchEnded() {
         mLaunchingAffordance = false;
         setLaunchingAffordance(false);
+    }
+
+    @Override
+    public void setAlpha(float alpha) {
+        super.setAlpha(alpha);
+        updateFullyVisibleState(false /* forceNotFullyVisible */);
+    }
+
+    /**
+     * Must be called before starting a ViewPropertyAnimator alpha animation because those
+     * do NOT call setAlpha and therefore don't properly update the fullyVisibleState.
+     */
+    public void notifyStartFading() {
+        updateFullyVisibleState(true /* forceNotFullyVisible */);
+    }
+
+    @Override
+    public void setVisibility(int visibility) {
+        super.setVisibility(visibility);
+        updateFullyVisibleState(false /* forceNotFullyVisible */);
+    }
+
+    private void updateFullyVisibleState(boolean forceNotFullyVisible) {
+        mNotificationStackScroller.setParentNotFullyVisible(forceNotFullyVisible
+                || getAlpha() != 1.0f
+                || getVisibility() != VISIBLE);
     }
 
     /**
@@ -2538,12 +2509,16 @@ public class NotificationPanelView extends PanelView implements
      * @param keyguardIsShowing whether keyguard is being shown
      */
     public boolean canCameraGestureBeLaunched(boolean keyguardIsShowing) {
+        if (!mStatusBar.isCameraAllowedByAdmin()) {
+            return false;
+        }
+
         ResolveInfo resolveInfo = mKeyguardBottomArea.resolveCameraIntent();
         String packageToLaunch = (resolveInfo == null || resolveInfo.activityInfo == null)
                 ? null : resolveInfo.activityInfo.packageName;
         return packageToLaunch != null &&
                (keyguardIsShowing || !isForegroundApp(packageToLaunch)) &&
-               !mAfforanceHelper.isSwipingInProgress();
+               !mAffordanceHelper.isSwipingInProgress();
     }
 
     /**
@@ -2555,5 +2530,132 @@ public class NotificationPanelView extends PanelView implements
         ActivityManager am = getContext().getSystemService(ActivityManager.class);
         List<ActivityManager.RunningTaskInfo> tasks = am.getRunningTasks(1);
         return !tasks.isEmpty() && pkgName.equals(tasks.get(0).topActivity.getPackageName());
+    }
+
+    public void setGroupManager(NotificationGroupManager groupManager) {
+        mGroupManager = groupManager;
+    }
+
+    public boolean hideStatusBarIconsWhenExpanded() {
+        return !isFullWidth() || !mShowIconsWhenExpanded;
+    }
+
+    private final FragmentListener mFragmentListener = new FragmentListener() {
+        @Override
+        public void onFragmentViewCreated(String tag, Fragment fragment) {
+            mQs = (QS) fragment;
+            mQs.setPanelView(NotificationPanelView.this);
+            mQs.setExpandClickListener(NotificationPanelView.this);
+            mQs.setHeaderClickable(mQsExpansionEnabled);
+            mQs.setKeyguardShowing(mKeyguardShowing);
+            mQs.setOverscrolling(mStackScrollerOverscrolling);
+
+            // recompute internal state when qspanel height changes
+            mQs.getView().addOnLayoutChangeListener(
+                    (v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
+                        final int height = bottom - top;
+                        final int oldHeight = oldBottom - oldTop;
+                        if (height != oldHeight) {
+                            onQsHeightChanged();
+                        }
+                    });
+            mNotificationStackScroller.setQsContainer((ViewGroup) mQs.getView());
+            updateQsExpansion();
+        }
+
+        @Override
+        public void onFragmentViewDestroyed(String tag, Fragment fragment) {
+            // Manual handling of fragment lifecycle is only required because this bridges
+            // non-fragment and fragment code. Once we are using a fragment for the notification
+            // panel, mQs will not need to be null cause it will be tied to the same lifecycle.
+            if (fragment == mQs) {
+                mQs = null;
+            }
+        }
+    };
+
+    @Override
+    public void setTouchDisabled(boolean disabled) {
+        super.setTouchDisabled(disabled);
+        if (disabled && mAffordanceHelper.isSwipingInProgress() && !mIsLaunchTransitionRunning) {
+            mAffordanceHelper.reset(false /* animate */);
+        }
+    }
+
+    public void setDark(boolean dark, boolean animate) {
+        float darkAmount = dark ? 1 : 0;
+        if (mDarkAmount == darkAmount) {
+            return;
+        }
+        if (mDarkAnimator != null && mDarkAnimator.isRunning()) {
+            if (animate && mDarkAmountTarget == darkAmount) {
+                return;
+            } else {
+                mDarkAnimator.cancel();
+            }
+        }
+        mDarkAmountTarget = darkAmount;
+        if (animate) {
+            mDarkAnimator = ObjectAnimator.ofFloat(this, SET_DARK_AMOUNT_PROPERTY, darkAmount);
+            mDarkAnimator.setInterpolator(Interpolators.LINEAR_OUT_SLOW_IN);
+            mDarkAnimator.setDuration(StackStateAnimator.ANIMATION_DURATION_WAKEUP);
+            mDarkAnimator.start();
+        } else {
+            setDarkAmount(darkAmount);
+        }
+    }
+
+    private void setDarkAmount(float amount) {
+        mDarkAmount = amount;
+        mKeyguardStatusView.setDark(mDarkAmount);
+        positionClockAndNotifications();
+    }
+
+    public void setNoVisibleNotifications(boolean noNotifications) {
+        mNoVisibleNotifications = noNotifications;
+        if (mQs != null) {
+            mQs.setHasNotifications(!noNotifications);
+        }
+    }
+
+    public void setPulsing(boolean pulsing) {
+        mKeyguardStatusView.setPulsing(pulsing);
+    }
+
+    public void setAmbientIndicationBottomPadding(int ambientIndicationBottomPadding) {
+        if (mAmbientIndicationBottomPadding != ambientIndicationBottomPadding) {
+            mAmbientIndicationBottomPadding = ambientIndicationBottomPadding;
+            mStatusBar.updateKeyguardMaxNotifications();
+        }
+    }
+
+    public void refreshTime() {
+        mKeyguardStatusView.refreshTime();
+        if (mDarkAmount > 0) {
+            positionClockAndNotifications();
+        }
+    }
+
+    public void setStatusAccessibilityImportance(int mode) {
+         mKeyguardStatusView.setImportantForAccessibility(mode);
+    }
+
+    /**
+     * TODO: this should be removed.
+     * It's not correct to pass this view forward because other classes will end up adding
+     * children to it. Theme will be out of sync.
+     * @return bottom area view
+     */
+    public KeyguardBottomAreaView getKeyguardBottomAreaView() {
+        return mKeyguardBottomArea;
+    }
+
+    public void setUserSetupComplete(boolean userSetupComplete) {
+        mUserSetupComplete = userSetupComplete;
+        mKeyguardBottomArea.setUserSetupComplete(userSetupComplete);
+    }
+
+    public LockIcon getLockIcon() {
+        return mKeyguardBottomArea.getLockIcon();
     }
 }

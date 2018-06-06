@@ -20,15 +20,6 @@
 <!-- These resources are around just to allow their values to be customized
      for different hardware and product builds. -->
 <resources>
-
-    <!-- Whether we're using the tablet-optimized recents interface (we use this
-     value at runtime for some things) -->
-    <bool name="config_recents_interface_for_tablets">false</bool>
-
-    <!-- Whether recents thumbnails should stretch in both x and y to fill their
-     ImageView -->
-    <bool name="config_recents_thumbnail_image_fits_to_xy">false</bool>
-
     <!-- Whether recents should use hardware layers for its taskviews. This flag can be enabled
     for devices where the java drawing of round rects may be slow -->
     <bool name="config_recents_use_hardware_layers">false</bool>
@@ -46,19 +37,22 @@
          certain GPU's and thus can be turned off with only minimal visual impact. -->
     <bool name="config_notifications_round_rect_clipping">true</bool>
 
-    <!-- The theme to use for RecentsActivity. -->
-    <item type="style" name="config_recents_activity_theme">@style/RecentsTheme.Wallpaper</item>
-
     <!-- Control whether status bar should distinguish HSPA data icon form UMTS
     data icon on devices -->
     <bool name="config_hspa_data_distinguishable">false</bool>
 
     <!-- Component to be used as the status bar service.  Must implement the IStatusBar
      interface.  This name is in the ComponentName flattened format (package/class)  -->
-    <string name="config_statusBarComponent" translatable="false">com.android.systemui.statusbar.phone.PhoneStatusBar</string>
+    <string name="config_statusBarComponent" translatable="false">com.android.systemui.statusbar.phone.StatusBar</string>
 
     <!-- Whether or not we show the number in the bar. -->
     <bool name="config_statusBarShowNumber">false</bool>
+
+    <!-- Vibrator pattern for camera gesture launch. -->
+    <integer-array translatable="false" name="config_cameraLaunchGestureVibePattern">
+        <item>0</item>
+        <item>400</item>
+    </integer-array>
 
     <!-- How many icons may be shown at once in the system bar. Includes any
          slots that may be reused for things like IME control. -->
@@ -92,39 +86,41 @@
     <!-- The length of the vibration when the notification pops open. -->
     <integer name="one_finger_pop_duration_ms">10</integer>
 
-    <!-- Whether we're using the tablet-optimized recents interface (we use this
-     value at runtime for some things) -->
-    <integer name="status_bar_recents_bg_gradient_degrees">90</integer>
-
     <!-- decay duration (from size_max -> size), in ms -->
     <integer name="navigation_bar_deadzone_hold">333</integer>
     <integer name="navigation_bar_deadzone_decay">333</integer>
 
     <bool name="config_dead_zone_flash">false</bool>
 
-    <!-- Min alpha % that recent items will fade to while being dismissed -->
-    <integer name="config_recent_item_min_alpha">3</integer>
+    <!-- Whether QuickSettings is in a phone landscape -->
+    <bool name="quick_settings_wide">false</bool>
 
     <!-- The number of columns in the QuickSettings -->
     <integer name="quick_settings_num_columns">3</integer>
 
-    <!-- The maximum number of rows in the QuickSettings -->
-    <integer name="quick_settings_max_rows">4</integer>
-
-    <!-- The maximum number of rows in the QuickSettings when on the keyguard -->
-    <integer name="quick_settings_max_rows_keyguard">3</integer>
+    <!-- The number of rows in the QuickSettings -->
+    <integer name="quick_settings_num_rows">1</integer>
+    <integer name="quick_settings_num_rows_portrait">2</integer>
 
     <!-- The number of columns that the top level tiles span in the QuickSettings -->
     <integer name="quick_settings_user_time_settings_tile_span">1</integer>
 
     <!-- The default tiles to display in QuickSettings -->
     <string name="quick_settings_tiles_default" translatable="false">
-        wifi,bt,dnd,cell,airplane,rotation,flashlight,location,cast
+        wifi,bt,dnd,flashlight,rotation,battery,cell,airplane,cast
+    </string>
+
+    <!-- Tiles native to System UI. Order should match "quick_settings_tiles_default" -->
+    <string name="quick_settings_tiles_stock" translatable="false">
+        wifi,cell,battery,dnd,flashlight,rotation,bt,airplane,location,hotspot,inversion,saver,work,cast,night
     </string>
 
     <!-- The tiles to display in QuickSettings -->
-    <string name="quick_settings_tiles" translatable="false">
-        wifi,bt,dnd,cell,airplane,rotation,flashlight,location,cast
+    <string name="quick_settings_tiles" translatable="false">default</string>
+
+    <!-- The tiles to display in QuickSettings in retail mode -->
+    <string name="quick_settings_tiles_retail_mode" translatable="false">
+        cell,battery,dnd,flashlight,rotation,location
     </string>
 
     <!-- Whether or not the RSSI tile is capitalized or not. -->
@@ -134,11 +130,11 @@
     <integer name="quick_settings_brightness_dialog_short_timeout">2000</integer>
     <integer name="quick_settings_brightness_dialog_long_timeout">4000</integer>
 
-    <!-- The maximum number of items to be displayed in quick settings -->
-    <integer name="quick_settings_detail_max_item_count">7</integer>
-
     <!-- Should "4G" be shown instead of "LTE" when the network is NETWORK_TYPE_LTE? -->
     <bool name="config_show4GForLTE">true</bool>
+
+    <!-- Should "LTE"/"4G" be shown instead of "LTE+"/"4G+" when on NETWORK_TYPE_LTE_CA? -->
+    <bool name="config_hideLtePlus">false</bool>
 
     <!-- milliseconds before the heads up notification auto-dismisses. -->
     <integer name="heads_up_notification_decay">5000</integer>
@@ -154,66 +150,51 @@
     <integer name="touch_acceptance_delay">700</integer>
 
     <!-- The duration in seconds to wait before the dismiss buttons are shown. -->
-    <integer name="recents_task_bar_dismiss_delay_seconds">1</integer>
-
-    <!-- The min animation duration for animating views that are currently visible. -->
-    <integer name="recents_filter_animate_current_views_duration">250</integer>
-
-    <!-- The min animation duration for animating views that are newly visible. -->
-    <integer name="recents_filter_animate_new_views_duration">250</integer>
-
-    <!-- The duration of the window transition when coming to Recents from an app.
-         In order to defer the in-app animations until after the transition is complete,
-         we also need to use this value as the starting delay when animating the first
-         task decorations in. -->
-    <integer name="recents_enter_from_app_transition_duration">325</integer>
+    <integer name="recents_task_bar_dismiss_delay_seconds">1000</integer>
 
     <!-- The duration for animating the task decorations in after transitioning from an app. -->
     <integer name="recents_task_enter_from_app_duration">200</integer>
 
+    <!-- The duration for animating the task decorations in after transitioning from an app. -->
+    <integer name="recents_task_enter_from_affiliated_app_duration">125</integer>
+
     <!-- The duration for animating the task decorations out before transitioning to an app. -->
     <integer name="recents_task_exit_to_app_duration">125</integer>
-
-    <!-- The duration of the window transition when coming to Recents from the Launcher.
-         In order to defer the in-app animations until after the transition is complete,
-         we also need to use this value as the starting delay when animating the task views
-         in from the bottom of the screen. -->
-    <integer name="recents_enter_from_home_transition_duration">100</integer>
-
-    <!-- The duration for animating the task from the bottom of the screen when transitioning
-     from home. -->
-    <integer name="recents_task_enter_from_home_duration">225</integer>
-
-    <!-- The stagger for each task when animating the task from the bottom of the screen when 
-     transitioning from home. -->
-    <integer name="recents_task_enter_from_home_stagger_delay">12</integer>
-
-    <!-- The duration of the animation of the tasks to the bottom of the screen when leaving
-     Recents to go back to the Launcher. -->
-    <integer name="recents_task_exit_to_home_duration">225</integer>
 
     <!-- The min animation duration for animating the nav bar scrim in. -->
     <integer name="recents_nav_bar_scrim_enter_duration">400</integer>
 
-    <!-- The animation duration for animating the removal of a task view. -->
-    <integer name="recents_animate_task_view_remove_duration">450</integer>
+    <!-- The animation duration for scrolling the stack to a particular item. -->
+    <integer name="recents_animate_task_stack_scroll_duration">200</integer>
 
     <!-- The animation duration for scrolling the stack to a particular item. -->
-    <integer name="recents_animate_task_stack_scroll_duration">225</integer>
+    <integer name="recents_auto_advance_duration">750</integer>
 
-    <!-- The minimum alpha for the dim applied to cards that go deeper into the stack. -->
-    <integer name="recents_max_task_stack_view_dim">96</integer>
+    <!-- The animation duration for subsequent scrolling the stack to a particular item. -->
+    <integer name="recents_subsequent_auto_advance_duration">1000</integer>
 
     <!-- The delay to enforce between each alt-tab key press. -->
     <integer name="recents_alt_tab_key_delay">200</integer>
 
-    <!-- Transposes the search bar layout in landscape. -->
-    <bool name="recents_has_transposed_search_bar">true</bool>
-
-    <!-- Transposes the nav bar in landscape (only used for purposes of layout). -->
-    <bool name="recents_has_transposed_nav_bar">true</bool>
     <!-- Svelte specific logic, see RecentsConfiguration.SVELTE_* constants. -->
     <integer name="recents_svelte_level">0</integer>
+
+    <!-- In multi-window, determines whether the stack where recents lives should grow from
+         the smallest position when being launched. -->
+    <bool name="recents_grow_in_multiwindow">true</bool>
+
+    <!-- Animation duration when using long press on recents to dock -->
+    <integer name="long_press_dock_anim_duration">250</integer>
+
+    <!-- Recents: The relative range of visible tasks from the current scroll position
+         while the stack is focused. -->
+    <item name="recents_layout_focused_range_min" format="float" type="integer">-3</item>
+    <item name="recents_layout_focused_range_max" format="float" type="integer">2</item>
+
+    <!-- Recents: The relative range of visible tasks from the current scroll position
+         while the stack is not focused. -->
+    <item name="recents_layout_unfocused_range_min" format="float" type="integer">-2</item>
+    <item name="recents_layout_unfocused_range_max" format="float" type="integer">2.5</item>
 
     <!-- Whether to enable KeyguardService or not -->
     <bool name="config_enableKeyguardService">true</bool>
@@ -229,14 +210,14 @@
     <!-- Set to true to enable the user switcher on the keyguard. -->
     <bool name="config_keyguardUserSwitcher">false</bool>
 
-    <!-- Doze: does this device support STATE_DOZE and STATE_DOZE_SUSPEND?  -->
+    <!-- Doze: does this device support STATE_DOZE?  -->
     <bool name="doze_display_state_supported">false</bool>
+
+    <!-- Doze: does this device support STATE_DOZE_SUSPEND?  -->
+    <bool name="doze_suspend_display_state_supported">false</bool>
 
     <!-- Doze: should the significant motion sensor be used as a pulse signal? -->
     <bool name="doze_pulse_on_significant_motion">false</bool>
-
-    <!-- Doze: should the pickup sensor be used as a pulse signal? -->
-    <bool name="doze_pulse_on_pick_up">false</bool>
 
     <!-- Doze: check proximity sensor before pulsing? -->
     <bool name="doze_proximity_check_before_pulse">true</bool>
@@ -244,32 +225,72 @@
     <!-- Doze: should notifications be used as a pulse signal? -->
     <bool name="doze_pulse_on_notifications">true</bool>
 
-    <!-- Doze: when to pulse after a buzzworthy notification arrives -->
-    <string name="doze_pulse_schedule" translatable="false">10s,30s,60s</string>
-
-    <!-- Doze: maximum number of times the notification pulse schedule can be reset -->
-    <integer name="doze_pulse_schedule_resets">2</integer>
-
     <!-- Doze: duration to avoid false pickup gestures triggered by notification vibrations -->
     <integer name="doze_pickup_vibration_threshold">2000</integer>
 
-    <!-- Doze: can we assume the pickup sensor includes a proximity check? -->
+    <!-- Doze: can we assume the pickup sensor includes a proximity check?
+         This is ignored if doze_pickup_subtype_performs_proximity_check is not empty.
+         @deprecated: use doze_pickup_subtype_performs_proximity_check instead.-->
     <bool name="doze_pickup_performs_proximity_check">false</bool>
+
+    <!-- Doze: a list of pickup sensor subtypes that perform a proximity check before they trigger.
+               If not empty, either * or !* must appear to specify the default.
+               If empty, falls back to doze_pickup_performs_proximity_check.
+
+               Examples: 1,2,3,!* -> subtypes 1,2 and 3 perform the check, all others don't.
+                         !1,!2,*  -> subtypes 1 and 2 don't perform the check, all others do.
+                         !8,*     -> subtype 8 does not perform the check, all others do
+                         1,1,*    -> illegal, every item may only appear once
+                         1,!1,*   -> illegal, no contradictions allowed
+                         1,2      -> illegal, need either * or !*
+                         1,,4a3   -> illegal, no empty or non-numeric terms allowed
+    -->
+    <string name="doze_pickup_subtype_performs_proximity_check"></string>
+
+    <!-- Type of a sensor that provides a low-power estimate of the desired display
+         brightness, suitable to listen to while the device is asleep (e.g. during
+         always-on display) -->
+    <string name="doze_brightness_sensor_type" translatable="false"></string>
 
     <!-- Doze: pulse parameter - how long does it take to fade in? -->
     <integer name="doze_pulse_duration_in">900</integer>
 
     <!-- Doze: pulse parameter - how long does it take to fade in after a pickup? -->
-    <integer name="doze_pulse_duration_in_pickup">300</integer>
+    <integer name="doze_pulse_duration_in_pickup">130</integer>
 
     <!-- Doze: pulse parameter - once faded in, how long does it stay visible? -->
-    <integer name="doze_pulse_duration_visible">3000</integer>
+    <integer name="doze_pulse_duration_visible">6000</integer>
 
     <!-- Doze: pulse parameter - how long does it take to fade out? -->
     <integer name="doze_pulse_duration_out">600</integer>
 
     <!-- Doze: alpha to apply to small icons when dozing -->
     <integer name="doze_small_icon_alpha">222</integer><!-- 87% of 0xff -->
+
+    <!-- Doze: Table that translates sensor values from the doze_brightness_sensor_type sensor
+               to brightness values; -1 means keeping the current brightness. -->
+    <integer-array name="config_doze_brightness_sensor_to_brightness">
+        <item>-1</item> <!-- 0: OFF -->
+        <item>2</item> <!-- 1: NIGHT -->
+        <item>5</item> <!-- 2: LOW -->
+        <item>27</item> <!-- 3: HIGH -->
+        <item>28</item> <!-- 4: SUN -->
+    </integer-array>
+
+    <!-- Doze: Table that translates sensor values from the doze_brightness_sensor_type sensor
+               to an opacity value for a black scrim that is overlayed in AOD1.
+               Valid range is from 0 (transparent) to 255 (opaque).
+               -1 means keeping the current opacity. -->
+    <integer-array name="config_doze_brightness_sensor_to_scrim_opacity">
+        <item>-1</item> <!-- 0: OFF -->
+        <item>0</item> <!-- 1: NIGHT -->
+        <item>0</item> <!-- 2: LOW -->
+        <item>0</item> <!-- 3: HIGH -->
+        <item>0</item> <!-- 4: SUN -->
+    </integer-array>
+
+    <!-- Doze: whether the double tap sensor reports 2D touch coordinates -->
+    <bool name="doze_double_tap_reports_touch_coordinates">false</bool>
 
     <!-- Hotspot tile: number of days to show after feature is used. -->
     <integer name="days_to_show_hotspot_tile">30</integer>
@@ -292,5 +313,123 @@
     <!-- Duration of the expansion animation in the volume dialog -->
     <item name="volume_expand_animation_duration" type="integer">300</item>
 
-</resources>
+    <!-- Whether to show the full screen user switcher. -->
+    <bool name="config_enableFullscreenUserSwitcher">false</bool>
 
+    <!-- SystemUIFactory component -->
+    <string name="config_systemUIFactoryComponent" translatable="false">com.android.systemui.SystemUIFactory</string>
+
+    <!-- Nav bar button default ordering/layout -->
+    <string name="config_navBarLayout" translatable="false">left[.5W],back[1WC];home;recent[1WC],right[.5W]</string>
+
+    <bool name="quick_settings_show_full_alarm">false</bool>
+
+    <!-- Whether to show a warning notification when the device reaches a certain temperature. -->
+    <integer name="config_showTemperatureWarning">0</integer>
+
+    <!-- Temp at which to show a warning notification if config_showTemperatureWarning is true.
+         If < 0, uses the value from
+         HardwarePropertiesManager#getDeviceTemperatures - config_warningTemperatureTolerance. -->
+    <integer name="config_warningTemperature">-1</integer>
+
+    <!-- Fudge factor for how much below the shutdown temp to show the warning. -->
+    <integer name="config_warningTemperatureTolerance">2</integer>
+
+    <!-- Accessibility actions -->
+    <item type="id" name="action_split_task_to_left" />
+    <item type="id" name="action_split_task_to_right" />
+    <item type="id" name="action_split_task_to_top" />
+
+    <!-- Whether or not the gear icon on notifications should be shown. The gear is shown when the
+         the notification is not swiped enough to dismiss it. -->
+    <bool name="config_showNotificationGear">true</bool>
+
+    <!-- Whether or not a background should be drawn behind a notification. -->
+    <bool name="config_drawNotificationBackground">true</bool>
+
+    <!-- Whether or the notifications can be shown and dismissed with a drag. -->
+    <bool name="config_enableNotificationShadeDrag">true</bool>
+
+    <!-- Whether to show activity indicators in the status bar -->
+    <bool name="config_showActivity">false</bool>
+
+    <!-- Whether or not the button to clear all notifications will be shown. -->
+    <bool name="config_enableNotificationsClearAll">true</bool>
+
+    <!-- Whether or not to show the notification shelf that houses the icons of notifications that
+     have been scrolled off-screen. -->
+    <bool name="config_showNotificationShelf">true</bool>
+
+    <!-- Whether or not the notifications should always fade as they are dismissed. -->
+    <bool name="config_fadeNotificationsOnDismiss">false</bool>
+
+    <!-- Whether or not the parent of the notification row itself is being translated when swiped or
+         its children views. If true, then the contents are translated and vice versa. -->
+    <bool name="config_translateNotificationContentsOnSwipe">true</bool>
+
+    <!-- Whether or not the fade on the notification is based on the amount that it has been swiped
+         off-screen. -->
+    <bool name="config_fadeDependingOnAmountSwiped">false</bool>
+
+    <!-- Whether or not to show the expand button at the end of the notification header. -->
+    <bool name="config_showNotificationExpandButtonAtEnd">false</bool>
+
+    <!-- Whether or the notifications should be clipped to be reduced in height if it has been
+         scrolled to the top of the screen. -->
+    <bool name="config_clipNotificationScrollToTop">true</bool>
+
+    <!-- Whether or not the notification contents should be clipped to any background that is
+         set on the notification container. For example, if this value is true and the background
+         has rounded corners, then the contents will be clipped to those corners. -->
+    <bool name="config_clipNotificationsToOutline">false</bool>
+
+    <!-- Whether or not notifications that can be expanded will always be in their expanded state.
+         This value only affects notifications that are not a group of notifications from the same
+         applications. If this value is false, then only the first notification will be expanded;
+         the other notifications need to be manually expanded by the user. -->
+    <bool name="config_alwaysExpandNonGroupedNotifications">false</bool>
+
+    <!-- Whether or not an expandable notification can be manually expanded or collapsed by the
+         user. Grouped notifications are still expandable even if this value is false. -->
+    <bool name="config_enableNonGroupedNotificationExpand">true</bool>
+
+    <!-- Whether or not there should be dividing lines between child notifications when the
+         group has been expanded. -->
+    <bool name="config_showDividersWhenGroupNotificationExpanded">false</bool>
+
+    <!-- Whether or not the dividing lines should be shown when the container is expanding and
+         collapsing. If this value is true, then the lines will only show when the container has
+         been completely expanded. -->
+    <bool name="config_hideDividersDuringExpand">false</bool>
+
+    <!-- Whether or not child notifications that are part of a group will have shadows. -->
+    <bool name="config_enableShadowOnChildNotifications">true</bool>
+
+    <!-- Whether or not a view containing child notifications will have a custom background when
+         it has been expanded to reveal its children. -->
+    <bool name="config_showGroupNotificationBgWhenExpanded">false</bool>
+
+    <!-- Whether to artificially interpret all signal strengths as
+         one bar higher than they actually are -->
+    <bool name="config_inflateSignalStrength">false</bool>
+
+    <!-- Should we vibrate on an icon animation of the shelf. This should only be active if the
+     vibrator is capable of subtle vibrations -->
+    <bool name="config_vibrateOnIconAnimation">false</bool>
+
+    <!-- If true, enable the advance anti-falsing classifier on the lockscreen. On some devices it
+         does not work well, particularly with noisy touchscreens. Note that disabling it may
+         increase the rate of unintentional unlocks. -->
+    <bool name="config_lockscreenAntiFalsingClassifierEnabled">true</bool>
+
+    <!-- Snooze: default notificaiton snooze time. -->
+    <integer name="config_notification_snooze_time_default">60</integer>
+
+    <!-- Snooze: List of snooze values in integer minutes. -->
+    <integer-array name="config_notification_snooze_times">
+        <item>15</item>
+        <item>30</item>
+        <item>60</item>
+        <item>120</item>
+    </integer-array>
+</resources>

@@ -16,7 +16,10 @@
 
 package com.android.server.wm;
 
-import android.app.ActivityManagerNative;
+import static com.android.server.wm.WindowManagerDebugConfig.TAG_WITH_CLASS_NAME;
+import static com.android.server.wm.WindowManagerDebugConfig.TAG_WM;
+
+import android.app.ActivityManager;
 import android.app.admin.DevicePolicyManager;
 import android.content.Context;
 import android.os.Handler;
@@ -29,7 +32,7 @@ import android.util.Pair;
 import android.view.WindowManagerPolicy;
 
 public class KeyguardDisableHandler extends Handler {
-    private static final String TAG = "KeyguardDisableHandler";
+    private static final String TAG = TAG_WITH_CLASS_NAME ? "KeyguardDisableHandler" : TAG_WM;
 
     private static final int ALLOW_DISABLE_YES = 1;
     private static final int ALLOW_DISABLE_NO = 0;
@@ -98,7 +101,7 @@ public class KeyguardDisableHandler extends Handler {
             if (dpm != null) {
                 try {
                     mAllowDisableKeyguard = dpm.getPasswordQuality(null,
-                            ActivityManagerNative.getDefault().getCurrentUser().id)
+                            ActivityManager.getService().getCurrentUser().id)
                             == DevicePolicyManager.PASSWORD_QUALITY_UNSPECIFIED ?
                                     ALLOW_DISABLE_YES : ALLOW_DISABLE_NO;
                 } catch (RemoteException re) {

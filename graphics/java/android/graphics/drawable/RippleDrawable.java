@@ -23,6 +23,7 @@ import org.xmlpull.v1.XmlPullParserException;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.content.pm.ActivityInfo.Config;
 import android.content.res.ColorStateList;
 import android.content.res.Resources;
 import android.content.res.Resources.Theme;
@@ -40,7 +41,6 @@ import android.graphics.PorterDuffColorFilter;
 import android.graphics.Rect;
 import android.graphics.Shader;
 import android.util.AttributeSet;
-import android.util.DisplayMetrics;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -58,11 +58,11 @@ import java.util.Arrays;
  * mask using {@code setId(..., android.R.id.mask)} or an existing mask layer
  * may be replaced using {@code setDrawableByLayerId(android.R.id.mask, ...)}.
  * <pre>
- * <code>&lt!-- A red ripple masked against an opaque rectangle. --/>
- * &ltripple android:color="#ffff0000">
- *   &ltitem android:id="@android:id/mask"
+ * <code>&lt;!-- A red ripple masked against an opaque rectangle. --/>
+ * &lt;ripple android:color="#ffff0000">
+ *   &lt;item android:id="@android:id/mask"
  *         android:drawable="@android:color/white" />
- * &lt/ripple></code>
+ * &lt;/ripple></code>
  * </pre>
  * <p>
  * If a mask layer is set, the ripple effect will be masked against that layer
@@ -71,15 +71,15 @@ import java.util.Arrays;
  * If no mask layer is set, the ripple effect is masked against the composite
  * of the child layers.
  * <pre>
- * <code>&lt!-- A green ripple drawn atop a black rectangle. --/>
- * &ltripple android:color="#ff00ff00">
- *   &ltitem android:drawable="@android:color/black" />
- * &lt/ripple>
+ * <code>&lt;!-- A green ripple drawn atop a black rectangle. --/>
+ * &lt;ripple android:color="#ff00ff00">
+ *   &lt;item android:drawable="@android:color/black" />
+ * &lt;/ripple>
  *
- * &lt!-- A blue ripple drawn atop a drawable resource. --/>
- * &ltripple android:color="#ff0000ff">
- *   &ltitem android:drawable="@drawable/my_drawable" />
- * &lt/ripple></code>
+ * &lt;!-- A blue ripple drawn atop a drawable resource. --/>
+ * &lt;ripple android:color="#ff0000ff">
+ *   &lt;item android:drawable="@drawable/my_drawable" />
+ * &lt;/ripple></code>
  * </pre>
  * <p>
  * If no child layers or mask is specified and the ripple is set as a View
@@ -87,8 +87,8 @@ import java.util.Arrays;
  * background within the View's hierarchy. In this case, the drawing region
  * may extend outside of the Drawable bounds.
  * <pre>
- * <code>&lt!-- An unbounded red ripple. --/>
- * &ltripple android:color="#ffff0000" /></code>
+ * <code>&lt;!-- An unbounded red ripple. --/>
+ * &lt;ripple android:color="#ffff0000" /></code>
  * </pre>
  *
  * @attr ref android.R.styleable#RippleDrawable_color
@@ -160,7 +160,7 @@ public class RippleDrawable extends LayerDrawable {
     private Paint mRipplePaint;
 
     /** Target density of the display into which ripples are drawn. */
-    private float mDensity = 1.0f;
+    private int mDensity;
 
     /** Whether bounds are being overridden. */
     private boolean mOverrideBounds;
@@ -252,6 +252,7 @@ public class RippleDrawable extends LayerDrawable {
         boolean enabled = false;
         boolean pressed = false;
         boolean focused = false;
+        boolean hovered = false;
 
         for (int state : stateSet) {
             if (state == R.attr.state_enabled) {
@@ -260,11 +261,13 @@ public class RippleDrawable extends LayerDrawable {
                 focused = true;
             } else if (state == R.attr.state_pressed) {
                 pressed = true;
+            } else if (state == R.attr.state_hovered) {
+                hovered = true;
             }
         }
 
         setRippleActive(enabled && pressed);
-        setBackgroundActive(focused || (enabled && pressed), focused);
+        setBackgroundActive(hovered || focused || (enabled && pressed), focused || hovered);
 
         return changed;
     }
@@ -374,6 +377,12 @@ public class RippleDrawable extends LayerDrawable {
         return true;
     }
 
+    /** @hide */
+    @Override
+    public boolean hasFocusStateSpecified() {
+        return true;
+    }
+
     /**
      * Sets the ripple color.
      *
@@ -409,18 +418,20 @@ public class RippleDrawable extends LayerDrawable {
     }
 
     @Override
-    public void inflate(Resources r, XmlPullParser parser, AttributeSet attrs, Theme theme)
+    public void inflate(@NonNull Resources r, @NonNull XmlPullParser parser,
+            @NonNull AttributeSet attrs, @Nullable Theme theme)
             throws XmlPullParserException, IOException {
         final TypedArray a = obtainAttributes(r, theme, attrs, R.styleable.RippleDrawable);
-        updateStateFromTypedArray(a);
-        a.recycle();
 
         // Force padding default to STACK before inflating.
         setPaddingMode(PADDING_MODE_STACK);
 
+        // Inflation will advance the XmlPullParser and AttributeSet.
         super.inflate(r, parser, attrs, theme);
 
-        setTargetDensity(r.getDisplayMetrics());
+        updateStateFromTypedArray(a);
+        verifyRequiredAttributes(a);
+        a.recycle();
 
         updateLocalState();
     }
@@ -461,7 +472,7 @@ public class RippleDrawable extends LayerDrawable {
     /**
      * Initializes the constant state from the values in the typed array.
      */
-    private void updateStateFromTypedArray(TypedArray a) throws XmlPullParserException {
+    private void updateStateFromTypedArray(@NonNull TypedArray a) throws XmlPullParserException {
         final RippleState state = mState;
 
         // Account for any configuration changes.
@@ -477,11 +488,9 @@ public class RippleDrawable extends LayerDrawable {
 
         mState.mMaxRadius = a.getDimensionPixelSize(
                 R.styleable.RippleDrawable_radius, mState.mMaxRadius);
-
-        verifyRequiredAttributes(a);
     }
 
-    private void verifyRequiredAttributes(TypedArray a) throws XmlPullParserException {
+    private void verifyRequiredAttributes(@NonNull TypedArray a) throws XmlPullParserException {
         if (mState.mColor == null && (mState.mTouchThemeAttrs == null
                 || mState.mTouchThemeAttrs[R.styleable.RippleDrawable_color] == 0)) {
             throw new XmlPullParserException(a.getPositionDescription() +
@@ -489,20 +498,8 @@ public class RippleDrawable extends LayerDrawable {
         }
     }
 
-    /**
-     * Set the density at which this drawable will be rendered.
-     *
-     * @param metrics The display metrics for this drawable.
-     */
-    private void setTargetDensity(DisplayMetrics metrics) {
-        if (mDensity != metrics.density) {
-            mDensity = metrics.density;
-            invalidateSelf(false);
-        }
-    }
-
     @Override
-    public void applyTheme(Theme t) {
+    public void applyTheme(@NonNull Theme t) {
         super.applyTheme(t);
 
         final RippleState state = mState;
@@ -515,8 +512,9 @@ public class RippleDrawable extends LayerDrawable {
                     R.styleable.RippleDrawable);
             try {
                 updateStateFromTypedArray(a);
+                verifyRequiredAttributes(a);
             } catch (XmlPullParserException e) {
-                throw new RuntimeException(e);
+                rethrowAsRuntimeException(e);
             } finally {
                 a.recycle();
             }
@@ -552,7 +550,8 @@ public class RippleDrawable extends LayerDrawable {
      */
     private void tryBackgroundEnter(boolean focused) {
         if (mBackground == null) {
-            mBackground = new RippleBackground(this, mHotspotBounds, mForceSoftware);
+            final boolean isBounded = isBounded();
+            mBackground = new RippleBackground(this, mHotspotBounds, isBounded, mForceSoftware);
         }
 
         mBackground.setup(mState.mMaxRadius, mDensity);
@@ -674,7 +673,7 @@ public class RippleDrawable extends LayerDrawable {
     public void getOutline(@NonNull Outline outline) {
         final LayerState state = mLayerState;
         final ChildDrawable[] children = state.mChildren;
-        final int N = state.mNum;
+        final int N = state.mNumChildren;
         for (int i = 0; i < N; i++) {
             if (children[i].mId != R.id.mask) {
                 children[i].mDrawable.getOutline(outline);
@@ -822,7 +821,7 @@ public class RippleDrawable extends LayerDrawable {
 
         // Check for non-opaque, non-mask content.
         final ChildDrawable[] array = mLayerState.mChildren;
-        final int count = mLayerState.mNum;
+        final int count = mLayerState.mNumChildren;
         for (int i = 0; i < count; i++) {
             if (array[i].mDrawable.getOpacity() != PixelFormat.OPAQUE) {
                 return MASK_CONTENT;
@@ -836,7 +835,7 @@ public class RippleDrawable extends LayerDrawable {
     private void drawContent(Canvas canvas) {
         // Draw everything except the mask.
         final ChildDrawable[] array = mLayerState.mChildren;
-        final int count = mLayerState.mNum;
+        final int count = mLayerState.mNumChildren;
         for (int i = 0; i < count; i++) {
             if (array[i].mId != R.id.mask) {
                 array[i].mDrawable.draw(canvas);
@@ -1002,6 +1001,24 @@ public class RippleDrawable extends LayerDrawable {
                 mTouchThemeAttrs = origs.mTouchThemeAttrs;
                 mColor = origs.mColor;
                 mMaxRadius = origs.mMaxRadius;
+
+                if (origs.mDensity != mDensity) {
+                    applyDensityScaling(orig.mDensity, mDensity);
+                }
+            }
+        }
+
+        @Override
+        protected void onDensityChanged(int sourceDensity, int targetDensity) {
+            super.onDensityChanged(sourceDensity, targetDensity);
+
+            applyDensityScaling(sourceDensity, targetDensity);
+        }
+
+        private void applyDensityScaling(int sourceDensity, int targetDensity) {
+            if (mMaxRadius != RADIUS_AUTO) {
+                mMaxRadius = Drawable.scaleFromDensity(
+                        mMaxRadius, sourceDensity, targetDensity, true);
             }
         }
 
@@ -1023,7 +1040,7 @@ public class RippleDrawable extends LayerDrawable {
         }
 
         @Override
-        public int getChangingConfigurations() {
+        public @Config int getChangingConfigurations() {
             return super.getChangingConfigurations()
                     | (mColor != null ? mColor.getChangingConfigurations() : 0);
         }
@@ -1032,14 +1049,11 @@ public class RippleDrawable extends LayerDrawable {
     private RippleDrawable(RippleState state, Resources res) {
         mState = new RippleState(state, this, res);
         mLayerState = mState;
+        mDensity = Drawable.resolveDensity(res, mState.mDensity);
 
-        if (mState.mNum > 0) {
+        if (mState.mNumChildren > 0) {
             ensurePadding();
             refreshPadding();
-        }
-
-        if (res != null) {
-            mDensity = res.getDisplayMetrics().density;
         }
 
         updateLocalState();

@@ -17,14 +17,50 @@ package com.android.internal.os;
 
 import android.os.BatteryStats.Uid;
 
+import java.util.List;
+
 /**
  * Contains power usage of an application, system service, or hardware type.
  */
 public class BatterySipper implements Comparable<BatterySipper> {
     public int userId;
     public Uid uidObj;
-    public double totalPowerMah;
     public DrainType drainType;
+
+    /**
+     * Smeared power from screen usage.
+     * We split the screen usage power and smear them among apps, based on activity time.
+     */
+    public double screenPowerMah;
+
+    /**
+     * Smeared power using proportional method.
+     *
+     * we smear power usage from hidden sippers to all apps proportionally.(except for screen usage)
+     *
+     * @see BatteryStatsHelper#shouldHideSipper(BatterySipper)
+     * @see BatteryStatsHelper#removeHiddenBatterySippers(List)
+     */
+    public double proportionalSmearMah;
+
+    /**
+     * Total power that adding the smeared power.
+     *
+     * @see #sumPower()
+     */
+    public double totalSmearedPowerMah;
+
+    /**
+     * Total power before smearing
+     */
+    public double totalPowerMah;
+
+    /**
+     * Whether we should hide this sipper
+     *
+     * @see BatteryStatsHelper#shouldHideSipper(BatterySipper)
+     */
+    public boolean shouldHide;
 
     /**
      * Generic usage time in milliseconds.
@@ -44,6 +80,7 @@ public class BatterySipper implements Comparable<BatterySipper> {
     public long wakeLockTimeMs;
     public long cameraTimeMs;
     public long flashlightTimeMs;
+    public long bluetoothRunningTimeMs;
 
     public long mobileRxPackets;
     public long mobileTxPackets;
@@ -56,6 +93,8 @@ public class BatterySipper implements Comparable<BatterySipper> {
     public long mobileTxBytes;
     public long wifiRxBytes;
     public long wifiTxBytes;
+    public long btRxBytes;
+    public long btTxBytes;
     public double percent;
     public double noCoveragePercent;
     public String[] mPackages;
@@ -71,6 +110,7 @@ public class BatterySipper implements Comparable<BatterySipper> {
     public double sensorPowerMah;
     public double cameraPowerMah;
     public double flashlightPowerMah;
+    public double bluetoothPowerMah;
 
     public enum DrainType {
         IDLE,
@@ -84,7 +124,8 @@ public class BatterySipper implements Comparable<BatterySipper> {
         USER,
         UNACCOUNTED,
         OVERCOUNTED,
-        CAMERA
+        CAMERA,
+        MEMORY
     }
 
     public BatterySipper(DrainType drainType, Uid uid, double value) {
@@ -94,8 +135,8 @@ public class BatterySipper implements Comparable<BatterySipper> {
     }
 
     public void computeMobilemspp() {
-        long packets = mobileRxPackets+mobileTxPackets;
-        mobilemspp = packets > 0 ? (mobileActive / (double)packets) : 0;
+        long packets = mobileRxPackets + mobileTxPackets;
+        mobilemspp = packets > 0 ? (mobileActive / (double) packets) : 0;
     }
 
     @Override
@@ -142,6 +183,7 @@ public class BatterySipper implements Comparable<BatterySipper> {
         wakeLockTimeMs += other.wakeLockTimeMs;
         cameraTimeMs += other.cameraTimeMs;
         flashlightTimeMs += other.flashlightTimeMs;
+        bluetoothRunningTimeMs += other.bluetoothRunningTimeMs;
         mobileRxPackets += other.mobileRxPackets;
         mobileTxPackets += other.mobileTxPackets;
         mobileActive += other.mobileActive;
@@ -152,6 +194,8 @@ public class BatterySipper implements Comparable<BatterySipper> {
         mobileTxBytes += other.mobileTxBytes;
         wifiRxBytes += other.wifiRxBytes;
         wifiTxBytes += other.wifiTxBytes;
+        btRxBytes += other.btRxBytes;
+        btTxBytes += other.btTxBytes;
         wifiPowerMah += other.wifiPowerMah;
         gpsPowerMah += other.gpsPowerMah;
         cpuPowerMah += other.cpuPowerMah;
@@ -160,15 +204,24 @@ public class BatterySipper implements Comparable<BatterySipper> {
         wakeLockPowerMah += other.wakeLockPowerMah;
         cameraPowerMah += other.cameraPowerMah;
         flashlightPowerMah += other.flashlightPowerMah;
+        bluetoothPowerMah += other.bluetoothPowerMah;
+        screenPowerMah += other.screenPowerMah;
+        proportionalSmearMah += other.proportionalSmearMah;
+        totalSmearedPowerMah += other.totalSmearedPowerMah;
     }
 
     /**
      * Sum all the powers and store the value into `value`.
+     * Also sum the {@code smearedTotalPowerMah} by adding smeared powerMah.
+     *
      * @return the sum of all the power in this BatterySipper.
      */
     public double sumPower() {
-        return totalPowerMah = usagePowerMah + wifiPowerMah + gpsPowerMah + cpuPowerMah +
+        totalPowerMah = usagePowerMah + wifiPowerMah + gpsPowerMah + cpuPowerMah +
                 sensorPowerMah + mobileRadioPowerMah + wakeLockPowerMah + cameraPowerMah +
-                flashlightPowerMah;
+                flashlightPowerMah + bluetoothPowerMah;
+        totalSmearedPowerMah = totalPowerMah + screenPowerMah + proportionalSmearMah;
+
+        return totalPowerMah;
     }
 }

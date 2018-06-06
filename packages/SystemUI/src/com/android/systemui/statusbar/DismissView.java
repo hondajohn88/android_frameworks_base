@@ -16,19 +16,24 @@
 
 package com.android.systemui.statusbar;
 
+import android.annotation.ColorInt;
 import android.content.Context;
-import android.graphics.Rect;
+import android.content.res.Configuration;
 import android.util.AttributeSet;
 import android.view.View;
 
 import com.android.systemui.R;
+import com.android.systemui.statusbar.stack.ExpandableViewState;
+import com.android.systemui.statusbar.stack.StackScrollState;
 
 public class DismissView extends StackScrollerDecorView {
-    private boolean mDismissAllInProgress;
+    private final int mClearAllTopPadding;
     private DismissViewButton mDismissButton;
 
     public DismissView(Context context, AttributeSet attrs) {
         super(context, attrs);
+        mClearAllTopPadding = context.getResources().getDimensionPixelSize(
+                R.dimen.clear_all_padding_top);
     }
 
     @Override
@@ -42,6 +47,10 @@ public class DismissView extends StackScrollerDecorView {
         mDismissButton = (DismissViewButton) findContentView();
     }
 
+    public void setTextColor(@ColorInt int color) {
+        mDismissButton.setTextColor(color);
+    }
+
     public void setOnButtonClickListener(OnClickListener listener) {
         mContent.setOnClickListener(listener);
     }
@@ -53,27 +62,32 @@ public class DismissView extends StackScrollerDecorView {
                 || touchY > mContent.getY() + mContent.getHeight();
     }
 
-    public void showClearButton() {
-        mDismissButton.showButton();
-    }
-
-    public void setDismissAllInProgress(boolean dismissAllInProgress) {
-        if (dismissAllInProgress) {
-            setClipBounds(null);
-        }
-        mDismissAllInProgress = dismissAllInProgress;
-    }
-
     @Override
-    public void setClipBounds(Rect clipBounds) {
-        if (mDismissAllInProgress) {
-            // we don't want any clipping to happen!
-            return;
-        }
-        super.setClipBounds(clipBounds);
+    protected void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        mDismissButton.setText(R.string.clear_all_notifications_text);
+        mDismissButton.setContentDescription(
+                mContext.getString(R.string.accessibility_clear_all));
     }
 
     public boolean isButtonVisible() {
-        return mDismissButton.isButtonStatic();
+        return mDismissButton.getAlpha() != 0.0f;
+    }
+
+    @Override
+    public ExpandableViewState createNewViewState(StackScrollState stackScrollState) {
+        return new DismissViewState();
+    }
+
+    public class DismissViewState extends ExpandableViewState {
+        @Override
+        public void applyToView(View view) {
+            super.applyToView(view);
+            if (view instanceof DismissView) {
+                DismissView dismissView = (DismissView) view;
+                boolean visible = this.clipTopAmount < mClearAllTopPadding;
+                dismissView.performVisibilityAnimation(visible && !dismissView.willBeGone());
+            }
+        }
     }
 }

@@ -49,19 +49,22 @@ final class ProcessList {
 
     // OOM adjustments for processes in various states:
 
+    // Uninitialized value for any major or minor adj fields
+    static final int INVALID_ADJ = -10000;
+
     // Adjustment used in certain places where we don't know it yet.
     // (Generally this is something that is going to be cached, but we
     // don't know the exact value in the cached range to assign yet.)
-    static final int UNKNOWN_ADJ = 16;
+    static final int UNKNOWN_ADJ = 1001;
 
     // This is a process only hosting activities that are not visible,
     // so it can be killed without any disruption.
-    static final int CACHED_APP_MAX_ADJ = 15;
-    static final int CACHED_APP_MIN_ADJ = 9;
+    static final int CACHED_APP_MAX_ADJ = 906;
+    static final int CACHED_APP_MIN_ADJ = 900;
 
     // The B list of SERVICE_ADJ -- these are the old and decrepit
     // services that aren't as shiny and interesting as the ones in the A list.
-    static final int SERVICE_B_ADJ = 8;
+    static final int SERVICE_B_ADJ = 800;
 
     // This is the process of the previous application that the user was in.
     // This process is kept above other things, because it is very common to
@@ -69,34 +72,35 @@ final class ProcessList {
     // task switch (toggling between the two top recent apps) as well as normal
     // UI flow such as clicking on a URI in the e-mail app to view in the browser,
     // and then pressing back to return to e-mail.
-    static final int PREVIOUS_APP_ADJ = 7;
+    static final int PREVIOUS_APP_ADJ = 700;
 
     // This is a process holding the home application -- we want to try
     // avoiding killing it, even if it would normally be in the background,
     // because the user interacts with it so much.
-    static final int HOME_APP_ADJ = 6;
+    static final int HOME_APP_ADJ = 600;
 
     // This is a process holding an application service -- killing it will not
     // have much of an impact as far as the user is concerned.
-    static final int SERVICE_ADJ = 5;
+    static final int SERVICE_ADJ = 500;
 
     // This is a process with a heavy-weight application.  It is in the
     // background, but we want to try to avoid killing it.  Value set in
     // system/rootdir/init.rc on startup.
-    static final int HEAVY_WEIGHT_APP_ADJ = 4;
+    static final int HEAVY_WEIGHT_APP_ADJ = 400;
 
     // This is a process currently hosting a backup operation.  Killing it
     // is not entirely fatal but is generally a bad idea.
-    static final int BACKUP_APP_ADJ = 3;
+    static final int BACKUP_APP_ADJ = 300;
 
     // This is a process only hosting components that are perceptible to the
     // user, and we really want to avoid killing them, but they are not
     // immediately visible. An example is background music playback.
-    static final int PERCEPTIBLE_APP_ADJ = 2;
+    static final int PERCEPTIBLE_APP_ADJ = 200;
 
     // This is a process only hosting activities that are visible to the
     // user, so we'd prefer they don't disappear.
-    static final int VISIBLE_APP_ADJ = 1;
+    static final int VISIBLE_APP_ADJ = 100;
+    static final int VISIBLE_APP_LAYER_MAX = PERCEPTIBLE_APP_ADJ - VISIBLE_APP_ADJ - 1;
 
     // This is the process running the current foreground app.  We'd really
     // rather not kill it!
@@ -104,50 +108,38 @@ final class ProcessList {
 
     // This is a process that the system or a persistent process has bound to,
     // and indicated it is important.
-    static final int PERSISTENT_SERVICE_ADJ = -11;
+    static final int PERSISTENT_SERVICE_ADJ = -700;
 
     // This is a system persistent process, such as telephony.  Definitely
     // don't want to kill it, but doing so is not completely fatal.
-    static final int PERSISTENT_PROC_ADJ = -12;
+    static final int PERSISTENT_PROC_ADJ = -800;
 
     // The system process runs at the default adjustment.
-    static final int SYSTEM_ADJ = -16;
+    static final int SYSTEM_ADJ = -900;
 
     // Special code for native processes that are not being managed by the system (so
     // don't have an oom adj assigned by the system).
-    static final int NATIVE_ADJ = -17;
+    static final int NATIVE_ADJ = -1000;
 
     // Memory pages are 4K.
     static final int PAGE_SIZE = 4*1024;
+
+    // Activity manager's version of Process.THREAD_GROUP_BG_NONINTERACTIVE
+    static final int SCHED_GROUP_BACKGROUND = 0;
+    // Activity manager's version of Process.THREAD_GROUP_DEFAULT
+    static final int SCHED_GROUP_DEFAULT = 1;
+    // Activity manager's version of Process.THREAD_GROUP_TOP_APP
+    static final int SCHED_GROUP_TOP_APP = 2;
+    // Activity manager's version of Process.THREAD_GROUP_TOP_APP
+    // Disambiguate between actual top app and processes bound to the top app
+    static final int SCHED_GROUP_TOP_APP_BOUND = 3;
 
     // The minimum number of cached apps we want to be able to keep around,
     // without empty apps being able to push them out of memory.
     static final int MIN_CACHED_APPS = 2;
 
-    // The maximum number of cached processes we will keep around before killing them.
-    // NOTE: this constant is *only* a control to not let us go too crazy with
-    // keeping around processes on devices with large amounts of RAM.  For devices that
-    // are tighter on RAM, the out of memory killer is responsible for killing background
-    // processes as RAM is needed, and we should *never* be relying on this limit to
-    // kill them.  Also note that this limit only applies to cached background processes;
-    // we have no limit on the number of service, visible, foreground, or other such
-    // processes and the number of those processes does not count against the cached
-    // process limit.
-    static final int MAX_CACHED_APPS = 32;
-
     // We allow empty processes to stick around for at most 30 minutes.
     static final long MAX_EMPTY_TIME = 30*60*1000;
-
-    // The maximum number of empty app processes we will let sit around.
-    private static final int MAX_EMPTY_APPS = computeEmptyProcessLimit(MAX_CACHED_APPS);
-
-    // The number of empty apps at which we don't consider it necessary to do
-    // memory trimming.
-    static final int TRIM_EMPTY_APPS = MAX_EMPTY_APPS/2;
-
-    // The number of cached at which we don't consider it necessary to do
-    // memory trimming.
-    static final int TRIM_CACHED_APPS = (MAX_CACHED_APPS-MAX_EMPTY_APPS)/3;
 
     // Threshold of number of cached+empty where we consider memory critical.
     static final int TRIM_CRITICAL_THRESHOLD = 3;
@@ -159,7 +151,7 @@ final class ProcessList {
     // These must be kept in sync with the definitions in lmkd.c
     //
     // LMK_TARGET <minfree> <minkillprio> ... (up to 6 pairs)
-    // LMK_PROCPRIO <pid> <prio>
+    // LMK_PROCPRIO <pid> <uid> <prio>
     // LMK_PROCREMOVE <pid>
     static final byte LMK_TARGET = 0;
     static final byte LMK_PROCPRIO = 1;
@@ -206,6 +198,7 @@ final class ProcessList {
     void applyDisplaySize(WindowManagerService wm) {
         if (!mHaveDisplaySize) {
             Point p = new Point();
+            // TODO(multi-display): Compute based on sum of all connected displays' resolutions.
             wm.getBaseDisplaySize(Display.DEFAULT_DISPLAY, p);
             if (p.x != 0 && p.y != 0) {
                 updateOomLevels(p.x, p.y, true);
@@ -356,59 +349,62 @@ final class ProcessList {
     public static String makeProcStateString(int curProcState) {
         String procState;
         switch (curProcState) {
-            case -1:
-                procState = "N ";
-                break;
             case ActivityManager.PROCESS_STATE_PERSISTENT:
-                procState = "P ";
+                procState = "PER ";
                 break;
             case ActivityManager.PROCESS_STATE_PERSISTENT_UI:
-                procState = "PU";
+                procState = "PERU";
                 break;
             case ActivityManager.PROCESS_STATE_TOP:
-                procState = "T ";
+                procState = "TOP ";
                 break;
             case ActivityManager.PROCESS_STATE_BOUND_FOREGROUND_SERVICE:
-                procState = "SB";
+                procState = "BFGS";
                 break;
             case ActivityManager.PROCESS_STATE_FOREGROUND_SERVICE:
-                procState = "SF";
+                procState = "FGS ";
                 break;
             case ActivityManager.PROCESS_STATE_TOP_SLEEPING:
-                procState = "TS";
+                procState = "TPSL";
                 break;
             case ActivityManager.PROCESS_STATE_IMPORTANT_FOREGROUND:
-                procState = "IF";
+                procState = "IMPF";
                 break;
             case ActivityManager.PROCESS_STATE_IMPORTANT_BACKGROUND:
-                procState = "IB";
+                procState = "IMPB";
+                break;
+            case ActivityManager.PROCESS_STATE_TRANSIENT_BACKGROUND:
+                procState = "TRNB";
                 break;
             case ActivityManager.PROCESS_STATE_BACKUP:
-                procState = "BU";
+                procState = "BKUP";
                 break;
             case ActivityManager.PROCESS_STATE_HEAVY_WEIGHT:
-                procState = "HW";
+                procState = "HVY ";
                 break;
             case ActivityManager.PROCESS_STATE_SERVICE:
-                procState = "S ";
+                procState = "SVC ";
                 break;
             case ActivityManager.PROCESS_STATE_RECEIVER:
-                procState = "R ";
+                procState = "RCVR";
                 break;
             case ActivityManager.PROCESS_STATE_HOME:
-                procState = "HO";
+                procState = "HOME";
                 break;
             case ActivityManager.PROCESS_STATE_LAST_ACTIVITY:
-                procState = "LA";
+                procState = "LAST";
                 break;
             case ActivityManager.PROCESS_STATE_CACHED_ACTIVITY:
-                procState = "CA";
+                procState = "CAC ";
                 break;
             case ActivityManager.PROCESS_STATE_CACHED_ACTIVITY_CLIENT:
-                procState = "Ca";
+                procState = "CACC";
                 break;
             case ActivityManager.PROCESS_STATE_CACHED_EMPTY:
-                procState = "CE";
+                procState = "CEM ";
+                break;
+            case ActivityManager.PROCESS_STATE_NONEXISTENT:
+                procState = "NONE";
                 break;
             default:
                 procState = "??";
@@ -489,6 +485,7 @@ final class ProcessList {
         PROC_MEM_TOP,                   // ActivityManager.PROCESS_STATE_TOP_SLEEPING
         PROC_MEM_IMPORTANT,             // ActivityManager.PROCESS_STATE_IMPORTANT_FOREGROUND
         PROC_MEM_IMPORTANT,             // ActivityManager.PROCESS_STATE_IMPORTANT_BACKGROUND
+        PROC_MEM_IMPORTANT,             // ActivityManager.PROCESS_STATE_TRANSIENT_BACKGROUND
         PROC_MEM_IMPORTANT,             // ActivityManager.PROCESS_STATE_BACKUP
         PROC_MEM_IMPORTANT,             // ActivityManager.PROCESS_STATE_HEAVY_WEIGHT
         PROC_MEM_SERVICE,               // ActivityManager.PROCESS_STATE_SERVICE
@@ -509,6 +506,7 @@ final class ProcessList {
         PSS_FIRST_BACKGROUND_INTERVAL,  // ActivityManager.PROCESS_STATE_TOP_SLEEPING
         PSS_FIRST_BACKGROUND_INTERVAL,  // ActivityManager.PROCESS_STATE_IMPORTANT_FOREGROUND
         PSS_FIRST_BACKGROUND_INTERVAL,  // ActivityManager.PROCESS_STATE_IMPORTANT_BACKGROUND
+        PSS_FIRST_BACKGROUND_INTERVAL,  // ActivityManager.PROCESS_STATE_TRANSIENT_BACKGROUND
         PSS_FIRST_BACKGROUND_INTERVAL,  // ActivityManager.PROCESS_STATE_BACKUP
         PSS_FIRST_BACKGROUND_INTERVAL,  // ActivityManager.PROCESS_STATE_HEAVY_WEIGHT
         PSS_FIRST_BACKGROUND_INTERVAL,  // ActivityManager.PROCESS_STATE_SERVICE
@@ -529,6 +527,7 @@ final class ProcessList {
         PSS_SAME_IMPORTANT_INTERVAL,    // ActivityManager.PROCESS_STATE_TOP_SLEEPING
         PSS_SAME_IMPORTANT_INTERVAL,    // ActivityManager.PROCESS_STATE_IMPORTANT_FOREGROUND
         PSS_SAME_IMPORTANT_INTERVAL,    // ActivityManager.PROCESS_STATE_IMPORTANT_BACKGROUND
+        PSS_SAME_IMPORTANT_INTERVAL,    // ActivityManager.PROCESS_STATE_TRANSIENT_BACKGROUND
         PSS_SAME_IMPORTANT_INTERVAL,    // ActivityManager.PROCESS_STATE_BACKUP
         PSS_SAME_IMPORTANT_INTERVAL,    // ActivityManager.PROCESS_STATE_HEAVY_WEIGHT
         PSS_SAME_SERVICE_INTERVAL,      // ActivityManager.PROCESS_STATE_SERVICE
@@ -549,6 +548,7 @@ final class ProcessList {
         PSS_FIRST_BACKGROUND_INTERVAL,      // ActivityManager.PROCESS_STATE_TOP_SLEEPING
         PSS_TEST_FIRST_BACKGROUND_INTERVAL, // ActivityManager.PROCESS_STATE_IMPORTANT_FOREGROUND
         PSS_TEST_FIRST_BACKGROUND_INTERVAL, // ActivityManager.PROCESS_STATE_IMPORTANT_BACKGROUND
+        PSS_TEST_FIRST_BACKGROUND_INTERVAL, // ActivityManager.PROCESS_STATE_TRANSIENT_BACKGROUND
         PSS_TEST_FIRST_BACKGROUND_INTERVAL, // ActivityManager.PROCESS_STATE_BACKUP
         PSS_TEST_FIRST_BACKGROUND_INTERVAL, // ActivityManager.PROCESS_STATE_HEAVY_WEIGHT
         PSS_TEST_FIRST_BACKGROUND_INTERVAL, // ActivityManager.PROCESS_STATE_SERVICE
@@ -569,6 +569,7 @@ final class ProcessList {
         PSS_TEST_SAME_IMPORTANT_INTERVAL,   // ActivityManager.PROCESS_STATE_TOP_SLEEPING
         PSS_TEST_SAME_IMPORTANT_INTERVAL,   // ActivityManager.PROCESS_STATE_IMPORTANT_FOREGROUND
         PSS_TEST_SAME_IMPORTANT_INTERVAL,   // ActivityManager.PROCESS_STATE_IMPORTANT_BACKGROUND
+        PSS_TEST_SAME_IMPORTANT_INTERVAL,   // ActivityManager.PROCESS_STATE_TRANSIENT_BACKGROUND
         PSS_TEST_SAME_IMPORTANT_INTERVAL,   // ActivityManager.PROCESS_STATE_BACKUP
         PSS_TEST_SAME_IMPORTANT_INTERVAL,   // ActivityManager.PROCESS_STATE_HEAVY_WEIGHT
         PSS_TEST_SAME_BACKGROUND_INTERVAL,  // ActivityManager.PROCESS_STATE_SERVICE

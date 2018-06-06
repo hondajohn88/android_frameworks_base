@@ -165,7 +165,7 @@ public class SearchDialog extends Dialog {
         setContentView(com.android.internal.R.layout.search_bar);
 
         // get the view elements for local access
-        mSearchView = (SearchView) findViewById(com.android.internal.R.id.search_view);
+        mSearchView = findViewById(com.android.internal.R.id.search_view);
         mSearchView.setIconified(false);
         mSearchView.setOnCloseListener(mOnCloseListener);
         mSearchView.setOnQueryTextListener(mOnQueryChangeListener);
@@ -184,7 +184,7 @@ public class SearchDialog extends Dialog {
         mBadgeLabel = (TextView) mSearchView.findViewById(com.android.internal.R.id.search_badge);
         mSearchAutoComplete = (AutoCompleteTextView)
                 mSearchView.findViewById(com.android.internal.R.id.search_src_text);
-        mAppIcon = (ImageView) findViewById(com.android.internal.R.id.search_app_icon);
+        mAppIcon = findViewById(com.android.internal.R.id.search_app_icon);
         mSearchPlate = mSearchView.findViewById(com.android.internal.R.id.search_plate);
         mWorkingSpinner = getContext().getDrawable(com.android.internal.R.drawable.search_spinner);
         // TODO: Restore the spinner for slow suggestion lookups
@@ -505,8 +505,7 @@ public class SearchDialog extends Dialog {
 
         // We made sure the IME was displayed, so also make sure it is closed
         // when we go away.
-        InputMethodManager imm = (InputMethodManager)getContext()
-                .getSystemService(Context.INPUT_METHOD_SERVICE);
+        InputMethodManager imm = getContext().getSystemService(InputMethodManager.class);
         if (imm != null) {
             imm.hideSoftInputFromWindow(
                     getWindow().getDecorView().getWindowToken(), 0);
@@ -643,8 +642,7 @@ public class SearchDialog extends Dialog {
     public void onBackPressed() {
         // If the input method is covering the search dialog completely,
         // e.g. in landscape mode with no hard keyboard, dismiss just the input method
-        InputMethodManager imm = (InputMethodManager)getContext()
-                .getSystemService(Context.INPUT_METHOD_SERVICE);
+        InputMethodManager imm = getContext().getSystemService(InputMethodManager.class);
         if (imm != null && imm.isFullscreenMode() &&
                 imm.hideSoftInputFromWindow(getWindow().getDecorView().getWindowToken(), 0)) {
             return;

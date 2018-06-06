@@ -17,6 +17,7 @@
 package android.media.tv;
 
 import android.content.ComponentName;
+import android.content.Intent;
 import android.graphics.Rect;
 import android.media.PlaybackParams;
 import android.media.tv.DvbDeviceInfo;
@@ -41,6 +42,7 @@ import android.view.Surface;
 interface ITvInputManager {
     List<TvInputInfo> getTvInputList(int userId);
     TvInputInfo getTvInputInfo(in String inputId, int userId);
+    void updateTvInputInfo(in TvInputInfo inputInfo, int userId);
     int getTvInputState(in String inputId, int userId);
 
     List<TvContentRatingSystemInfo> getTvContentRatingSystemList(int userId);
@@ -55,7 +57,8 @@ interface ITvInputManager {
     void addBlockedRating(in String rating, int userId);
     void removeBlockedRating(in String rating, int userId);
 
-    void createSession(in ITvInputClient client, in String inputId, int seq, int userId);
+    void createSession(in ITvInputClient client, in String inputId, boolean isRecordingSession,
+            int seq, int userId);
     void releaseSession(in IBinder sessionToken, int userId);
 
     void setMainSession(in IBinder sessionToken, int userId);
@@ -77,11 +80,16 @@ interface ITvInputManager {
 
     void unblockContent(in IBinder sessionToken, in String unblockedRating, int userId);
 
+    void timeShiftPlay(in IBinder sessionToken, in Uri recordedProgramUri, int userId);
     void timeShiftPause(in IBinder sessionToken, int userId);
     void timeShiftResume(in IBinder sessionToken, int userId);
     void timeShiftSeekTo(in IBinder sessionToken, long timeMs, int userId);
     void timeShiftSetPlaybackParams(in IBinder sessionToken, in PlaybackParams params, int userId);
     void timeShiftEnablePositionTracking(in IBinder sessionToken, boolean enable, int userId);
+
+    // For the recording session
+    void startRecording(in IBinder sessionToken, in Uri programUri, int userId);
+    void stopRecording(in IBinder sessionToken, int userId);
 
     // For TV input hardware binding
     List<TvInputHardwareInfo> getHardwareList();
@@ -98,4 +106,8 @@ interface ITvInputManager {
     // For DVB device binding
     List<DvbDeviceInfo> getDvbDeviceList();
     ParcelFileDescriptor openDvbDevice(in DvbDeviceInfo info, int device);
+
+    // For preview channels and programs
+    void sendTvInputNotifyIntent(in Intent intent, int userId);
+    void requestChannelBrowsable(in Uri channelUri, int userId);
 }

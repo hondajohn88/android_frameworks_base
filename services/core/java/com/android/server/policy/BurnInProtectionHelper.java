@@ -43,7 +43,10 @@ public class BurnInProtectionHelper implements DisplayManager.DisplayListener,
     // Default value when max burnin radius is not set.
     public static final int BURN_IN_MAX_RADIUS_DEFAULT = -1;
 
-    private static final long BURNIN_PROTECTION_WAKEUP_INTERVAL_MS = TimeUnit.MINUTES.toMillis(1);
+    private static final long BURNIN_PROTECTION_FIRST_WAKEUP_INTERVAL_MS =
+            TimeUnit.MINUTES.toMillis(1);
+    private static final long BURNIN_PROTECTION_SUBSEQUENT_WAKEUP_INTERVAL_MS =
+            TimeUnit.MINUTES.toMillis(2);
     private static final long BURNIN_PROTECTION_MINIMAL_INTERVAL_MS = TimeUnit.SECONDS.toMillis(10);
 
     private static final boolean DEBUG = false;
@@ -71,6 +74,9 @@ public class BurnInProtectionHelper implements DisplayManager.DisplayListener,
     private int mLastBurnInYOffset = 0;
     /* 1 means increasing, -1 means decreasing */
     private int mYOffsetDirection = 1;
+
+    private int mAppliedBurnInXOffset = 0;
+    private int mAppliedBurnInYOffset = 0;
 
     private final AlarmManager mAlarmManager;
     private final PendingIntent mBurnInProtectionIntent;
@@ -135,10 +141,15 @@ public class BurnInProtectionHelper implements DisplayManager.DisplayListener,
             // We don't want to adjust offsets immediately after the device goes into ambient mode.
             // Instead, we want to wait until it's more likely that the user is not observing the
             // screen anymore.
+            final long interval = mFirstUpdate
+                ? BURNIN_PROTECTION_FIRST_WAKEUP_INTERVAL_MS
+                : BURNIN_PROTECTION_SUBSEQUENT_WAKEUP_INTERVAL_MS;
             if (mFirstUpdate) {
                 mFirstUpdate = false;
             } else {
                 adjustOffsets();
+                mAppliedBurnInXOffset = mLastBurnInXOffset;
+                mAppliedBurnInYOffset = mLastBurnInYOffset;
                 mDisplayManagerInternal.setDisplayOffsets(mDisplay.getDisplayId(),
                         mLastBurnInXOffset, mLastBurnInYOffset);
             }
@@ -151,8 +162,7 @@ public class BurnInProtectionHelper implements DisplayManager.DisplayListener,
             // Next adjustment at least ten seconds in the future.
             long nextWall = nowWall + BURNIN_PROTECTION_MINIMAL_INTERVAL_MS;
             // And aligned to the minute.
-            nextWall = nextWall - nextWall % BURNIN_PROTECTION_WAKEUP_INTERVAL_MS
-                    + BURNIN_PROTECTION_WAKEUP_INTERVAL_MS;
+            nextWall = (nextWall - (nextWall % interval)) + interval;
             // Use elapsed real time that is adjusted to full minute on wall clock.
             final long nextElapsed = nowElapsed + (nextWall - nowWall);
             if (DEBUG) {
@@ -258,6 +268,8 @@ public class BurnInProtectionHelper implements DisplayManager.DisplayListener,
     @Override
     public void onAnimationEnd(Animator animator) {
         if (animator == mCenteringAnimator && !mBurnInProtectionActive) {
+            mAppliedBurnInXOffset = 0;
+            mAppliedBurnInYOffset = 0;
             // No matter how the animation finishes, we want to zero the offsets.
             mDisplayManagerInternal.setDisplayOffsets(mDisplay.getDisplayId(), 0, 0);
         }
@@ -276,7 +288,7 @@ public class BurnInProtectionHelper implements DisplayManager.DisplayListener,
         if (!mBurnInProtectionActive) {
             final float value = (Float) valueAnimator.getAnimatedValue();
             mDisplayManagerInternal.setDisplayOffsets(mDisplay.getDisplayId(),
-                    (int) (mLastBurnInXOffset * value), (int) (mLastBurnInYOffset * value));
+                    (int) (mAppliedBurnInXOffset * value), (int) (mAppliedBurnInYOffset * value));
         }
     }
 }

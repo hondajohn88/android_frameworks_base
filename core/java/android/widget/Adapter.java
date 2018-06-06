@@ -16,6 +16,7 @@
 
 package android.widget;
 
+import android.annotation.Nullable;
 import android.database.DataSetObserver;
 import android.view.View;
 import android.view.ViewGroup;
@@ -130,8 +131,7 @@ public interface Adapter {
      * type of View for all items, this method should return 1.
      * </p>
      * <p>
-     * This method will only be called when when the adapter is set on the
-     * the {@link AdapterView}.
+     * This method will only be called when the adapter is set on the {@link AdapterView}.
      * </p>
      * 
      * @return The number of types of Views that will be created by this adapter
@@ -147,5 +147,22 @@ public interface Adapter {
       * adapters might want a different behavior.
       */
      boolean isEmpty();
-}
 
+    /**
+     * Gets a string representation of the adapter data that can help
+     * {@link android.service.autofill.AutofillService} autofill the view backed by the adapter.
+     *
+     * <p>
+     * It should only be set (i.e., non-{@code null} if the values do not represent PII
+     * (Personally Identifiable Information - sensitive data such as email addresses,
+     * credit card numbers, passwords, etc...). For
+     * example, it's ok to return a list of month names, but not a list of usernames. A good rule of
+     * thumb is that if the adapter data comes from static resources, such data is not PII - see
+     * {@link android.view.ViewStructure#setDataIsSensitive(boolean)} for more info.
+     *
+     * @return {@code null} by default, unless implementations override it.
+     */
+    default @Nullable CharSequence[] getAutofillOptions() {
+        return null;
+    }
+}

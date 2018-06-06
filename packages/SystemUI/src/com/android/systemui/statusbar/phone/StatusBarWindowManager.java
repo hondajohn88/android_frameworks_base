@@ -16,20 +16,26 @@
 
 package com.android.systemui.statusbar.phone;
 
+import android.app.ActivityManager;
+import android.app.IActivityManager;
 import android.content.Context;
 import android.content.pm.ActivityInfo;
 import android.content.res.Resources;
 import android.graphics.PixelFormat;
+import android.os.Binder;
+import android.os.RemoteException;
 import android.os.SystemProperties;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.Window;
 import android.view.WindowManager;
+import android.view.WindowManager.LayoutParams;
 
 import com.android.keyguard.R;
+import com.android.systemui.Dumpable;
 import com.android.systemui.keyguard.KeyguardViewMediator;
-import com.android.systemui.statusbar.BaseStatusBar;
+import com.android.systemui.statusbar.RemoteInputController;
 import com.android.systemui.statusbar.StatusBarState;
 
 import java.io.FileDescriptor;
@@ -39,22 +45,28 @@ import java.lang.reflect.Field;
 /**
  * Encapsulates all logic for the status bar window state management.
  */
-public class StatusBarWindowManager {
+public class StatusBarWindowManager implements RemoteInputController.Callback, Dumpable {
+
+    private static final String TAG = "StatusBarWindowManager";
 
     private final Context mContext;
     private final WindowManager mWindowManager;
+    private final IActivityManager mActivityManager;
     private View mStatusBarView;
     private WindowManager.LayoutParams mLp;
     private WindowManager.LayoutParams mLpChanged;
+    private boolean mHasTopUi;
+    private boolean mHasTopUiChanged;
     private int mBarHeight;
     private final boolean mKeyguardScreenRotation;
-    private final float mScreenBrightnessDoze;
-
+    private float mScreenBrightnessDoze;
     private final State mCurrentState = new State();
+    private OtherwisedCollapsedListener mListener;
 
     public StatusBarWindowManager(Context context) {
         mContext = context;
         mWindowManager = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
+        mActivityManager = ActivityManager.getService();
         mKeyguardScreenRotation = shouldEnableKeyguardScreenRotation();
         mScreenBrightnessDoze = mContext.getResources().getInteger(
                 com.android.internal.R.integer.config_screenBrightnessDoze) / 255f;
@@ -87,7 +99,7 @@ public class StatusBarWindowManager {
                         | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH
                         | WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS,
                 PixelFormat.TRANSLUCENT);
-        mLp.flags |= WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
+        mLp.token = new Binder();
         mLp.gravity = Gravity.TOP;
         mLp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE;
         mLp.setTitle("StatusBar");
@@ -99,18 +111,38 @@ public class StatusBarWindowManager {
         mLpChanged.copyFrom(mLp);
     }
 
+    public void setDozeScreenBrightness(int value) {
+        mScreenBrightnessDoze = value / 255f;
+    }
+
+    public void setKeyguardDark(boolean dark) {
+        int vis = mStatusBarView.getSystemUiVisibility();
+        if (dark) {
+            vis = vis | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+            vis = vis | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+        } else {
+            vis = vis & ~View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+            vis = vis & ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+        }
+        mStatusBarView.setSystemUiVisibility(vis);
+    }
+
     private void applyKeyguardFlags(State state) {
         if (state.keyguardShowing) {
-            mLpChanged.flags |= WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER;
             mLpChanged.privateFlags |= WindowManager.LayoutParams.PRIVATE_FLAG_KEYGUARD;
         } else {
-            mLpChanged.flags &= ~WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER;
             mLpChanged.privateFlags &= ~WindowManager.LayoutParams.PRIVATE_FLAG_KEYGUARD;
+        }
+
+        if (state.keyguardShowing && !state.backdropShowing && !state.dozing) {
+            mLpChanged.flags |= WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER;
+        } else {
+            mLpChanged.flags &= ~WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER;
         }
     }
 
     private void adjustScreenOrientation(State state) {
-        if (state.isKeyguardShowingAndNotOccluded()) {
+        if (state.isKeyguardShowingAndNotOccluded() || state.dozing) {
             if (mKeyguardScreenRotation) {
                 mLpChanged.screenOrientation = ActivityInfo.SCREEN_ORIENTATION_USER;
             } else {
@@ -123,7 +155,8 @@ public class StatusBarWindowManager {
 
     private void applyFocusableFlag(State state) {
         boolean panelFocusable = state.statusBarFocusable && state.panelExpanded;
-        if (state.keyguardShowing && state.keyguardNeedsInput && state.bouncerShowing) {
+        if (state.bouncerShowing && (state.keyguardOccluded || state.keyguardNeedsInput)
+                || StatusBar.ENABLE_REMOTE_INPUT && state.remoteInputActive) {
             mLpChanged.flags &= ~WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
             mLpChanged.flags &= ~WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM;
         } else if (state.isKeyguardShowingAndNotOccluded() || panelFocusable) {
@@ -133,10 +166,16 @@ public class StatusBarWindowManager {
             mLpChanged.flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
             mLpChanged.flags &= ~WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM;
         }
+
+        mLpChanged.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE;
     }
 
     private void applyHeight(State state) {
         boolean expanded = isExpanded(state);
+        if (state.forcePluginOpen) {
+            mListener.setWouldOtherwiseCollapse(expanded);
+            expanded = true;
+        }
         if (expanded) {
             mLpChanged.height = ViewGroup.LayoutParams.MATCH_PARENT;
         } else {
@@ -147,11 +186,15 @@ public class StatusBarWindowManager {
     private boolean isExpanded(State state) {
         return !state.forceCollapsed && (state.isKeyguardShowingAndNotOccluded()
                 || state.panelVisible || state.keyguardFadingAway || state.bouncerShowing
-                || state.headsUpShowing);
+                || state.headsUpShowing || state.scrimsVisible);
     }
 
     private void applyFitsSystemWindows(State state) {
-        mStatusBarView.setFitsSystemWindows(!state.isKeyguardShowingAndNotOccluded());
+        boolean fitsSystemWindows = !state.isKeyguardShowingAndNotOccluded();
+        if (mStatusBarView.getFitsSystemWindows() != fitsSystemWindows) {
+            mStatusBarView.setFitsSystemWindows(fitsSystemWindows);
+            mStatusBarView.requestApplyInsets();
+        }
     }
 
     private void applyUserActivityTimeout(State state) {
@@ -167,7 +210,7 @@ public class StatusBarWindowManager {
     private void applyInputFeatures(State state) {
         if (state.isKeyguardShowingAndNotOccluded()
                 && state.statusBarState == StatusBarState.KEYGUARD
-                && !state.qsExpanded) {
+                && !state.qsExpanded && !state.forceUserActivity) {
             mLpChanged.inputFeatures |=
                     WindowManager.LayoutParams.INPUT_FEATURE_DISABLE_USER_ACTIVITY;
         } else {
@@ -187,8 +230,18 @@ public class StatusBarWindowManager {
         applyFitsSystemWindows(state);
         applyModalFlag(state);
         applyBrightness(state);
+        applyHasTopUi(state);
+        applySleepToken(state);
         if (mLp.copyFrom(mLpChanged) != 0) {
             mWindowManager.updateViewLayout(mStatusBarView, mLp);
+        }
+        if (mHasTopUi != mHasTopUiChanged) {
+            try {
+                mActivityManager.setHasTopUi(mHasTopUiChanged);
+            } catch (RemoteException e) {
+                Log.e(TAG, "Failed to call setHasTopUi", e);
+            }
+            mHasTopUi = mHasTopUiChanged;
         }
     }
 
@@ -215,6 +268,18 @@ public class StatusBarWindowManager {
             mLpChanged.screenBrightness = mScreenBrightnessDoze;
         } else {
             mLpChanged.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
+        }
+    }
+
+    private void applyHasTopUi(State state) {
+        mHasTopUiChanged = isExpanded(state);
+    }
+
+    private void applySleepToken(State state) {
+        if (state.dozing) {
+            mLpChanged.privateFlags |= LayoutParams.PRIVATE_FLAG_ACQUIRES_SLEEP_TOKEN;
+        } else {
+            mLpChanged.privateFlags &= ~LayoutParams.PRIVATE_FLAG_ACQUIRES_SLEEP_TOKEN;
         }
     }
 
@@ -249,6 +314,11 @@ public class StatusBarWindowManager {
         apply(mCurrentState);
     }
 
+    public void setBackdropShowing(boolean showing) {
+        mCurrentState.backdropShowing = showing;
+        apply(mCurrentState);
+    }
+
     public void setKeyguardFadingAway(boolean keyguardFadingAway) {
         mCurrentState.keyguardFadingAway = keyguardFadingAway;
         apply(mCurrentState);
@@ -256,6 +326,16 @@ public class StatusBarWindowManager {
 
     public void setQsExpanded(boolean expanded) {
         mCurrentState.qsExpanded = expanded;
+        apply(mCurrentState);
+    }
+
+    public void setForceUserActivity(boolean forceUserActivity) {
+        mCurrentState.forceUserActivity = forceUserActivity;
+        apply(mCurrentState);
+    }
+
+    public void setScrimsVisible(boolean scrimsVisible) {
+        mCurrentState.scrimsVisible = scrimsVisible;
         apply(mCurrentState);
     }
 
@@ -292,6 +372,12 @@ public class StatusBarWindowManager {
         apply(mCurrentState);
     }
 
+    @Override
+    public void onRemoteInputActive(boolean remoteInputActive) {
+        mCurrentState.remoteInputActive = remoteInputActive;
+        apply(mCurrentState);
+    }
+
     /**
      * Set whether the screen brightness is forced to the value we use for doze mode by the status
      * bar window.
@@ -301,9 +387,32 @@ public class StatusBarWindowManager {
         apply(mCurrentState);
     }
 
+    public void setDozing(boolean dozing) {
+        mCurrentState.dozing = dozing;
+        apply(mCurrentState);
+    }
+
+    public void setBarHeight(int barHeight) {
+        mBarHeight = barHeight;
+        apply(mCurrentState);
+    }
+
+    public void setForcePluginOpen(boolean forcePluginOpen) {
+        mCurrentState.forcePluginOpen = forcePluginOpen;
+        apply(mCurrentState);
+    }
+
+    public void setStateListener(OtherwisedCollapsedListener listener) {
+        mListener = listener;
+    }
+
     public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
         pw.println("StatusBarWindowManager state:");
         pw.println(mCurrentState);
+    }
+
+    public boolean isShowingWallpaper() {
+        return !mCurrentState.backdropShowing;
     }
 
     private static class State {
@@ -320,11 +429,18 @@ public class StatusBarWindowManager {
         boolean forceStatusBarVisible;
         boolean forceCollapsed;
         boolean forceDozeBrightness;
+        boolean forceUserActivity;
+        boolean backdropShowing;
 
         /**
-         * The {@link BaseStatusBar} state from the status bar.
+         * The {@link StatusBar} state from the status bar.
          */
         int statusBarState;
+
+        boolean remoteInputActive;
+        boolean forcePluginOpen;
+        boolean dozing;
+        boolean scrimsVisible;
 
         private boolean isKeyguardShowingAndNotOccluded() {
             return keyguardShowing && !keyguardOccluded;
@@ -355,5 +471,14 @@ public class StatusBarWindowManager {
 
             return result.toString();
         }
+    }
+
+    /**
+     * Custom listener to pipe data back to plugins about whether or not the status bar would be
+     * collapsed if not for the plugin.
+     * TODO: Find cleaner way to do this.
+     */
+    public interface OtherwisedCollapsedListener {
+        void setWouldOtherwiseCollapse(boolean otherwiseCollapse);
     }
 }

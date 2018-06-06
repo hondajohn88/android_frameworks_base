@@ -30,10 +30,19 @@ abstract class SettingBase {
         mPermissionsState = new PermissionsState();
     }
 
-    SettingBase(SettingBase base) {
-        pkgFlags = base.pkgFlags;
-        pkgPrivateFlags = base.pkgPrivateFlags;
-        mPermissionsState = new PermissionsState(base.mPermissionsState);
+    SettingBase(SettingBase orig) {
+        mPermissionsState = new PermissionsState();
+        doCopy(orig);
+    }
+
+    public void copyFrom(SettingBase orig) {
+        doCopy(orig);
+    }
+
+    private void doCopy(SettingBase orig) {
+        pkgFlags = orig.pkgFlags;
+        pkgPrivateFlags = orig.pkgPrivateFlags;
+        mPermissionsState.copyFrom(orig.mPermissionsState);
     }
 
     public PermissionsState getPermissionsState() {
@@ -49,6 +58,7 @@ abstract class SettingBase {
     void setPrivateFlags(int pkgPrivateFlags) {
         this.pkgPrivateFlags = pkgPrivateFlags
                 & (ApplicationInfo.PRIVATE_FLAG_PRIVILEGED
-                        | ApplicationInfo.PRIVATE_FLAG_FORWARD_LOCK);
+                | ApplicationInfo.PRIVATE_FLAG_FORWARD_LOCK
+                | ApplicationInfo.PRIVATE_FLAG_REQUIRED_FOR_SYSTEM_USER);
     }
 }

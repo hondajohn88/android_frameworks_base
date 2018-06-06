@@ -97,13 +97,15 @@ import javax.net.ssl.SSLEngine;
  *
  * SSLContext sslContext = SSLContext.getInstance("TLS");
  * sslContext.init(
- *         new KeyManager[] &#123;pskKeyManager&#125;,
+ *         new KeyManager[] { pskKeyManager },
  *         new TrustManager[0], // No TrustManagers needed for TLS-PSK
  *         null // Use the default source of entropy
  *         );
  *
  * SSLSocket sslSocket = (SSLSocket) sslContext.getSocketFactory().createSocket(...);
  * }</pre>
+ *
+ * @removed This class is removed because it does not work with TLS 1.3.
  */
 public abstract class PskKeyManager implements PSKKeyManager {
     // IMPLEMENTATION DETAILS: This class exists only because the default implemenetation of the

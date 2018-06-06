@@ -27,7 +27,7 @@
 #include <utils/threads.h>
 
 #include "jni.h"
-#include "JNIHelp.h"
+#include <nativehelper/JNIHelp.h>
 #include "android_runtime/AndroidRuntime.h"
 
 
@@ -36,7 +36,7 @@
 using namespace android;
 
 
-#define FIR_COEF(coef) (short)(0x10000 * coef)
+#define FIR_COEF(coef) (short)(0x10000 * (coef))
 static const short fir21[] = {
     FIR_COEF(-0.006965742326),
     FIR_COEF(-0.008428945737),
@@ -107,7 +107,7 @@ static void android_media_ResampleInputStream_fir21(JNIEnv *env, jclass /* clazz
 
 // ----------------------------------------------------------------------------
 
-static JNINativeMethod gMethods[] = {
+static const JNINativeMethod gMethods[] = {
     {"fir21", "([BI[BII)V", (void*)android_media_ResampleInputStream_fir21},
 };
 

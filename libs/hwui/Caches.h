@@ -14,20 +14,13 @@
  * limitations under the License.
  */
 
-#ifndef ANDROID_HWUI_CACHES_H
-#define ANDROID_HWUI_CACHES_H
+#pragma once
 
-#ifndef LOG_TAG
-    #define LOG_TAG "OpenGLRenderer"
-#endif
-
-
-#include "AssetAtlas.h"
-#include "Dither.h"
+#include "DeviceInfo.h"
 #include "Extensions.h"
 #include "FboCache.h"
+#include "GammaFontRenderer.h"
 #include "GradientCache.h"
-#include "LayerCache.h"
 #include "PatchCache.h"
 #include "ProgramCache.h"
 #include "PathCache.h"
@@ -47,17 +40,15 @@
 #include <GLES3/gl3.h>
 
 #include <utils/KeyedVector.h>
-#include <utils/Singleton.h>
-#include <utils/Vector.h>
 
 #include <cutils/compiler.h>
 
 #include <SkPath.h>
 
+#include <vector>
+
 namespace android {
 namespace uirenderer {
-
-class GammaFontRenderer;
 
 ///////////////////////////////////////////////////////////////////////////////
 // Caches
@@ -83,20 +74,22 @@ public:
         return sInstance != nullptr;
     }
 private:
-    Caches(RenderState& renderState);
+    explicit Caches(RenderState& renderState);
     static Caches* sInstance;
 
 public:
-    enum FlushMode {
-        kFlushMode_Layers = 0,
-        kFlushMode_Moderate,
-        kFlushMode_Full
+    enum class FlushMode {
+        Layers = 0,
+        Moderate,
+        Full
     };
 
     /**
      * Initialize caches.
      */
     bool init();
+
+    bool isInitialized() { return mInitialized; }
 
     /**
      * Flush the cache.
@@ -107,7 +100,7 @@ public:
 
     /**
      * Destroys all resources associated with this cache. This should
-     * be called after a flush(kFlushMode_Full).
+     * be called after a flush(FlushMode::Full).
      */
     void terminate();
 
@@ -128,10 +121,6 @@ public:
      */
     void deleteLayerDeferred(Layer* layer);
 
-
-    void startTiling(GLuint x, GLuint y, GLuint width, GLuint height, bool discard);
-    void endTiling();
-
     /**
      * Returns the mesh used to draw regions. Calling this method will
      * bind a VBO of type GL_ELEMENT_ARRAY_BUFFER that contains the
@@ -140,25 +129,25 @@ public:
     TextureVertex* getRegionMesh();
 
     /**
+     * Returns the GL RGBA internal format to use for the current device
+     * If the device supports linear blending and needSRGB is true,
+     * this function returns GL_SRGB8_ALPHA8, otherwise it returns GL_RGBA
+     */
+    constexpr GLint rgbaInternalFormat(bool needSRGB = true) const {
+        return extensions().hasLinearBlending() && needSRGB ? GL_SRGB8_ALPHA8 : GL_RGBA;
+    }
+
+    /**
      * Displays the memory usage of each cache and the total sum.
      */
     void dumpMemoryUsage();
     void dumpMemoryUsage(String8& log);
 
-    bool hasRegisteredFunctors();
-    void registerFunctors(uint32_t functorCount);
-    void unregisterFunctors(uint32_t functorCount);
-
     // Misc
     GLint maxTextureSize;
 
-private:
-    // Declared before gradientCache and programCache which need this to initialize.
-    // TODO: cleanup / move elsewhere
-    Extensions mExtensions;
 public:
     TextureCache textureCache;
-    LayerCache layerCache;
     RenderBufferCache renderBufferCache;
     GradientCache gradientCache;
     PatchCache patchCache;
@@ -168,11 +157,9 @@ public:
     TextDropShadowCache dropShadowCache;
     FboCache fboCache;
 
-    GammaFontRenderer* fontRenderer;
+    GammaFontRenderer fontRenderer;
 
     TaskManager tasks;
-
-    Dither dither;
 
     bool gpuPixelBuffersEnabled;
 
@@ -184,14 +171,12 @@ public:
     void setProgram(const ProgramDescription& description);
     void setProgram(Program* program);
 
-    Extensions& extensions() { return mExtensions; }
+    const Extensions& extensions() const { return DeviceInfo::get()->extensions(); }
     Program& program() { return *mProgram; }
     PixelBufferState& pixelBufferState() { return *mPixelBufferState; }
     TextureState& textureState() { return *mTextureState; }
 
 private:
-
-    void initFont();
     void initExtensions();
     void initConstraints();
     void initStaticProperties();
@@ -206,11 +191,9 @@ private:
     std::unique_ptr<TextureVertex[]> mRegionMesh;
 
     mutable Mutex mGarbageLock;
-    Vector<Layer*> mLayerGarbage;
+    std::vector<Layer*> mLayerGarbage;
 
     bool mInitialized;
-
-    uint32_t mFunctorsCount;
 
     // TODO: move below to RenderState
     PixelBufferState* mPixelBufferState = nullptr;
@@ -221,5 +204,3 @@ private:
 
 }; // namespace uirenderer
 }; // namespace android
-
-#endif // ANDROID_HWUI_CACHES_H

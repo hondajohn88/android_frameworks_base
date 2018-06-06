@@ -17,32 +17,29 @@
 package com.android.systemui.statusbar.phone;
 
 import android.content.Context;
-import android.content.res.Resources;
-import android.database.ContentObserver;
-import android.net.Uri;
-import android.os.Handler;
-import android.os.UserHandle;
-import android.provider.Settings;
 import android.util.AttributeSet;
 import android.util.EventLog;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityEvent;
-import android.widget.TextView;
 
+import com.android.systemui.BatteryMeterView;
 import com.android.systemui.DejankUtils;
+import com.android.systemui.Dependency;
 import com.android.systemui.EventLogTags;
 import com.android.systemui.R;
+import com.android.systemui.statusbar.policy.DarkIconDispatcher;
+import com.android.systemui.statusbar.policy.DarkIconDispatcher.DarkReceiver;
 
 public class PhoneStatusBarView extends PanelBar {
     private static final String TAG = "PhoneStatusBarView";
-    private static final boolean DEBUG = PhoneStatusBar.DEBUG;
+    private static final boolean DEBUG = StatusBar.DEBUG;
     private static final boolean DEBUG_GESTURES = false;
 
-    PhoneStatusBar mBar;
+    StatusBar mBar;
 
-    PanelView mLastFullyOpenedPanel = null;
-    PanelView mNotificationPanel;
+    boolean mIsFullyOpenedPanel = false;
     private final PhoneStatusBarTransitions mBarTransitions;
     private ScrimController mScrimController;
     private float mMinFraction;
@@ -50,25 +47,16 @@ public class PhoneStatusBarView extends PanelBar {
     private Runnable mHideExpandedRunnable = new Runnable() {
         @Override
         public void run() {
-            mBar.makeExpandedInvisible();
+            if (mPanelFraction == 0.0f) {
+                mBar.makeExpandedInvisible();
+            }
         }
     };
-
-    private int mShowCarrierLabel;
-    private TextView mCarrierLabel;
-
-    private ContentObserver mObserver = new ContentObserver(new Handler()) {
-        public void onChange(boolean selfChange, Uri uri) {
-            showStatusBarCarrier();
-            updateVisibilities();
-        }
-    };
+    private DarkReceiver mBattery;
 
     public PhoneStatusBarView(Context context, AttributeSet attrs) {
         super(context, attrs);
-        showStatusBarCarrier();
 
-        Resources res = getContext().getResources();
         mBarTransitions = new PhoneStatusBarTransitions(this);
     }
 
@@ -76,7 +64,7 @@ public class PhoneStatusBarView extends PanelBar {
         return mBarTransitions;
     }
 
-    public void setBar(PhoneStatusBar bar) {
+    public void setBar(StatusBar bar) {
         mBar = bar;
     }
 
@@ -84,40 +72,27 @@ public class PhoneStatusBarView extends PanelBar {
         mScrimController = scrimController;
     }
 
-    private void showStatusBarCarrier() {
-        mShowCarrierLabel = Settings.System.getIntForUser(getContext().getContentResolver(),
-                Settings.System.STATUS_BAR_SHOW_CARRIER, 1, UserHandle.USER_CURRENT);
-    }
-
     @Override
     public void onFinishInflate() {
-        mCarrierLabel = (TextView) findViewById(R.id.statusbar_carrier_text);
-        updateVisibilities();
         mBarTransitions.init();
-    }
-
-    private void updateVisibilities() {
-        if (mCarrierLabel != null) {
-            if (mShowCarrierLabel == 2) {
-                mCarrierLabel.setVisibility(View.VISIBLE);
-            } else if (mShowCarrierLabel == 3) {
-                mCarrierLabel.setVisibility(View.VISIBLE);
-            } else {
-                mCarrierLabel.setVisibility(View.GONE);
-            }
-        }
+        mBattery = findViewById(R.id.battery);
     }
 
     @Override
-    public void addPanel(PanelView pv) {
-        super.addPanel(pv);
-        if (pv.getId() == R.id.notification_panel) {
-            mNotificationPanel = pv;
-        }
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        // Always have Battery meters in the status bar observe the dark/light modes.
+        Dependency.get(DarkIconDispatcher.class).addDarkReceiver(mBattery);
     }
 
     @Override
-    public boolean panelsEnabled() {
+    protected void onDetachedFromWindow() {
+        super.onDetachedFromWindow();
+        Dependency.get(DarkIconDispatcher.class).removeDarkReceiver(mBattery);
+    }
+
+    @Override
+    public boolean panelEnabled() {
         return mBar.panelsEnabled();
     }
 
@@ -137,38 +112,30 @@ public class PhoneStatusBarView extends PanelBar {
     }
 
     @Override
-    public PanelView selectPanelForTouch(MotionEvent touch) {
-        // No double swiping. If either panel is open, nothing else can be pulled down.
-        return mNotificationPanel.getExpandedHeight() > 0
-                ? null
-                : mNotificationPanel;
-    }
-
-    @Override
     public void onPanelPeeked() {
         super.onPanelPeeked();
         mBar.makeExpandedVisible(false);
     }
 
     @Override
-    public void onAllPanelsCollapsed() {
-        super.onAllPanelsCollapsed();
+    public void onPanelCollapsed() {
+        super.onPanelCollapsed();
         // Close the status bar in the next frame so we can show the end of the animation.
-        DejankUtils.postAfterTraversal(mHideExpandedRunnable);
-        mLastFullyOpenedPanel = null;
+        post(mHideExpandedRunnable);
+        mIsFullyOpenedPanel = false;
     }
 
     public void removePendingHideExpandedRunnables() {
-        DejankUtils.removeCallbacks(mHideExpandedRunnable);
+        removeCallbacks(mHideExpandedRunnable);
     }
 
     @Override
-    public void onPanelFullyOpened(PanelView openPanel) {
-        super.onPanelFullyOpened(openPanel);
-        if (openPanel != mLastFullyOpenedPanel) {
-            openPanel.sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED);
+    public void onPanelFullyOpened() {
+        super.onPanelFullyOpened();
+        if (!mIsFullyOpenedPanel) {
+            mPanel.sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED);
         }
-        mLastFullyOpenedPanel = openPanel;
+        mIsFullyOpenedPanel = true;
     }
 
     @Override
@@ -187,10 +154,11 @@ public class PhoneStatusBarView extends PanelBar {
     }
 
     @Override
-    public void onTrackingStarted(PanelView panel) {
-        super.onTrackingStarted(panel);
+    public void onTrackingStarted() {
+        super.onTrackingStarted();
         mBar.onTrackingStarted();
         mScrimController.onTrackingStarted();
+        removePendingHideExpandedRunnables();
     }
 
     @Override
@@ -200,8 +168,8 @@ public class PhoneStatusBarView extends PanelBar {
     }
 
     @Override
-    public void onTrackingStopped(PanelView panel, boolean expand) {
-        super.onTrackingStopped(panel, expand);
+    public void onTrackingStopped(boolean expand) {
+        super.onTrackingStopped(expand);
         mBar.onTrackingStopped(expand);
     }
 
@@ -225,26 +193,25 @@ public class PhoneStatusBarView extends PanelBar {
     }
 
     @Override
-    public void panelExpansionChanged(PanelView panel, float frac, boolean expanded) {
-        super.panelExpansionChanged(panel, frac, expanded);
+    public void panelExpansionChanged(float frac, boolean expanded) {
+        super.panelExpansionChanged(frac, expanded);
         mPanelFraction = frac;
         updateScrimFraction();
     }
 
     private void updateScrimFraction() {
-        float scrimFraction = Math.max(mPanelFraction - mMinFraction / (1.0f - mMinFraction), 0);
+        float scrimFraction = mPanelFraction;
+        if (mMinFraction < 1.0f) {
+            scrimFraction = Math.max((mPanelFraction - mMinFraction) / (1.0f - mMinFraction),
+                    0);
+        }
         mScrimController.setPanelExpansion(scrimFraction);
     }
 
-    @Override
-    public void onAttachedToWindow() {
-        super.onAttachedToWindow();
-        getContext().getContentResolver().registerContentObserver(Settings.System.getUriFor(
-                "status_bar_show_carrier"), false, mObserver);
-    }
-
-    @Override
-    public void onDetachedFromWindow() {
-        super.onDetachedFromWindow();
+    public void onDensityOrFontScaleChanged() {
+        ViewGroup.LayoutParams layoutParams = getLayoutParams();
+        layoutParams.height = getResources().getDimensionPixelSize(
+                R.dimen.status_bar_height);
+        setLayoutParams(layoutParams);
     }
 }

@@ -16,11 +16,13 @@
 
 package com.android.server.pm;
 
+import android.content.pm.PackageManager;
 import android.os.UserHandle;
 import android.util.ArrayMap;
 import android.util.ArraySet;
 
 import android.util.SparseArray;
+import android.util.SparseBooleanArray;
 import com.android.internal.util.ArrayUtils;
 
 import java.util.ArrayList;
@@ -63,6 +65,8 @@ public final class PermissionsState {
     private ArrayMap<String, PermissionData> mPermissions;
 
     private int[] mGlobalGids = NO_GIDS;
+
+    private SparseBooleanArray mPermissionReviewRequired;
 
     public PermissionsState() {
         /* do nothing */
@@ -116,6 +120,58 @@ public final class PermissionsState {
             mGlobalGids = Arrays.copyOf(other.mGlobalGids,
                     other.mGlobalGids.length);
         }
+
+        if (mPermissionReviewRequired != null) {
+            if (other.mPermissionReviewRequired == null) {
+                mPermissionReviewRequired = null;
+            } else {
+                mPermissionReviewRequired.clear();
+            }
+        }
+        if (other.mPermissionReviewRequired != null) {
+            if (mPermissionReviewRequired == null) {
+                mPermissionReviewRequired = new SparseBooleanArray();
+            }
+            final int userCount = other.mPermissionReviewRequired.size();
+            for (int i = 0; i < userCount; i++) {
+                final boolean reviewRequired = other.mPermissionReviewRequired.valueAt(i);
+                mPermissionReviewRequired.put(i, reviewRequired);
+            }
+        }
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (this == obj) {
+            return true;
+        }
+        if (obj == null) {
+            return false;
+        }
+        if (getClass() != obj.getClass()) {
+            return false;
+        }
+        final PermissionsState other = (PermissionsState) obj;
+
+        if (mPermissions == null) {
+            if (other.mPermissions != null) {
+                return false;
+            }
+        } else if (!mPermissions.equals(other.mPermissions)) {
+            return false;
+        }
+        if (mPermissionReviewRequired == null) {
+            if (other.mPermissionReviewRequired != null) {
+                return false;
+            }
+        } else if (!mPermissionReviewRequired.equals(other.mPermissionReviewRequired)) {
+            return false;
+        }
+        return Arrays.equals(mGlobalGids, other.mGlobalGids);
+    }
+
+    public boolean isPermissionReviewRequired(int userId) {
+        return mPermissionReviewRequired != null && mPermissionReviewRequired.get(userId);
     }
 
     /**
@@ -248,7 +304,7 @@ public final class PermissionsState {
             return Collections.emptySet();
         }
 
-        Set<String> permissions = new ArraySet<>();
+        Set<String> permissions = new ArraySet<>(mPermissions.size());
 
         final int permissionCount = mPermissions.size();
         for (int i = 0; i < permissionCount; i++) {
@@ -256,6 +312,7 @@ public final class PermissionsState {
 
             if (hasInstallPermission(permission)) {
                 permissions.add(permission);
+                continue;
             }
 
             if (userId != UserHandle.USER_ALL) {
@@ -357,7 +414,40 @@ public final class PermissionsState {
             permissionData = ensurePermissionData(permission);
         }
 
-        return permissionData.updateFlags(userId, flagMask, flagValues);
+        final int oldFlags = permissionData.getFlags(userId);
+
+        final boolean updated = permissionData.updateFlags(userId, flagMask, flagValues);
+        if (updated) {
+            final int newFlags = permissionData.getFlags(userId);
+            if ((oldFlags & PackageManager.FLAG_PERMISSION_REVIEW_REQUIRED) == 0
+                    && (newFlags & PackageManager.FLAG_PERMISSION_REVIEW_REQUIRED) != 0) {
+                if (mPermissionReviewRequired == null) {
+                    mPermissionReviewRequired = new SparseBooleanArray();
+                }
+                mPermissionReviewRequired.put(userId, true);
+            } else if ((oldFlags & PackageManager.FLAG_PERMISSION_REVIEW_REQUIRED) != 0
+                    && (newFlags & PackageManager.FLAG_PERMISSION_REVIEW_REQUIRED) == 0) {
+                if (mPermissionReviewRequired != null && !hasPermissionRequiringReview(userId)) {
+                    mPermissionReviewRequired.delete(userId);
+                    if (mPermissionReviewRequired.size() <= 0) {
+                        mPermissionReviewRequired = null;
+                    }
+                }
+            }
+        }
+        return updated;
+    }
+
+    private boolean hasPermissionRequiringReview(int userId) {
+        final int permissionCount = mPermissions.size();
+        for (int i = 0; i < permissionCount; i++) {
+            final PermissionData permission = mPermissions.valueAt(i);
+            if ((permission.getFlags(userId)
+                    & PackageManager.FLAG_PERMISSION_REVIEW_REQUIRED) != 0) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public boolean updatePermissionFlagsForAllPermissions(
@@ -430,6 +520,7 @@ public final class PermissionsState {
     public void reset() {
         mGlobalGids = NO_GIDS;
         mPermissions = null;
+        mPermissionReviewRequired = null;
     }
 
     private PermissionState getPermissionState(String name, int userId) {
@@ -517,6 +608,7 @@ public final class PermissionsState {
         return PERMISSION_OPERATION_SUCCESS;
     }
 
+    // TODO: fix this to use arraycopy and append all ints in one go
     private static int[] appendInts(int[] current, int[] added) {
         if (current != null && added != null) {
             for (int guid : added) {

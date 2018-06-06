@@ -23,7 +23,7 @@ public:
 
     static jlong createBlur(JNIEnv* env, jobject, jfloat radius, jint blurStyle) {
         SkScalar sigma = SkBlurMask::ConvertRadiusToSigma(radius);
-        SkMaskFilter* filter = SkBlurMaskFilter::Create((SkBlurStyle)blurStyle, sigma);
+        SkMaskFilter* filter = SkBlurMaskFilter::Make((SkBlurStyle)blurStyle, sigma).release();
         ThrowIAE_IfNull(env, filter);
         return reinterpret_cast<jlong>(filter);
     }
@@ -38,8 +38,8 @@ public:
         }
 
         SkScalar sigma = SkBlurMask::ConvertRadiusToSigma(radius);
-        SkMaskFilter* filter =  SkBlurMaskFilter::CreateEmboss(sigma,
-                direction, ambient, specular);
+        SkMaskFilter* filter =  SkBlurMaskFilter::MakeEmboss(sigma,
+                direction, ambient, specular).release();
         ThrowIAE_IfNull(env, filter);
         return reinterpret_cast<jlong>(filter);
     }
@@ -61,19 +61,19 @@ public:
     }
 };
 
-static JNINativeMethod gMaskFilterMethods[] = {
+static const JNINativeMethod gMaskFilterMethods[] = {
     { "nativeDestructor",   "(J)V",     (void*)SkMaskFilterGlue::destructor      }
 };
 
-static JNINativeMethod gBlurMaskFilterMethods[] = {
+static const JNINativeMethod gBlurMaskFilterMethods[] = {
     { "nativeConstructor",  "(FI)J",    (void*)SkMaskFilterGlue::createBlur      }
 };
 
-static JNINativeMethod gEmbossMaskFilterMethods[] = {
+static const JNINativeMethod gEmbossMaskFilterMethods[] = {
     { "nativeConstructor",  "([FFFF)J", (void*)SkMaskFilterGlue::createEmboss    }
 };
 
-static JNINativeMethod gTableMaskFilterMethods[] = {
+static const JNINativeMethod gTableMaskFilterMethods[] = {
     { "nativeNewTable", "([B)J", (void*)SkMaskFilterGlue::createTable    },
     { "nativeNewClip",  "(II)J", (void*)SkMaskFilterGlue::createClipTable    },
     { "nativeNewGamma", "(F)J", (void*)SkMaskFilterGlue::createGammaTable    }

@@ -21,6 +21,8 @@ import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.net.Uri;
+import android.os.Process;
+import android.os.UserHandle;
 import android.provider.Settings;
 import android.text.TextUtils;
 
@@ -117,7 +119,7 @@ public class DefaultDialerManager {
         String defaultPackageName = Settings.Secure.getStringForUser(context.getContentResolver(),
                 Settings.Secure.DIALER_DEFAULT_APPLICATION, user);
 
-        final List<String> packageNames = getInstalledDialerApplications(context);
+        final List<String> packageNames = getInstalledDialerApplications(context, user);
 
         // Verify that the default dialer has not been disabled or uninstalled.
         if (packageNames.contains(defaultPackageName)) {
@@ -150,25 +152,33 @@ public class DefaultDialerManager {
      *
      * @hide
      **/
-    public static List<String> getInstalledDialerApplications(Context context) {
+    public static List<String> getInstalledDialerApplications(Context context, int userId) {
         PackageManager packageManager = context.getPackageManager();
 
         // Get the list of apps registered for the DIAL intent with empty scheme
         Intent intent = new Intent(Intent.ACTION_DIAL);
-        List<ResolveInfo> resolveInfoList = packageManager.queryIntentActivities(intent, 0);
+        List<ResolveInfo> resolveInfoList =
+                packageManager.queryIntentActivitiesAsUser(intent, 0, userId);
 
         List<String> packageNames = new ArrayList<>();
 
         for (ResolveInfo resolveInfo : resolveInfoList) {
             final ActivityInfo activityInfo = resolveInfo.activityInfo;
-            if (activityInfo != null && !packageNames.contains(activityInfo.packageName)) {
+            if (activityInfo != null
+                    && !packageNames.contains(activityInfo.packageName)
+                    // ignore cross profile intent handler
+                    && resolveInfo.targetUserId == UserHandle.USER_CURRENT) {
                 packageNames.add(activityInfo.packageName);
             }
         }
 
         final Intent dialIntentWithTelScheme = new Intent(Intent.ACTION_DIAL);
         dialIntentWithTelScheme.setData(Uri.fromParts(PhoneAccount.SCHEME_TEL, "", null));
-        return filterByIntent(context, packageNames, dialIntentWithTelScheme);
+        return filterByIntent(context, packageNames, dialIntentWithTelScheme, userId);
+    }
+
+    public static List<String> getInstalledDialerApplications(Context context) {
+        return getInstalledDialerApplications(context, Process.myUserHandle().getIdentifier());
     }
 
     /**
@@ -198,17 +208,18 @@ public class DefaultDialerManager {
      *
      * @param context A valid context
      * @param packageNames List of package names to filter.
+     * @param userId The UserId
      * @return The filtered list.
      */
     private static List<String> filterByIntent(Context context, List<String> packageNames,
-            Intent intent) {
+            Intent intent, int userId) {
         if (packageNames == null || packageNames.isEmpty()) {
             return new ArrayList<>();
         }
 
         final List<String> result = new ArrayList<>();
-        final List<ResolveInfo> resolveInfoList =
-                context.getPackageManager().queryIntentActivities(intent, 0);
+        final List<ResolveInfo> resolveInfoList = context.getPackageManager()
+                .queryIntentActivitiesAsUser(intent, 0, userId);
         final int length = resolveInfoList.size();
         for (int i = 0; i < length; i++) {
             final ActivityInfo info = resolveInfoList.get(i).activityInfo;

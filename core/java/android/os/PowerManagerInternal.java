@@ -53,15 +53,6 @@ public abstract class PowerManagerInternal {
      */
     public static final int WAKEFULNESS_DOZING = 3;
 
-
-    /**
-     * Power hint: The user is interacting with the device. The corresponding data field must be
-     * the expected duration of the fling, or 0 if unknown.
-     *
-     * This must be kept in sync with the values in hardware/libhardware/include/hardware/power.h
-     */
-    public static final int POWER_HINT_INTERACTION = 2;
-
     public static String wakefulnessToString(int wakefulness) {
         switch (wakefulness) {
             case WAKEFULNESS_ASLEEP:
@@ -96,16 +87,6 @@ public abstract class PowerManagerInternal {
     public abstract void setScreenBrightnessOverrideFromWindowManager(int brightness);
 
     /**
-     * Used by the window manager to override the button brightness based on the
-     * current foreground activity.
-     *
-     * This method must only be called by the window manager.
-     *
-     * @param brightness The overridden brightness, or -1 to disable the override.
-     */
-    public abstract void setButtonBrightnessOverrideFromWindowManager(int brightness);
-
-    /**
      * Used by the window manager to override the user activity timeout based on the
      * current foreground activity.  It can only be used to make the timeout shorter
      * than usual, not longer.
@@ -115,6 +96,12 @@ public abstract class PowerManagerInternal {
      * @param timeoutMillis The overridden timeout, or -1 to disable the override.
      */
     public abstract void setUserActivityTimeoutOverrideFromWindowManager(long timeoutMillis);
+
+    /**
+     * Used by the window manager to tell the power manager that the user is no longer actively
+     * using the device.
+     */
+    public abstract void setUserInactiveOverrideFromWindowManager();
 
     /**
      * Used by device administration to set the maximum screen off timeout.
@@ -134,23 +121,38 @@ public abstract class PowerManagerInternal {
     public abstract void setDozeOverrideFromDreamManager(
             int screenState, int screenBrightness);
 
-    public abstract boolean getLowPowerModeEnabled();
+    public abstract PowerSaveState getLowPowerState(int serviceType);
 
     public abstract void registerLowPowerModeObserver(LowPowerModeListener listener);
 
     public interface LowPowerModeListener {
-        public void onLowPowerModeChanged(boolean enabled);
+        int getServiceType();
+        void onLowPowerModeChanged(PowerSaveState state);
     }
 
-    public abstract void setDeviceIdleMode(boolean enabled);
+    public abstract boolean setDeviceIdleMode(boolean enabled);
+
+    public abstract boolean setLightDeviceIdleMode(boolean enabled);
 
     public abstract void setDeviceIdleWhitelist(int[] appids);
 
     public abstract void setDeviceIdleTempWhitelist(int[] appids);
 
+    public abstract void startUidChanges();
+
+    public abstract void finishUidChanges();
+
     public abstract void updateUidProcState(int uid, int procState);
 
     public abstract void uidGone(int uid);
 
+    public abstract void uidActive(int uid);
+
+    public abstract void uidIdle(int uid);
+
+    /**
+     * The hintId sent through this method should be in-line with the
+     * PowerHint defined in android/hardware/power/<version 1.0 & up>/IPower.h
+     */
     public abstract void powerHint(int hintId, int data);
 }

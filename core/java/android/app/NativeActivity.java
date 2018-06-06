@@ -35,6 +35,8 @@ import android.view.ViewTreeObserver.OnGlobalLayoutListener;
 import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
 
+import dalvik.system.BaseDexClassLoader;
+
 import java.io.File;
 
 /**
@@ -43,16 +45,8 @@ import java.io.File;
  * is no need to derive from this class; you can simply declare it in your
  * manifest, and use the NDK APIs from there.
  *
- * <p>A typical manifest would look like:
- *
- * {@sample development/ndk/platforms/android-9/samples/native-activity/AndroidManifest.xml
- *      manifest}
- *
- * <p>A very simple example of native code that is run by NativeActivity
- * follows.  This reads input events from the user and uses OpenGLES to
- * draw into the native activity's window.
- *
- * {@sample development/ndk/platforms/android-9/samples/native-activity/jni/main.c all}
+ * <p>A <a href="https://github.com/googlesamples/android-ndk/tree/master/native-activity">sample
+ * native activity</a> is available in the NDK samples.
  */
 public class NativeActivity extends Activity implements SurfaceHolder.Callback2,
         InputQueue.Callback, OnGlobalLayoutListener {
@@ -93,7 +87,8 @@ public class NativeActivity extends Activity implements SurfaceHolder.Callback2,
     
     private native long loadNativeCode(String path, String funcname, MessageQueue queue,
             String internalDataPath, String obbPath, String externalDataPath, int sdkVersion,
-            AssetManager assetMgr, byte[] savedState);
+            AssetManager assetMgr, byte[] savedState, ClassLoader classLoader, String libraryPath);
+    private native String getDlError();
     private native void unloadNativeCode(long handle);
     private native void onStartNative(long handle);
     private native void onResumeNative(long handle);
@@ -129,8 +124,8 @@ public class NativeActivity extends Activity implements SurfaceHolder.Callback2,
         String libname = "main";
         String funcname = "ANativeActivity_onCreate";
         ActivityInfo ai;
-        
-        mIMM = (InputMethodManager)getSystemService(Context.INPUT_METHOD_SERVICE);
+
+        mIMM = getSystemService(InputMethodManager.class);
 
         getWindow().takeSurface(this);
         getWindow().takeInputQueue(this);
@@ -157,17 +152,13 @@ public class NativeActivity extends Activity implements SurfaceHolder.Callback2,
         } catch (PackageManager.NameNotFoundException e) {
             throw new RuntimeException("Error getting activity info", e);
         }
-        
-        String path = null;
-        
-        File libraryFile = new File(ai.applicationInfo.nativeLibraryDir,
-                System.mapLibraryName(libname));
-        if (libraryFile.exists()) {
-            path = libraryFile.getPath();
-        }
-        
+
+        BaseDexClassLoader classLoader = (BaseDexClassLoader) getClassLoader();
+        String path = classLoader.findLibrary(libname);
+
         if (path == null) {
-            throw new IllegalArgumentException("Unable to find native library: " + libname);
+            throw new IllegalArgumentException("Unable to find native library " + libname +
+                                               " using classloader: " + classLoader.toString());
         }
         
         byte[] nativeSavedState = savedInstanceState != null
@@ -176,10 +167,12 @@ public class NativeActivity extends Activity implements SurfaceHolder.Callback2,
         mNativeHandle = loadNativeCode(path, funcname, Looper.myQueue(),
                 getAbsolutePath(getFilesDir()), getAbsolutePath(getObbDir()),
                 getAbsolutePath(getExternalFilesDir(null)),
-                Build.VERSION.SDK_INT, getAssets(), nativeSavedState);
+                Build.VERSION.SDK_INT, getAssets(), nativeSavedState,
+                classLoader, classLoader.getLdLibraryPath());
 
         if (mNativeHandle == 0) {
-            throw new IllegalArgumentException("Unable to load native library: " + path);
+            throw new UnsatisfiedLinkError(
+                    "Unable to load native library \"" + path + "\": " + getDlError());
         }
         super.onCreate(savedInstanceState);
     }

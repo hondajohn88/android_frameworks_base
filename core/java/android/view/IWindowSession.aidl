@@ -11,17 +11,17 @@
 ** Unless required by applicable law or agreed to in writing, software 
 ** distributed under the License is distributed on an "AS IS" BASIS, 
 ** WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
-** See the License for the specific language governing permissions and 
+** See the License for the specific language governing permissions and
 ** limitations under the License.
 */
 
 package android.view;
 
 import android.content.ClipData;
-import android.content.res.Configuration;
 import android.graphics.Rect;
 import android.graphics.Region;
 import android.os.Bundle;
+import android.util.MergedConfiguration;
 import android.view.InputChannel;
 import android.view.IWindow;
 import android.view.IWindowId;
@@ -81,9 +81,11 @@ interface IWindowSession {
      * so complex relayout of the window should not happen based on them.
      * @param outOutsets Rect in which is placed the dead area of the screen that we would like to
      * treat as real display. Example of such area is a chin in some models of wearable devices.
-     * @param outConfiguration New configuration of window, if it is now
-     * becoming visible and the global configuration has changed since it
-     * was last displayed.
+     * @param outBackdropFrame Rect which is used draw the resizing background during a resize
+     * operation.
+     * @param outMergedConfiguration New config container that holds global, override and merged
+     * config for window, if it is now becoming visible and the merged configuration has changed
+     * since it was last displayed.
      * @param outSurface Object in which is placed the new display surface.
      *
      * @return int Result flags: {@link WindowManagerGlobal#RELAYOUT_SHOW_FOCUS},
@@ -93,13 +95,18 @@ interface IWindowSession {
             int requestedWidth, int requestedHeight, int viewVisibility,
             int flags, out Rect outFrame, out Rect outOverscanInsets,
             out Rect outContentInsets, out Rect outVisibleInsets, out Rect outStableInsets,
-            out Rect outOutsets, out Configuration outConfig, out Surface outSurface);
+            out Rect outOutsets, out Rect outBackdropFrame,
+            out MergedConfiguration outMergedConfiguration, out Surface outSurface);
 
-    /**
-     * If a call to relayout() asked to have the surface destroy deferred,
-     * it must call this once it is okay to destroy that surface.
+    /*
+     * Notify the window manager that an application is relaunching and
+     * windows should be prepared for replacement.
+     *
+     * @param appToken The application
+     * @param childrenOnly Whether to only prepare child windows for replacement
+     * (for example when main windows are being reused via preservation).
      */
-    void performDeferredDestroy(IWindow window);
+    void prepareToReplaceWindows(IBinder appToken, boolean childrenOnly);
 
     /**
      * Called by a client to report that it ran out of graphics memory.
@@ -150,8 +157,8 @@ interface IWindowSession {
     /**
      * Initiate the drag operation itself
      */
-    boolean performDrag(IWindow window, IBinder dragToken, float touchX, float touchY,
-            float thumbCenterX, float thumbCenterY, in ClipData data);
+    boolean performDrag(IWindow window, IBinder dragToken, int touchSource,
+            float touchX, float touchY, float thumbCenterX, float thumbCenterY, in ClipData data);
 
    /**
      * Report the result of a drop action targeted to the given window.
@@ -159,6 +166,11 @@ interface IWindowSession {
      * 'false' otherwise.
      */
 	void reportDropResult(IWindow window, boolean consumed);
+
+    /**
+     * Cancel the current drag operation.
+     */
+    void cancelDragAndDrop(IBinder dragToken);
 
     /**
      * Tell the OS that we've just dragged into a View that is willing to accept the drop
@@ -211,4 +223,14 @@ interface IWindowSession {
      * The assumption is that this method will be called rather infrequently.
      */
     void pokeDrawLock(IBinder window);
+
+    /**
+     * Starts a task window move with {startX, startY} as starting point. The amount of move
+     * will be the offset between {startX, startY} and the new cursor position.
+     *
+     * Returns true if the move started successfully; false otherwise.
+     */
+    boolean startMovingTask(IWindow window, float startX, float startY);
+
+    void updatePointerIcon(IWindow window);
 }

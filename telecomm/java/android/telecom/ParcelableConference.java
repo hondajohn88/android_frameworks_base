@@ -34,33 +34,38 @@ public final class ParcelableConference implements Parcelable {
     private PhoneAccountHandle mPhoneAccount;
     private int mState;
     private int mConnectionCapabilities;
+    private int mConnectionProperties;
     private List<String> mConnectionIds;
     private long mConnectTimeMillis = Conference.CONNECT_TIME_NOT_SPECIFIED;
     private final IVideoProvider mVideoProvider;
     private final int mVideoState;
     private StatusHints mStatusHints;
     private Bundle mExtras;
+    private long mConnectElapsedTimeMillis = Conference.CONNECT_TIME_NOT_SPECIFIED;
 
     public ParcelableConference(
             PhoneAccountHandle phoneAccount,
             int state,
             int connectionCapabilities,
+            int connectionProperties,
             List<String> connectionIds,
             IVideoProvider videoProvider,
             int videoState,
             long connectTimeMillis,
+            long connectElapsedTimeMillis,
             StatusHints statusHints,
             Bundle extras) {
         mPhoneAccount = phoneAccount;
         mState = state;
         mConnectionCapabilities = connectionCapabilities;
+        mConnectionProperties = connectionProperties;
         mConnectionIds = connectionIds;
-        mConnectTimeMillis = Conference.CONNECT_TIME_NOT_SPECIFIED;
         mVideoProvider = videoProvider;
         mVideoState = videoState;
         mConnectTimeMillis = connectTimeMillis;
         mStatusHints = statusHints;
         mExtras = extras;
+        mConnectElapsedTimeMillis = connectElapsedTimeMillis;
     }
 
     @Override
@@ -72,6 +77,8 @@ public final class ParcelableConference implements Parcelable {
                 .append(Connection.stateToString(mState))
                 .append(", capabilities: ")
                 .append(Connection.capabilitiesToString(mConnectionCapabilities))
+                .append(", properties: ")
+                .append(Connection.propertiesToString(mConnectionProperties))
                 .append(", connectTime: ")
                 .append(mConnectTimeMillis)
                 .append(", children: ")
@@ -95,6 +102,10 @@ public final class ParcelableConference implements Parcelable {
         return mConnectionCapabilities;
     }
 
+    public int getConnectionProperties() {
+        return mConnectionProperties;
+    }
+
     public List<String> getConnectionIds() {
         return mConnectionIds;
     }
@@ -102,6 +113,11 @@ public final class ParcelableConference implements Parcelable {
     public long getConnectTimeMillis() {
         return mConnectTimeMillis;
     }
+
+    public long getConnectElapsedTimeMillis() {
+        return mConnectElapsedTimeMillis;
+    }
+
     public IVideoProvider getVideoProvider() {
         return mVideoProvider;
     }
@@ -134,9 +150,12 @@ public final class ParcelableConference implements Parcelable {
             int videoState = source.readInt();
             StatusHints statusHints = source.readParcelable(classLoader);
             Bundle extras = source.readBundle(classLoader);
+            int properties = source.readInt();
+            long connectElapsedTimeMillis = source.readLong();
 
-            return new ParcelableConference(phoneAccount, state, capabilities, connectionIds,
-                    videoCallProvider, videoState, connectTimeMillis, statusHints, extras);
+            return new ParcelableConference(phoneAccount, state, capabilities, properties,
+                    connectionIds, videoCallProvider, videoState, connectTimeMillis,
+                    connectElapsedTimeMillis, statusHints, extras);
         }
 
         @Override
@@ -164,5 +183,7 @@ public final class ParcelableConference implements Parcelable {
         destination.writeInt(mVideoState);
         destination.writeParcelable(mStatusHints, 0);
         destination.writeBundle(mExtras);
+        destination.writeInt(mConnectionProperties);
+        destination.writeLong(mConnectElapsedTimeMillis);
     }
 }

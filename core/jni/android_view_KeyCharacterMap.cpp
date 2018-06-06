@@ -20,7 +20,7 @@
 #include <input/Input.h>
 #include <binder/Parcel.h>
 
-#include <nativehelper/jni.h>
+#include <jni.h>
 #include <nativehelper/JNIHelp.h>
 
 #include "android_os_Parcel.h"
@@ -203,7 +203,7 @@ static jobjectArray nativeGetEvents(JNIEnv *env, jobject clazz, jlong ptr,
  * JNI registration.
  */
 
-static JNINativeMethod g_methods[] = {
+static const JNINativeMethod g_methods[] = {
     /* name, signature, funcPtr */
     { "nativeReadFromParcel", "(Landroid/os/Parcel;)J",
             (void*)nativeReadFromParcel },

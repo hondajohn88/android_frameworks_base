@@ -20,13 +20,14 @@
 #include "RenderTask.h"
 
 #include "../JankTracker.h"
+#include "CacheManager.h"
 #include "TimeLord.h"
 
+#include <GrContext.h>
 #include <cutils/compiler.h>
+#include <SkBitmap.h>
 #include <ui/DisplayInfo.h>
 #include <utils/Looper.h>
-#include <utils/Mutex.h>
-#include <utils/Singleton.h>
 #include <utils/Thread.h>
 
 #include <memory>
@@ -34,11 +35,14 @@
 
 namespace android {
 
+class Bitmap;
 class DisplayEventReceiver;
 
 namespace uirenderer {
 
+class Readback;
 class RenderState;
+class TestUtils;
 
 namespace renderthread {
 
@@ -46,6 +50,7 @@ class CanvasContext;
 class DispatchFrameCallbacks;
 class EglManager;
 class RenderProxy;
+class VulkanManager;
 
 class TaskQueue {
 public:
@@ -71,11 +76,13 @@ protected:
     ~IFrameCallback() {}
 };
 
-class ANDROID_API RenderThread : public Thread, protected Singleton<RenderThread> {
+class ANDROID_API RenderThread : public Thread {
+    PREVENT_COPY_AND_ASSIGN(RenderThread);
 public:
     // RenderThread takes complete ownership of tasks that are queued
     // and will delete them after they are run
     ANDROID_API void queue(RenderTask* task);
+    ANDROID_API void queueAndWait(RenderTask* task);
     ANDROID_API void queueAtFront(RenderTask* task);
     void queueAt(RenderTask* task, nsecs_t runAtNs);
     void remove(RenderTask* task);
@@ -88,22 +95,35 @@ public:
     void pushBackFrameCallback(IFrameCallback* callback);
 
     TimeLord& timeLord() { return mTimeLord; }
-    RenderState& renderState() { return *mRenderState; }
-    EglManager& eglManager() { return *mEglManager; }
-    JankTracker& jankTracker() { return *mJankTracker; }
+    RenderState& renderState() const { return *mRenderState; }
+    EglManager& eglManager() const { return *mEglManager; }
+    ProfileDataContainer& globalProfileData() { return mGlobalProfileData; }
+    Readback& readback();
 
     const DisplayInfo& mainDisplayInfo() { return mDisplayInfo; }
+
+    GrContext* getGrContext() const { return mGrContext.get(); }
+    void setGrContext(GrContext* cxt);
+
+    CacheManager& cacheManager() { return *mCacheManager; }
+    VulkanManager& vulkanManager() { return *mVkManager; }
+
+    sk_sp<Bitmap> allocateHardwareBitmap(SkBitmap& skBitmap);
+    void dumpGraphicsMemory(int fd);
 
 protected:
     virtual bool threadLoop() override;
 
 private:
-    friend class Singleton<RenderThread>;
     friend class DispatchFrameCallbacks;
     friend class RenderProxy;
+    friend class android::uirenderer::TestUtils;
 
     RenderThread();
     virtual ~RenderThread();
+
+    static bool hasInstance();
+    static RenderThread& getInstance();
 
     void initThreadLocals();
     void initializeDisplayEventReceiver();
@@ -140,7 +160,12 @@ private:
     RenderState* mRenderState;
     EglManager* mEglManager;
 
-    JankTracker* mJankTracker = nullptr;
+    ProfileDataContainer mGlobalProfileData;
+    Readback* mReadback = nullptr;
+
+    sk_sp<GrContext> mGrContext;
+    CacheManager* mCacheManager;
+    VulkanManager* mVkManager;
 };
 
 } /* namespace renderthread */

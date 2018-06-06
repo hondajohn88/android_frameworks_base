@@ -22,6 +22,7 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.pm.UserInfo;
 import android.content.res.Resources;
 import android.net.LocalSocket;
 import android.net.LocalSocketAddress;
@@ -42,12 +43,10 @@ import com.android.internal.util.IndentingPrintWriter;
 import com.android.server.FgThread;
 
 import java.io.File;
-import java.io.FileDescriptor;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.io.PrintWriter;
 import java.security.MessageDigest;
 import java.util.Arrays;
 
@@ -55,10 +54,10 @@ public class UsbDebuggingManager {
     private static final String TAG = "UsbDebuggingManager";
     private static final boolean DEBUG = false;
 
-    private final String ADBD_SOCKET = "adbd";
-    private final String ADB_DIRECTORY = "misc/adb";
-    private final String ADB_KEYS_FILE = "adb_keys";
-    private final int BUFFER_SIZE = 4096;
+    private static final String ADBD_SOCKET = "adbd";
+    private static final String ADB_DIRECTORY = "misc/adb";
+    private static final String ADB_KEYS_FILE = "adb_keys";
+    private static final int BUFFER_SIZE = 4096;
 
     private final Context mContext;
     private final Handler mHandler;
@@ -323,21 +322,21 @@ public class UsbDebuggingManager {
 
     private void startConfirmation(String key, String fingerprints) {
         int currentUserId = ActivityManager.getCurrentUser();
-        UserHandle userHandle =
-                UserManager.get(mContext).getUserInfo(currentUserId).getUserHandle();
+        UserInfo userInfo = UserManager.get(mContext).getUserInfo(currentUserId);
         String componentString;
-        if (currentUserId == UserHandle.USER_OWNER) {
+        if (userInfo.isAdmin()) {
             componentString = Resources.getSystem().getString(
                     com.android.internal.R.string.config_customAdbPublicKeyConfirmationComponent);
         } else {
-            // If the current foreground user is not the primary user we send a different
+            // If the current foreground user is not the admin user we send a different
             // notification specific to secondary users.
             componentString = Resources.getSystem().getString(
                     R.string.config_customAdbPublicKeyConfirmationSecondaryUserComponent);
         }
         ComponentName componentName = ComponentName.unflattenFromString(componentString);
-        if (startConfirmationActivity(componentName, userHandle, key, fingerprints)
-                || startConfirmationService(componentName, userHandle, key, fingerprints)) {
+        if (startConfirmationActivity(componentName, userInfo.getUserHandle(), key, fingerprints)
+                || startConfirmationService(componentName, userInfo.getUserHandle(),
+                        key, fingerprints)) {
             return;
         }
         Slog.e(TAG, "unable to start customAdbPublicKeyConfirmation[SecondaryUser]Component "
@@ -345,7 +344,7 @@ public class UsbDebuggingManager {
     }
 
     /**
-     * @returns true if the componentName led to an Activity that was started.
+     * @return true if the componentName led to an Activity that was started.
      */
     private boolean startConfirmationActivity(ComponentName componentName, UserHandle userHandle,
             String key, String fingerprints) {
@@ -364,7 +363,7 @@ public class UsbDebuggingManager {
     }
 
     /**
-     * @returns true if the componentName led to a Service that was started.
+     * @return true if the componentName led to a Service that was started.
      */
     private boolean startConfirmationService(ComponentName componentName, UserHandle userHandle,
             String key, String fingerprints) {

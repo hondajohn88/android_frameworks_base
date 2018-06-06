@@ -20,7 +20,7 @@
 #include "android_os_Parcel.h"
 #include "android_util_Binder.h"
 
-#include "JNIHelp.h"
+#include <nativehelper/JNIHelp.h>
 
 #include <fcntl.h>
 #include <inttypes.h>
@@ -29,22 +29,23 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include <utils/Atomic.h>
+#include <android-base/stringprintf.h>
 #include <binder/IInterface.h>
+#include <binder/IServiceManager.h>
 #include <binder/IPCThreadState.h>
-#include <utils/Log.h>
-#include <utils/SystemClock.h>
-#include <utils/List.h>
-#include <utils/KeyedVector.h>
-#include <log/logger.h>
 #include <binder/Parcel.h>
 #include <binder/ProcessState.h>
-#include <binder/IServiceManager.h>
-#include <utils/threads.h>
+#include <log/log.h>
+#include <utils/Atomic.h>
+#include <utils/KeyedVector.h>
+#include <utils/List.h>
+#include <utils/Log.h>
 #include <utils/String8.h>
+#include <utils/SystemClock.h>
+#include <utils/threads.h>
 
-#include <ScopedUtfChars.h>
-#include <ScopedLocalRef.h>
+#include <nativehelper/ScopedUtfChars.h>
+#include <nativehelper/ScopedLocalRef.h>
 
 #include "core_jni_helpers.h"
 
@@ -132,6 +133,14 @@ static struct strict_mode_callback_offsets_t
     jmethodID mCallback;
 } gStrictModeCallbackOffsets;
 
+static struct thread_dispatch_offsets_t
+{
+    // Class state.
+    jclass mClass;
+    jmethodID mDispatchUncaughtException;
+    jmethodID mCurrentThread;
+} gThreadDispatchOffsets;
+
 // ****************************************************************************
 // ****************************************************************************
 // ****************************************************************************
@@ -165,6 +174,23 @@ static JNIEnv* javavm_to_jnienv(JavaVM* vm)
     return vm->GetEnv((void **)&env, JNI_VERSION_1_4) >= 0 ? env : NULL;
 }
 
+// Report a java.lang.Error (or subclass). This may terminate the runtime.
+static void report_java_lang_error(JNIEnv* env, jthrowable error)
+{
+    // Try to run the uncaught exception machinery.
+    jobject thread = env->CallStaticObjectMethod(gThreadDispatchOffsets.mClass,
+            gThreadDispatchOffsets.mCurrentThread);
+    if (thread != nullptr) {
+        env->CallVoidMethod(thread, gThreadDispatchOffsets.mDispatchUncaughtException,
+                error);
+        // Should not return here, unless more errors occured.
+    }
+    // Some error occurred that meant that either dispatchUncaughtException could not be
+    // called or that it had an error itself (as this should be unreachable under normal
+    // conditions). Clear the exception.
+    env->ExceptionClear();
+}
+
 static void report_exception(JNIEnv* env, jthrowable excep, const char* msg)
 {
     env->ExceptionClear();
@@ -191,19 +217,41 @@ static void report_exception(JNIEnv* env, jthrowable excep, const char* msg)
     }
 
     if (env->IsInstanceOf(excep, gErrorOffsets.mClass)) {
+        // Try to report the error. This should not return under normal circumstances.
+        report_java_lang_error(env, excep);
+        // The traditional handling: re-raise and abort.
+
         /*
-         * It's an Error: Reraise the exception, detach this thread, and
-         * wait for the fireworks. Die even more blatantly after a minute
-         * if the gentler attempt doesn't do the trick.
-         *
-         * The GetJavaVM function isn't on the "approved" list of JNI calls
-         * that can be made while an exception is pending, so we want to
-         * get the VM ptr, throw the exception, and then detach the thread.
+         * It's an Error: Reraise the exception and ask the runtime to abort.
          */
+
+        // Try to get the exception string. Sometimes logcat isn't available,
+        // so try to add it to the abort message.
+        std::string exc_msg = "(Unknown exception message)";
+        {
+            ScopedLocalRef<jclass> exc_class(env, env->GetObjectClass(excep));
+            jmethodID method_id = env->GetMethodID(exc_class.get(),
+                                                   "toString",
+                                                   "()Ljava/lang/String;");
+            ScopedLocalRef<jstring> jstr(
+                    env,
+                    reinterpret_cast<jstring>(
+                            env->CallObjectMethod(excep, method_id)));
+            env->ExceptionClear();  // Just for good measure.
+            if (jstr.get() != nullptr) {
+                ScopedUtfChars jstr_utf(env, jstr.get());
+                exc_msg = jstr_utf.c_str();
+            }
+        }
+
         env->Throw(excep);
+        ALOGE("java.lang.Error thrown during binder transaction (stack trace follows) : ");
         env->ExceptionDescribe();
-        ALOGE("Forcefully exiting");
-        exit(1);
+
+        std::string error_msg = base::StringPrintf(
+                "java.lang.Error thrown during binder transaction: %s",
+                exc_msg.c_str());
+        env->FatalError(error_msg.c_str());
     }
 
 bail:
@@ -556,7 +604,7 @@ jobject javaObjectForIBinder(JNIEnv* env, const sp<IBinder>& val)
     }
 
     // For the rest of the function we will hold this lock, to serialize
-    // looking/creation of Java proxies for native Binder proxies.
+    // looking/creation/destruction of Java proxies for native Binder proxies.
     AutoMutex _l(mProxyLock);
 
     // Someone else's...  do we know about it?
@@ -711,6 +759,9 @@ void signalExceptionForError(JNIEnv* env, jobject obj, status_t err,
             jniThrowException(env, "java/lang/RuntimeException",
                     "Not allowed to write file descriptors here");
             break;
+        case UNEXPECTED_NULL:
+            jniThrowNullPointerException(env, NULL);
+            break;
         case -EBADF:
             jniThrowException(env, "java/lang/RuntimeException",
                     "Bad file descriptor");
@@ -814,7 +865,7 @@ static void android_os_Binder_init(JNIEnv* env, jobject obj)
     env->SetLongField(obj, gBinderOffsets.mObject, (jlong)jbh);
 }
 
-static void android_os_Binder_destroy(JNIEnv* env, jobject obj)
+static void android_os_Binder_destroyBinder(JNIEnv* env, jobject obj)
 {
     JavaBBinderHolder* jbh = (JavaBBinderHolder*)
         env->GetLongField(obj, gBinderOffsets.mObject);
@@ -825,7 +876,7 @@ static void android_os_Binder_destroy(JNIEnv* env, jobject obj)
     } else {
         // Encountering an uninitialized binder is harmless.  All it means is that
         // the Binder was only partially initialized when its finalizer ran and called
-        // destroy().  The Binder could be partially initialized for several reasons.
+        // destroyBinder().  The Binder could be partially initialized for several reasons.
         // For example, a Binder subclass constructor might have thrown an exception before
         // it could delegate to its superclass's constructor.  Consequently init() would
         // not have been called and the holder pointer would remain NULL.
@@ -850,7 +901,7 @@ static const JNINativeMethod gBinderMethods[] = {
     { "getThreadStrictModePolicy", "()I", (void*)android_os_Binder_getThreadStrictModePolicy },
     { "flushPendingCommands", "()V", (void*)android_os_Binder_flushPendingCommands },
     { "init", "()V", (void*)android_os_Binder_init },
-    { "destroy", "()V", (void*)android_os_Binder_destroy },
+    { "destroyBinder", "()V", (void*)android_os_Binder_destroyBinder },
     { "blockUntilThreadAvailable", "()V", (void*)android_os_Binder_blockUntilThreadAvailable }
 };
 
@@ -914,6 +965,12 @@ static void android_os_BinderInternal_disableBackgroundScheduling(JNIEnv* env,
     IPCThreadState::disableBackgroundScheduling(disable ? true : false);
 }
 
+static void android_os_BinderInternal_setMaxThreads(JNIEnv* env,
+        jobject clazz, jint maxThreads)
+{
+    ProcessState::self()->setThreadPoolMaxThreadCount(maxThreads);
+}
+
 static void android_os_BinderInternal_handleGc(JNIEnv* env, jobject clazz)
 {
     ALOGV("Gc has executed, clearing binder ops");
@@ -927,6 +984,7 @@ static const JNINativeMethod gBinderInternalMethods[] = {
     { "getContextObject", "()Landroid/os/IBinder;", (void*)android_os_BinderInternal_getContextObject },
     { "joinThreadPool", "()V", (void*)android_os_BinderInternal_joinThreadPool },
     { "disableBackgroundScheduling", "(Z)V", (void*)android_os_BinderInternal_disableBackgroundScheduling },
+    { "setMaxThreads", "(I)V", (void*)android_os_BinderInternal_setMaxThreads },
     { "handleGc", "()V", (void*)android_os_BinderInternal_handleGc }
 };
 
@@ -1222,16 +1280,21 @@ static jboolean android_os_BinderProxy_unlinkToDeath(JNIEnv* env, jobject obj,
 
 static void android_os_BinderProxy_destroy(JNIEnv* env, jobject obj)
 {
+    // Don't race with construction/initialization
+    AutoMutex _l(mProxyLock);
+
     IBinder* b = (IBinder*)
             env->GetLongField(obj, gBinderProxyOffsets.mObject);
     DeathRecipientList* drl = (DeathRecipientList*)
             env->GetLongField(obj, gBinderProxyOffsets.mOrgue);
 
     LOGDEATH("Destroying BinderProxy %p: binder=%p drl=%p\n", obj, b, drl);
-    env->SetLongField(obj, gBinderProxyOffsets.mObject, 0);
-    env->SetLongField(obj, gBinderProxyOffsets.mOrgue, 0);
-    drl->decStrong((void*)javaObjectForIBinder);
-    b->decStrong((void*)javaObjectForIBinder);
+    if (b != nullptr) {
+        env->SetLongField(obj, gBinderProxyOffsets.mObject, 0);
+        env->SetLongField(obj, gBinderProxyOffsets.mOrgue, 0);
+        drl->decStrong((void*)javaObjectForIBinder);
+        b->decStrong((void*)javaObjectForIBinder);
+    }
 
     IPCThreadState::self()->flushCommands();
 }
@@ -1302,6 +1365,13 @@ int register_android_os_Binder(JNIEnv* env)
     gStrictModeCallbackOffsets.mClass = MakeGlobalRefOrDie(env, clazz);
     gStrictModeCallbackOffsets.mCallback = GetStaticMethodIDOrDie(env, clazz,
             "onBinderStrictModePolicyChange", "(I)V");
+
+    clazz = FindClassOrDie(env, "java/lang/Thread");
+    gThreadDispatchOffsets.mClass = MakeGlobalRefOrDie(env, clazz);
+    gThreadDispatchOffsets.mDispatchUncaughtException = GetMethodIDOrDie(env, clazz,
+            "dispatchUncaughtException", "(Ljava/lang/Throwable;)V");
+    gThreadDispatchOffsets.mCurrentThread = GetStaticMethodIDOrDie(env, clazz, "currentThread",
+            "()Ljava/lang/Thread;");
 
     return 0;
 }

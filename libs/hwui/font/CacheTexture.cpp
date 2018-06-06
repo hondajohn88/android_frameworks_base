@@ -91,6 +91,9 @@ CacheBlock* CacheBlock::removeBlock(CacheBlock* head, CacheBlock* blockToRemove)
     CacheBlock* prevBlock = blockToRemove->mPrev;
 
     if (prevBlock) {
+        // If this doesn't hold, we have a use-after-free below.
+        LOG_ALWAYS_FATAL_IF(head == blockToRemove,
+                "removeBlock: head should not have a previous block");
         prevBlock->mNext = nextBlock;
     } else {
         newHead = nextBlock;
@@ -111,11 +114,11 @@ CacheBlock* CacheBlock::removeBlock(CacheBlock* head, CacheBlock* blockToRemove)
 
 CacheTexture::CacheTexture(uint16_t width, uint16_t height, GLenum format, uint32_t maxQuadCount)
         : mTexture(Caches::getInstance())
+        , mWidth(width)
+        , mHeight(height)
         , mFormat(format)
         , mMaxQuadCount(maxQuadCount)
         , mCaches(Caches::getInstance()) {
-    mTexture.width = width;
-    mTexture.height = height;
     mTexture.blend = true;
 
     mCacheBlocks = new CacheBlock(TEXTURE_BORDER_SIZE, TEXTURE_BORDER_SIZE,
@@ -160,10 +163,7 @@ void CacheTexture::releasePixelBuffer() {
         delete mPixelBuffer;
         mPixelBuffer = nullptr;
     }
-    if (mTexture.id) {
-        mCaches.textureState().deleteTexture(mTexture.id);
-        mTexture.id = 0;
-    }
+    mTexture.deleteTexture();
     mDirty = false;
     mCurrentQuad = 0;
 }
@@ -183,36 +183,34 @@ void CacheTexture::allocatePixelBuffer() {
         mPixelBuffer = PixelBuffer::create(mFormat, getWidth(), getHeight());
     }
 
-    if (!mTexture.id) {
-        glGenTextures(1, &mTexture.id);
-
-        mCaches.textureState().bindTexture(mTexture.id);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        // Initialize texture dimensions
-        glTexImage2D(GL_TEXTURE_2D, 0, mFormat, getWidth(), getHeight(), 0,
-                mFormat, GL_UNSIGNED_BYTE, nullptr);
-
-        const GLenum filtering = getLinearFiltering() ? GL_LINEAR : GL_NEAREST;
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtering);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtering);
-
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    GLint internalFormat = mFormat;
+    if (mFormat == GL_RGBA) {
+        internalFormat = mCaches.rgbaInternalFormat();
     }
+
+    mTexture.resize(mWidth, mHeight, internalFormat, mFormat);
+    mTexture.setFilter(getLinearFiltering() ? GL_LINEAR : GL_NEAREST);
+    mTexture.setWrap(GL_CLAMP_TO_EDGE);
 }
 
 bool CacheTexture::upload() {
     const Rect& dirtyRect = mDirtyRect;
 
-    uint32_t x = mHasUnpackRowLength ? dirtyRect.left : 0;
-    uint32_t y = dirtyRect.top;
-    uint32_t width = mHasUnpackRowLength ? dirtyRect.getWidth() : getWidth();
-    uint32_t height = dirtyRect.getHeight();
+    // align the x direction to 32 and y direction to 4 for better performance
+    uint32_t x = (((uint32_t)dirtyRect.left) & (~0x1F));
+    uint32_t y = (((uint32_t)dirtyRect.top) & (~0x3));
+    uint32_t r = ((((uint32_t)dirtyRect.right) + 0x1F) & (~0x1F)) - x;
+    uint32_t b = ((((uint32_t)dirtyRect.bottom) + 0x3) & (~0x3)) - y;
+    uint32_t width = (r > getWidth() ? getWidth() : r);
+    uint32_t height = (b > getHeight() ? getHeight() : b);
 
     // The unpack row length only needs to be specified when a new
     // texture is bound
     if (mHasUnpackRowLength) {
         glPixelStorei(GL_UNPACK_ROW_LENGTH, getWidth());
+    } else {
+        x = 0;
+        width = getWidth();
     }
 
     mPixelBuffer->upload(x, y, width, height);
@@ -338,6 +336,18 @@ bool CacheTexture::fitBitmap(const SkGlyph& glyph, uint32_t* retOriginX, uint32_
     ALOGD("fitBitmap: returning false for glyph of size %d, %d", glyphW, glyphH);
 #endif
     return false;
+}
+
+uint32_t CacheTexture::calculateFreeMemory() const {
+    CacheBlock* cacheBlock = mCacheBlocks;
+    uint32_t free = 0;
+    // currently only two formats are supported: GL_ALPHA or GL_RGBA;
+    uint32_t bpp = mFormat == GL_RGBA ? 4 : 1;
+    while (cacheBlock) {
+        free += bpp * cacheBlock->mWidth * cacheBlock->mHeight;
+        cacheBlock = cacheBlock->mNext;
+    }
+    return free;
 }
 
 }; // namespace uirenderer

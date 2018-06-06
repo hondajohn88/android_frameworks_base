@@ -25,7 +25,8 @@
 
 #include <utils/LruCache.h>
 #include <utils/Mutex.h>
-#include <utils/Vector.h>
+
+#include "FloatColor.h"
 
 namespace android {
 namespace uirenderer {
@@ -104,7 +105,7 @@ inline hash_t hash_type(const GradientCacheEntry& entry) {
  */
 class GradientCache: public OnEntryRemoved<GradientCacheEntry, Texture*> {
 public:
-    GradientCache(Extensions& extensions);
+    explicit GradientCache(const Extensions& extensions);
     ~GradientCache();
 
     /**
@@ -124,10 +125,6 @@ public:
     void clear();
 
     /**
-     * Sets the maximum size of the cache in bytes.
-     */
-    void setMaxSize(uint32_t maxSize);
-    /**
      * Returns the maximum size of the cache in bytes.
      */
     uint32_t getMaxSize();
@@ -144,7 +141,8 @@ private:
     Texture* addLinearGradient(GradientCacheEntry& gradient,
             uint32_t* colors, float* positions, int count);
 
-    void generateTexture(uint32_t* colors, float* positions, Texture* texture);
+    void generateTexture(uint32_t* colors, float* positions,
+            const uint32_t width, const uint32_t height, Texture* texture);
 
     struct GradientInfo {
         uint32_t width;
@@ -154,36 +152,26 @@ private:
     void getGradientInfo(const uint32_t* colors, const int count, GradientInfo& info);
 
     size_t bytesPerPixel() const;
+    size_t sourceBytesPerPixel() const;
 
-    struct GradientColor {
-        float r;
-        float g;
-        float b;
-        float a;
-    };
-
-    typedef void (GradientCache::*ChannelSplitter)(uint32_t inColor,
-            GradientColor& outColor) const;
-
-    void splitToBytes(uint32_t inColor, GradientColor& outColor) const;
-    void splitToFloats(uint32_t inColor, GradientColor& outColor) const;
-
-    typedef void (GradientCache::*ChannelMixer)(GradientColor& start, GradientColor& end,
+    typedef void (GradientCache::*ChannelMixer)(const FloatColor& start, const FloatColor& end,
             float amount, uint8_t*& dst) const;
 
-    void mixBytes(GradientColor& start, GradientColor& end, float amount, uint8_t*& dst) const;
-    void mixFloats(GradientColor& start, GradientColor& end, float amount, uint8_t*& dst) const;
+    void mixBytes(const FloatColor& start, const FloatColor& end,
+            float amount, uint8_t*& dst) const;
+    void mixFloats(const FloatColor& start, const FloatColor& end,
+            float amount, uint8_t*& dst) const;
 
     LruCache<GradientCacheEntry, Texture*> mCache;
 
     uint32_t mSize;
-    uint32_t mMaxSize;
+    const uint32_t mMaxSize;
 
     GLint mMaxTextureSize;
     bool mUseFloatTexture;
     bool mHasNpot;
+    bool mHasLinearBlending;
 
-    Vector<SkShader*> mGarbage;
     mutable Mutex mLock;
 }; // class GradientCache
 

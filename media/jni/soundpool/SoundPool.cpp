@@ -30,9 +30,9 @@
 #include "SoundPool.h"
 #include "SoundPoolThread.h"
 #include <media/AudioPolicyHelper.h>
-#include <ndk/NdkMediaCodec.h>
-#include <ndk/NdkMediaExtractor.h>
-#include <ndk/NdkMediaFormat.h>
+#include <media/NdkMediaCodec.h>
+#include <media/NdkMediaExtractor.h>
+#include <media/NdkMediaFormat.h>
 
 namespace android
 {
@@ -60,6 +60,7 @@ SoundPool::SoundPool(int maxChannels, const audio_attributes_t* pAttributes)
     ALOGW_IF(maxChannels != mMaxChannels, "App requested %d channels", maxChannels);
 
     mQuit = false;
+    mMuted = false;
     mDecodeThread = 0;
     memcpy(&mAttributes, pAttributes, sizeof(audio_attributes_t));
     mAllocated = 0;
@@ -187,6 +188,17 @@ bool SoundPool::startThreads()
     return mDecodeThread != NULL;
 }
 
+sp<Sample> SoundPool::findSample(int sampleID)
+{
+    Mutex::Autolock lock(&mLock);
+    return findSample_l(sampleID);
+}
+
+sp<Sample> SoundPool::findSample_l(int sampleID)
+{
+    return mSamples.valueFor(sampleID);
+}
+
 SoundChannel* SoundPool::findChannel(int channelID)
 {
     for (int i = 0; i < mMaxChannels; ++i) {
@@ -211,18 +223,21 @@ int SoundPool::load(int fd, int64_t offset, int64_t length, int priority __unuse
 {
     ALOGV("load: fd=%d, offset=%" PRId64 ", length=%" PRId64 ", priority=%d",
             fd, offset, length, priority);
-    Mutex::Autolock lock(&mLock);
-    sp<Sample> sample = new Sample(++mNextSampleID, fd, offset, length);
-    mSamples.add(sample->sampleID(), sample);
-    doLoad(sample);
-    return sample->sampleID();
-}
-
-void SoundPool::doLoad(sp<Sample>& sample)
-{
-    ALOGV("doLoad: loading sample sampleID=%d", sample->sampleID());
-    sample->startLoad();
-    mDecodeThread->loadSample(sample->sampleID());
+    int sampleID;
+    {
+        Mutex::Autolock lock(&mLock);
+        sampleID = ++mNextSampleID;
+        sp<Sample> sample = new Sample(sampleID, fd, offset, length);
+        mSamples.add(sampleID, sample);
+        sample->startLoad();
+    }
+    // mDecodeThread->loadSample() must be called outside of mLock.
+    // mDecodeThread->loadSample() may block on mDecodeThread message queue space;
+    // the message queue emptying may block on SoundPool::findSample().
+    //
+    // It theoretically possible that sample loads might decode out-of-order.
+    mDecodeThread->loadSample(sampleID);
+    return sampleID;
 }
 
 bool SoundPool::unload(int sampleID)
@@ -237,7 +252,6 @@ int SoundPool::play(int sampleID, float leftVolume, float rightVolume,
 {
     ALOGV("play sampleID=%d, leftVolume=%f, rightVolume=%f, priority=%d, loop=%d, rate=%f",
             sampleID, leftVolume, rightVolume, priority, loop, rate);
-    sp<Sample> sample;
     SoundChannel* channel;
     int channelID;
 
@@ -247,7 +261,7 @@ int SoundPool::play(int sampleID, float leftVolume, float rightVolume,
         return 0;
     }
     // is sample ready?
-    sample = findSample(sampleID);
+    sp<Sample> sample(findSample_l(sampleID));
     if ((sample == 0) || (sample->state() != Sample::READY)) {
         ALOGW("  sample %d not READY", sampleID);
         return 0;
@@ -351,6 +365,19 @@ void SoundPool::resume(int channelID)
     if (channel) {
         channel->resume();
     }
+}
+
+void SoundPool::mute(bool muting)
+{
+    ALOGV("mute(%d)", muting);
+    Mutex::Autolock lock(&mLock);
+    mMuted = muting;
+    if (!mChannels.empty()) {
+            for (List<SoundChannel*>::iterator iter = mChannels.begin();
+                    iter != mChannels.end(); ++iter) {
+                (*iter)->mute(muting);
+            }
+        }
 }
 
 void SoundPool::autoResume()
@@ -541,6 +568,10 @@ static status_t decode(int fd, int64_t offset, int64_t length,
                     if (bufidx >= 0) {
                         size_t bufsize;
                         uint8_t *buf = AMediaCodec_getInputBuffer(codec, bufidx, &bufsize);
+                        if (buf == nullptr) {
+                            ALOGE("AMediaCodec_getInputBuffer returned nullptr, short decode");
+                            break;
+                        }
                         int sampleSize = AMediaExtractor_readSampleData(ex, buf, bufsize);
                         ALOGV("read %d", sampleSize);
                         if (sampleSize < 0) {
@@ -550,10 +581,16 @@ static status_t decode(int fd, int64_t offset, int64_t length,
                         }
                         int64_t presentationTimeUs = AMediaExtractor_getSampleTime(ex);
 
-                        AMediaCodec_queueInputBuffer(codec, bufidx,
+                        media_status_t mstatus = AMediaCodec_queueInputBuffer(codec, bufidx,
                                 0 /* offset */, sampleSize, presentationTimeUs,
                                 sawInputEOS ? AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM : 0);
-                        AMediaExtractor_advance(ex);
+                        if (mstatus != AMEDIA_OK) {
+                            // AMEDIA_ERROR_UNKNOWN == { -ERANGE -EINVAL -EACCES }
+                            ALOGE("AMediaCodec_queueInputBuffer returned status %d, short decode",
+                                    (int)mstatus);
+                            break;
+                        }
+                        (void)AMediaExtractor_advance(ex);
                     }
                 }
 
@@ -568,6 +605,10 @@ static status_t decode(int fd, int64_t offset, int64_t length,
                     ALOGV("got decoded buffer size %d", info.size);
 
                     uint8_t *buf = AMediaCodec_getOutputBuffer(codec, status, NULL /* out_size */);
+                    if (buf == nullptr) {
+                        ALOGE("AMediaCodec_getOutputBuffer returned nullptr, short decode");
+                        break;
+                    }
                     size_t dataSize = info.size;
                     if (dataSize > available) {
                         dataSize = available;
@@ -576,7 +617,14 @@ static status_t decode(int fd, int64_t offset, int64_t length,
                     writePos += dataSize;
                     written += dataSize;
                     available -= dataSize;
-                    AMediaCodec_releaseOutputBuffer(codec, status, false /* render */);
+                    media_status_t mstatus = AMediaCodec_releaseOutputBuffer(
+                            codec, status, false /* render */);
+                    if (mstatus != AMEDIA_OK) {
+                        // AMEDIA_ERROR_UNKNOWN == { -ERANGE -EINVAL -EACCES }
+                        ALOGE("AMediaCodec_releaseOutputBuffer returned status %d, short decode",
+                                (int)mstatus);
+                        break;
+                    }
                     if (available == 0) {
                         // there might be more data, but there's no space for it
                         sawOutputEOS = true;
@@ -589,26 +637,29 @@ static status_t decode(int fd, int64_t offset, int64_t length,
                     ALOGV("format changed to: %s", AMediaFormat_toString(format));
                 } else if (status == AMEDIACODEC_INFO_TRY_AGAIN_LATER) {
                     ALOGV("no output buffer right now");
+                } else if (status <= AMEDIA_ERROR_BASE) {
+                    ALOGE("decode error: %d", status);
+                    break;
                 } else {
                     ALOGV("unexpected info code: %d", status);
                 }
             }
 
-            AMediaCodec_stop(codec);
-            AMediaCodec_delete(codec);
-            AMediaExtractor_delete(ex);
+            (void)AMediaCodec_stop(codec);
+            (void)AMediaCodec_delete(codec);
+            (void)AMediaExtractor_delete(ex);
             if (!AMediaFormat_getInt32(format, AMEDIAFORMAT_KEY_SAMPLE_RATE, (int32_t*) rate) ||
                     !AMediaFormat_getInt32(format, AMEDIAFORMAT_KEY_CHANNEL_COUNT, numChannels)) {
-                AMediaFormat_delete(format);
+                (void)AMediaFormat_delete(format);
                 return UNKNOWN_ERROR;
             }
-            AMediaFormat_delete(format);
+            (void)AMediaFormat_delete(format);
             *memsize = written;
             return OK;
         }
-        AMediaFormat_delete(format);
+        (void)AMediaFormat_delete(format);
     }
-    AMediaExtractor_delete(ex);
+    (void)AMediaExtractor_delete(ex);
     return UNKNOWN_ERROR;
 }
 
@@ -639,7 +690,7 @@ status_t Sample::doLoad()
        goto error;
     }
 
-    if ((numChannels < 1) || (numChannels > 8)) {
+    if ((numChannels < 1) || (numChannels > FCC_8)) {
         ALOGE("Sample channel count (%d) out of range", numChannels);
         status = BAD_VALUE;
         goto error;
@@ -995,7 +1046,7 @@ void SoundChannel::setVolume_l(float leftVolume, float rightVolume)
 {
     mLeftVolume = leftVolume;
     mRightVolume = rightVolume;
-    if (mAudioTrack != NULL)
+    if (mAudioTrack != NULL && !mMuted)
         mAudioTrack->setVolume(leftVolume, rightVolume);
 }
 
@@ -1003,6 +1054,19 @@ void SoundChannel::setVolume(float leftVolume, float rightVolume)
 {
     Mutex::Autolock lock(&mLock);
     setVolume_l(leftVolume, rightVolume);
+}
+
+void SoundChannel::mute(bool muting)
+{
+    Mutex::Autolock lock(&mLock);
+    mMuted = muting;
+    if (mAudioTrack != NULL) {
+        if (mMuted) {
+            mAudioTrack->setVolume(0.0f, 0.0f);
+        } else {
+            mAudioTrack->setVolume(mLeftVolume, mRightVolume);
+        }
+    }
 }
 
 void SoundChannel::setLoop(int loop)

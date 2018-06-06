@@ -16,12 +16,12 @@
 
 package android.hardware.input;
 
-import com.android.internal.os.SomeArgs;
-import com.android.internal.util.ArrayUtils;
-
 import android.annotation.IntDef;
+import android.annotation.Nullable;
 import android.annotation.SdkConstant;
 import android.annotation.SdkConstant.SdkConstantType;
+import android.annotation.SystemService;
+import android.app.IInputForwarder;
 import android.content.Context;
 import android.media.AudioAttributes;
 import android.os.Binder;
@@ -31,7 +31,9 @@ import android.os.Looper;
 import android.os.Message;
 import android.os.RemoteException;
 import android.os.ServiceManager;
+import android.os.ServiceManager.ServiceNotFoundException;
 import android.os.SystemClock;
+import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.provider.Settings;
 import android.provider.Settings.SettingNotFoundException;
@@ -39,6 +41,12 @@ import android.util.Log;
 import android.util.SparseArray;
 import android.view.InputDevice;
 import android.view.InputEvent;
+import android.view.MotionEvent;
+import android.view.PointerIcon;
+import android.view.inputmethod.InputMethodInfo;
+import android.view.inputmethod.InputMethodSubtype;
+
+import com.android.internal.os.SomeArgs;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -47,13 +55,8 @@ import java.util.List;
 
 /**
  * Provides information about input devices and available key layouts.
- * <p>
- * Get an instance of this class by calling
- * {@link android.content.Context#getSystemService(java.lang.String)
- * Context.getSystemService()} with the argument
- * {@link android.content.Context#INPUT_SERVICE}.
- * </p>
  */
+@SystemService(Context.INPUT_SERVICE)
 public final class InputManager {
     private static final String TAG = "InputManager";
     private static final boolean DEBUG = false;
@@ -108,17 +111,18 @@ public final class InputManager {
      * of a key character map for a particular keyboard layout.  The label on the receiver
      * is used to name the collection of keyboard layouts provided by this receiver in the
      * keyboard layout settings.
-     * <pre></code>
+     * <pre><code>
      * &lt;?xml version="1.0" encoding="utf-8"?>
      * &lt;keyboard-layouts xmlns:android="http://schemas.android.com/apk/res/android">
      *     &lt;keyboard-layout android:name="keyboard_layout_english_us"
      *             android:label="@string/keyboard_layout_english_us_label"
      *             android:keyboardLayout="@raw/keyboard_layout_english_us" />
      * &lt;/keyboard-layouts>
+     * </pre></code>
      * </p><p>
      * The <code>android:name</code> attribute specifies an identifier by which
      * the keyboard layout will be known in the package.
-     * The <code>android:label</code> attributes specifies a human-readable descriptive
+     * The <code>android:label</code> attribute specifies a human-readable descriptive
      * label to describe the keyboard layout in the user interface, such as "English (US)".
      * The <code>android:keyboardLayout</code> attribute refers to a
      * <a href="http://source.android.com/tech/input/key-character-map-files.html">
@@ -221,8 +225,12 @@ public final class InputManager {
     public static InputManager getInstance() {
         synchronized (InputManager.class) {
             if (sInstance == null) {
-                IBinder b = ServiceManager.getService(Context.INPUT_SERVICE);
-                sInstance = new InputManager(IInputManager.Stub.asInterface(b));
+                try {
+                    sInstance = new InputManager(IInputManager.Stub
+                            .asInterface(ServiceManager.getServiceOrThrow(Context.INPUT_SERVICE)));
+                } catch (ServiceNotFoundException e) {
+                    throw new IllegalStateException(e);
+                }
             }
             return sInstance;
         }
@@ -247,7 +255,7 @@ public final class InputManager {
                 try {
                     inputDevice = mIm.getInputDevice(id);
                 } catch (RemoteException ex) {
-                    throw new RuntimeException("Could not get input device information.", ex);
+                    throw ex.rethrowFromSystemServer();
                 }
                 if (inputDevice != null) {
                     mInputDevices.setValueAt(index, inputDevice);
@@ -279,7 +287,7 @@ public final class InputManager {
                     try {
                         inputDevice = mIm.getInputDevice(id);
                     } catch (RemoteException ex) {
-                        // Ignore the problem for the purposes of this method.
+                        throw ex.rethrowFromSystemServer();
                     }
                     if (inputDevice == null) {
                         continue;
@@ -312,6 +320,62 @@ public final class InputManager {
     }
 
     /**
+     * Returns true if an input device is enabled. Should return true for most
+     * situations. Some system apps may disable an input device, for
+     * example to prevent unwanted touch events.
+     *
+     * @param id The input device Id.
+     *
+     * @hide
+     */
+    public boolean isInputDeviceEnabled(int id) {
+        try {
+            return mIm.isInputDeviceEnabled(id);
+        } catch (RemoteException ex) {
+            Log.w(TAG, "Could not check enabled status of input device with id = " + id);
+            throw ex.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Enables an InputDevice.
+     * <p>
+     * Requires {@link android.Manifest.permissions.DISABLE_INPUT_DEVICE}.
+     * </p>
+     *
+     * @param id The input device Id.
+     *
+     * @hide
+     */
+    public void enableInputDevice(int id) {
+        try {
+            mIm.enableInputDevice(id);
+        } catch (RemoteException ex) {
+            Log.w(TAG, "Could not enable input device with id = " + id);
+            throw ex.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Disables an InputDevice.
+     * <p>
+     * Requires {@link android.Manifest.permissions.DISABLE_INPUT_DEVICE}.
+     * </p>
+     *
+     * @param id The input device Id.
+     *
+     * @hide
+     */
+    public void disableInputDevice(int id) {
+        try {
+            mIm.disableInputDevice(id);
+        } catch (RemoteException ex) {
+            Log.w(TAG, "Could not disable input device with id = " + id);
+            throw ex.rethrowFromSystemServer();
+        }
+    }
+
+    /**
      * Registers an input device listener to receive notifications about when
      * input devices are added, removed or changed.
      *
@@ -327,6 +391,7 @@ public final class InputManager {
         }
 
         synchronized (mInputDevicesLock) {
+            populateInputDevicesLocked();
             int index = findInputDeviceListenerLocked(listener);
             if (index < 0) {
                 mInputDeviceListeners.add(new InputDeviceListenerDelegate(listener, handler));
@@ -378,8 +443,7 @@ public final class InputManager {
         try {
             return mIm.isInTabletMode();
         } catch (RemoteException ex) {
-            Log.w(TAG, "Could not get tablet mode state", ex);
-            return SWITCH_STATE_UNKNOWN;
+            throw ex.rethrowFromSystemServer();
         }
     }
 
@@ -433,7 +497,7 @@ public final class InputManager {
         try {
             mIm.registerTabletModeChangedListener(listener);
         } catch (RemoteException ex) {
-            throw new RuntimeException("Could not register tablet mode changed listener", ex);
+            throw ex.rethrowFromSystemServer();
         }
         mTabletModeChangedListener = listener;
         mOnTabletModeChangedListeners = new ArrayList<>();
@@ -465,8 +529,29 @@ public final class InputManager {
         try {
             return mIm.getKeyboardLayouts();
         } catch (RemoteException ex) {
-            Log.w(TAG, "Could not get list of keyboard layout informations.", ex);
-            return new KeyboardLayout[0];
+            throw ex.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Gets information about all supported keyboard layouts appropriate
+     * for a specific input device.
+     * <p>
+     * The input manager consults the built-in keyboard layouts as well
+     * as all keyboard layouts advertised by applications using a
+     * {@link #ACTION_QUERY_KEYBOARD_LAYOUTS} broadcast receiver.
+     * </p>
+     *
+     * @return A list of all supported keyboard layouts for a specific
+     * input device.
+     *
+     * @hide
+     */
+    public KeyboardLayout[] getKeyboardLayoutsForInputDevice(InputDeviceIdentifier identifier) {
+        try {
+            return mIm.getKeyboardLayoutsForInputDevice(identifier);
+        } catch (RemoteException ex) {
+            throw ex.rethrowFromSystemServer();
         }
     }
 
@@ -487,8 +572,7 @@ public final class InputManager {
         try {
             return mIm.getKeyboardLayout(keyboardLayoutDescriptor);
         } catch (RemoteException ex) {
-            Log.w(TAG, "Could not get keyboard layout information.", ex);
-            return null;
+            throw ex.rethrowFromSystemServer();
         }
     }
 
@@ -505,8 +589,7 @@ public final class InputManager {
         try {
             return mIm.getCurrentKeyboardLayoutForInputDevice(identifier);
         } catch (RemoteException ex) {
-            Log.w(TAG, "Could not get current keyboard layout for input device.", ex);
-            return null;
+            throw ex.rethrowFromSystemServer();
         }
     }
 
@@ -536,7 +619,7 @@ public final class InputManager {
             mIm.setCurrentKeyboardLayoutForInputDevice(identifier,
                     keyboardLayoutDescriptor);
         } catch (RemoteException ex) {
-            Log.w(TAG, "Could not set current keyboard layout for input device.", ex);
+            throw ex.rethrowFromSystemServer();
         }
     }
 
@@ -548,16 +631,15 @@ public final class InputManager {
      * @return The keyboard layout descriptors.
      * @hide
      */
-    public String[] getKeyboardLayoutsForInputDevice(InputDeviceIdentifier identifier) {
+    public String[] getEnabledKeyboardLayoutsForInputDevice(InputDeviceIdentifier identifier) {
         if (identifier == null) {
             throw new IllegalArgumentException("inputDeviceDescriptor must not be null");
         }
 
         try {
-            return mIm.getKeyboardLayoutsForInputDevice(identifier);
+            return mIm.getEnabledKeyboardLayoutsForInputDevice(identifier);
         } catch (RemoteException ex) {
-            Log.w(TAG, "Could not get keyboard layouts for input device.", ex);
-            return ArrayUtils.emptyArray(String.class);
+            throw ex.rethrowFromSystemServer();
         }
     }
 
@@ -585,7 +667,7 @@ public final class InputManager {
         try {
             mIm.addKeyboardLayoutForInputDevice(identifier, keyboardLayoutDescriptor);
         } catch (RemoteException ex) {
-            Log.w(TAG, "Could not add keyboard layout for input device.", ex);
+            throw ex.rethrowFromSystemServer();
         }
     }
 
@@ -613,7 +695,53 @@ public final class InputManager {
         try {
             mIm.removeKeyboardLayoutForInputDevice(identifier, keyboardLayoutDescriptor);
         } catch (RemoteException ex) {
-            Log.w(TAG, "Could not remove keyboard layout for input device.", ex);
+            throw ex.rethrowFromSystemServer();
+        }
+    }
+
+
+    /**
+     * Gets the keyboard layout for the specified input device and IME subtype.
+     *
+     * @param identifier The identifier for the input device.
+     * @param inputMethodInfo The input method.
+     * @param inputMethodSubtype The input method subtype. {@code null} if this input method does
+     * not support any subtype.
+     *
+     * @return The associated {@link KeyboardLayout}, or null if one has not been set.
+     *
+     * @hide
+     */
+    @Nullable
+    public KeyboardLayout getKeyboardLayoutForInputDevice(InputDeviceIdentifier identifier,
+            InputMethodInfo inputMethodInfo, @Nullable InputMethodSubtype inputMethodSubtype) {
+        try {
+            return mIm.getKeyboardLayoutForInputDevice(
+                    identifier, inputMethodInfo, inputMethodSubtype);
+        } catch (RemoteException ex) {
+            throw ex.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Sets the keyboard layout for the specified input device and IME subtype pair.
+     *
+     * @param identifier The identifier for the input device.
+     * @param inputMethodInfo The input method with which to associate the keyboard layout.
+     * @param inputMethodSubtype The input method subtype which which to associate the keyboard
+     * layout. {@code null} if this input method does not support any subtype.
+     * @param keyboardLayoutDescriptor The descriptor of the keyboard layout to set
+     *
+     * @hide
+     */
+    public void setKeyboardLayoutForInputDevice(InputDeviceIdentifier identifier,
+            InputMethodInfo inputMethodInfo, @Nullable InputMethodSubtype inputMethodSubtype,
+            String keyboardLayoutDescriptor) {
+        try {
+            mIm.setKeyboardLayoutForInputDevice(identifier, inputMethodInfo,
+                    inputMethodSubtype, keyboardLayoutDescriptor);
+        } catch (RemoteException ex) {
+            throw ex.rethrowFromSystemServer();
         }
     }
 
@@ -630,8 +758,7 @@ public final class InputManager {
         try {
             return mIm.getTouchCalibrationForInputDevice(inputDeviceDescriptor, surfaceRotation);
         } catch (RemoteException ex) {
-            Log.w(TAG, "Could not get calibration matrix for input device.", ex);
-            return TouchCalibration.IDENTITY;
+            throw ex.rethrowFromSystemServer();
         }
     }
 
@@ -652,7 +779,7 @@ public final class InputManager {
         try {
             mIm.setTouchCalibrationForInputDevice(inputDeviceDescriptor, surfaceRotation, calibration);
         } catch (RemoteException ex) {
-            Log.w(TAG, "Could not set calibration matrix for input device.", ex);
+            throw ex.rethrowFromSystemServer();
         }
     }
 
@@ -719,7 +846,7 @@ public final class InputManager {
         try {
             mIm.tryPointerSpeed(speed);
         } catch (RemoteException ex) {
-            Log.w(TAG, "Could not set temporary pointer speed.", ex);
+            throw ex.rethrowFromSystemServer();
         }
     }
 
@@ -757,7 +884,7 @@ public final class InputManager {
         try {
             mIm.hasKeys(id, InputDevice.SOURCE_ANY, keyCodes, ret);
         } catch (RemoteException e) {
-            // no fallback; just return the empty array
+            throw e.rethrowFromSystemServer();
         }
         return ret;
     }
@@ -797,7 +924,70 @@ public final class InputManager {
         try {
             return mIm.injectInputEvent(event, mode);
         } catch (RemoteException ex) {
-            return false;
+            throw ex.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Changes the mouse pointer's icon shape into the specified id.
+     *
+     * @param iconId The id of the pointer graphic, as a value between
+     * {@link PointerIcon.TYPE_ARROW} and {@link PointerIcon.TYPE_GRABBING}.
+     *
+     * @hide
+     */
+    public void setPointerIconType(int iconId) {
+        try {
+            mIm.setPointerIconType(iconId);
+        } catch (RemoteException ex) {
+            throw ex.rethrowFromSystemServer();
+        }
+    }
+
+    /** @hide */
+    public void setCustomPointerIcon(PointerIcon icon) {
+        try {
+            mIm.setCustomPointerIcon(icon);
+        } catch (RemoteException ex) {
+            throw ex.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Request or release pointer capture.
+     * <p>
+     * When in capturing mode, the pointer icon disappears and all mouse events are dispatched to
+     * the window which has requested the capture. Relative position changes are available through
+     * {@link MotionEvent#getX} and {@link MotionEvent#getY}.
+     *
+     * @param enable true when requesting pointer capture, false when releasing.
+     *
+     * @hide
+     */
+    public void requestPointerCapture(IBinder windowToken, boolean enable) {
+        try {
+            mIm.requestPointerCapture(windowToken, enable);
+        } catch (RemoteException ex) {
+            throw ex.rethrowFromSystemServer();
+        }
+    }
+
+
+    /**
+     * Create an {@link IInputForwarder} targeted to provided display.
+     * {@link android.Manifest.permission.INJECT_EVENTS} permission is required to call this method.
+     *
+     * @param displayId Id of the target display where input events should be forwarded.
+     *                  Display must exist and must be owned by the caller.
+     * @return The forwarder instance.
+     *
+     * @hide
+     */
+    public IInputForwarder createInputForwarder(int displayId) {
+        try {
+            return mIm.createInputForwarder(displayId);
+        } catch (RemoteException ex) {
+            throw ex.rethrowFromSystemServer();
         }
     }
 
@@ -807,8 +997,7 @@ public final class InputManager {
             try {
                 mIm.registerInputDevicesChangedListener(listener);
             } catch (RemoteException ex) {
-                throw new RuntimeException(
-                        "Could not get register input device changed listener", ex);
+                throw ex.rethrowFromSystemServer();
             }
             mInputDevicesChangedListener = listener;
         }
@@ -818,7 +1007,7 @@ public final class InputManager {
             try {
                 ids = mIm.getInputDeviceIds();
             } catch (RemoteException ex) {
-                throw new RuntimeException("Could not get input device ids.", ex);
+                throw ex.rethrowFromSystemServer();
             }
 
             mInputDevices = new SparseArray<InputDevice>();
@@ -1038,27 +1227,37 @@ public final class InputManager {
             return true;
         }
 
-        /**
-         * @hide
-         */
         @Override
-        public void vibrate(int uid, String opPkg, long milliseconds, AudioAttributes attributes) {
-            vibrate(new long[] { 0, milliseconds}, -1);
+        public boolean hasAmplitudeControl() {
+            return false;
         }
 
         /**
          * @hide
          */
         @Override
-        public void vibrate(int uid, String opPkg, long[] pattern, int repeat,
-                AudioAttributes attributes) {
-            if (repeat >= pattern.length) {
-                throw new ArrayIndexOutOfBoundsException();
+        public void vibrate(int uid, String opPkg,
+                VibrationEffect effect, AudioAttributes attributes) {
+            long[] pattern;
+            int repeat;
+            if (effect instanceof VibrationEffect.OneShot) {
+                VibrationEffect.OneShot oneShot = (VibrationEffect.OneShot) effect;
+                pattern = new long[] { 0, oneShot.getTiming() };
+                repeat = -1;
+            } else if (effect instanceof VibrationEffect.Waveform) {
+                VibrationEffect.Waveform waveform = (VibrationEffect.Waveform) effect;
+                pattern = waveform.getTimings();
+                repeat = waveform.getRepeatIndex();
+            } else {
+                // TODO: Add support for prebaked effects
+                Log.w(TAG, "Pre-baked effects aren't supported on input devices");
+                return;
             }
+
             try {
                 mIm.vibrate(mDeviceId, pattern, repeat, mToken);
             } catch (RemoteException ex) {
-                Log.w(TAG, "Failed to vibrate.", ex);
+                throw ex.rethrowFromSystemServer();
             }
         }
 
@@ -1067,7 +1266,7 @@ public final class InputManager {
             try {
                 mIm.cancelVibrate(mDeviceId, mToken);
             } catch (RemoteException ex) {
-                Log.w(TAG, "Failed to cancel vibration.", ex);
+                throw ex.rethrowFromSystemServer();
             }
         }
     }

@@ -16,15 +16,14 @@
 
 package android.widget;
 
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.content.BroadcastReceiver;
 import android.content.res.Resources;
 import android.content.res.TypedArray;
 import android.graphics.Canvas;
 import android.graphics.drawable.Drawable;
-import android.os.Handler;
 import android.text.format.DateUtils;
 import android.text.format.Time;
 import android.util.AttributeSet;
@@ -56,7 +55,6 @@ public class AnalogClock extends View {
 
     private boolean mAttached;
 
-    private final Handler mHandler = new Handler();
     private float mMinutes;
     private float mHour;
     private boolean mChanged;
@@ -121,7 +119,7 @@ public class AnalogClock extends View {
             // home screen. Therefore, we register the receiver as the current
             // user not the one the context is for.
             getContext().registerReceiverAsUser(mIntentReceiver,
-                    android.os.Process.myUserHandle(), filter, null, mHandler);
+                    android.os.Process.myUserHandle(), filter, null, getHandler());
         }
 
         // NOTE: It's safe to do these after registering the receiver since the receiver always runs
@@ -259,7 +257,7 @@ public class AnalogClock extends View {
             }
 
             onTimeChanged();
-            
+
             invalidate();
         }
     };

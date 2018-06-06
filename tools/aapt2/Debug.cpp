@@ -15,9 +15,6 @@
  */
 
 #include "Debug.h"
-#include "ResourceTable.h"
-#include "ResourceValues.h"
-#include "Util.h"
 
 #include <algorithm>
 #include <iostream>
@@ -27,166 +24,294 @@
 #include <set>
 #include <vector>
 
+#include "android-base/logging.h"
+
+#include "ResourceTable.h"
+#include "ResourceValues.h"
+#include "ValueVisitor.h"
+#include "util/Util.h"
+
 namespace aapt {
 
-struct PrintVisitor : ConstValueVisitor {
-    void visit(const Attribute& attr, ValueVisitorArgs&) override {
-        std::cout << "(attr) type=";
-        attr.printMask(std::cout);
-        static constexpr uint32_t kMask = android::ResTable_map::TYPE_ENUM |
-            android::ResTable_map::TYPE_FLAGS;
-        if (attr.typeMask & kMask) {
-            for (const auto& symbol : attr.symbols) {
-                std::cout << "\n        "
-                          << symbol.symbol.name.entry << " (" << symbol.symbol.id << ") = "
-                          << symbol.value;
-            }
+namespace {
+
+class PrintVisitor : public ValueVisitor {
+ public:
+  using ValueVisitor::Visit;
+
+  void Visit(Attribute* attr) override {
+    std::cout << "(attr) type=";
+    attr->PrintMask(&std::cout);
+    static constexpr uint32_t kMask =
+        android::ResTable_map::TYPE_ENUM | android::ResTable_map::TYPE_FLAGS;
+    if (attr->type_mask & kMask) {
+      for (const auto& symbol : attr->symbols) {
+        std::cout << "\n        " << symbol.symbol.name.value().entry;
+        if (symbol.symbol.id) {
+          std::cout << " (" << symbol.symbol.id.value() << ")";
         }
+        std::cout << " = " << symbol.value;
+      }
     }
+  }
 
-    void visit(const Style& style, ValueVisitorArgs&) override {
-        std::cout << "(style)";
-        if (style.parent.name.isValid() || style.parent.id.isValid()) {
-            std::cout << " parent=";
-            if (style.parent.name.isValid()) {
-                std::cout << style.parent.name << " ";
-            }
-
-            if (style.parent.id.isValid()) {
-                std::cout << style.parent.id;
-            }
+  void Visit(Style* style) override {
+    std::cout << "(style)";
+    if (style->parent) {
+      const Reference& parent_ref = style->parent.value();
+      std::cout << " parent=";
+      if (parent_ref.name) {
+        if (parent_ref.private_reference) {
+          std::cout << "*";
         }
+        std::cout << parent_ref.name.value() << " ";
+      }
 
-        for (const auto& entry : style.entries) {
-            std::cout << "\n        ";
-            if (entry.key.name.isValid()) {
-                std::cout << entry.key.name.package << ":" << entry.key.name.entry;
-            }
+      if (parent_ref.id) {
+        std::cout << parent_ref.id.value();
+      }
+    }
 
-            if (entry.key.id.isValid()) {
-                std::cout << "(" << entry.key.id << ")";
-            }
-
-            std::cout << "=" << *entry.value;
+    for (const auto& entry : style->entries) {
+      std::cout << "\n        ";
+      if (entry.key.name) {
+        const ResourceName& name = entry.key.name.value();
+        if (!name.package.empty()) {
+          std::cout << name.package << ":";
         }
-    }
+        std::cout << name.entry;
+      }
 
-    void visit(const Array& array, ValueVisitorArgs&) override {
-        array.print(std::cout);
-    }
+      if (entry.key.id) {
+        std::cout << "(" << entry.key.id.value() << ")";
+      }
 
-    void visit(const Plural& plural, ValueVisitorArgs&) override {
-        plural.print(std::cout);
+      std::cout << "=" << *entry.value;
     }
+  }
 
-    void visit(const Styleable& styleable, ValueVisitorArgs&) override {
-        styleable.print(std::cout);
-    }
+  void Visit(Array* array) override {
+    array->Print(&std::cout);
+  }
 
-    void visitItem(const Item& item, ValueVisitorArgs& args) override {
-        item.print(std::cout);
+  void Visit(Plural* plural) override {
+    plural->Print(&std::cout);
+  }
+
+  void Visit(Styleable* styleable) override {
+    std::cout << "(styleable)";
+    for (const auto& attr : styleable->entries) {
+      std::cout << "\n        ";
+      if (attr.name) {
+        const ResourceName& name = attr.name.value();
+        if (!name.package.empty()) {
+          std::cout << name.package << ":";
+        }
+        std::cout << name.entry;
+      }
+
+      if (attr.id) {
+        std::cout << "(" << attr.id.value() << ")";
+      }
     }
+  }
+
+  void VisitItem(Item* item) override {
+    item->Print(&std::cout);
+  }
 };
 
-void Debug::printTable(const std::shared_ptr<ResourceTable>& table) {
-    std::cout << "Package name=" << table->getPackage();
-    if (table->getPackageId() != ResourceTable::kUnsetPackageId) {
-        std::cout << " id=" << std::hex << table->getPackageId() << std::dec;
+}  // namespace
+
+void Debug::PrintTable(ResourceTable* table, const DebugPrintTableOptions& options) {
+  PrintVisitor visitor;
+
+  for (auto& package : table->packages) {
+    std::cout << "Package name=" << package->name;
+    if (package->id) {
+      std::cout << " id=" << std::hex << (int)package->id.value() << std::dec;
     }
     std::cout << std::endl;
 
-    for (const auto& type : *table) {
-        std::cout << "  type " << type->type;
-        if (type->typeId != ResourceTableType::kUnsetTypeId) {
-            std::cout << " id=" << std::hex << type->typeId << std::dec;
-        }
-        std::cout << " entryCount=" << type->entries.size() << std::endl;
+    for (const auto& type : package->types) {
+      std::cout << "\n  type " << type->type;
+      if (type->id) {
+        std::cout << " id=" << std::hex << (int)type->id.value() << std::dec;
+      }
+      std::cout << " entryCount=" << type->entries.size() << std::endl;
 
-        std::vector<const ResourceEntry*> sortedEntries;
-        for (const auto& entry : type->entries) {
-            auto iter = std::lower_bound(sortedEntries.begin(), sortedEntries.end(), entry.get(),
-                    [](const ResourceEntry* a, const ResourceEntry* b) -> bool {
-                        return a->entryId < b->entryId;
-                    });
-            sortedEntries.insert(iter, entry.get());
+      std::vector<const ResourceEntry*> sorted_entries;
+      for (const auto& entry : type->entries) {
+        auto iter = std::lower_bound(
+            sorted_entries.begin(), sorted_entries.end(), entry.get(),
+            [](const ResourceEntry* a, const ResourceEntry* b) -> bool {
+              if (a->id && b->id) {
+                return a->id.value() < b->id.value();
+              } else if (a->id) {
+                return true;
+              } else {
+                return false;
+              }
+            });
+        sorted_entries.insert(iter, entry.get());
+      }
+
+      for (const ResourceEntry* entry : sorted_entries) {
+        const ResourceId id(package->id.value_or_default(0), type->id.value_or_default(0),
+                            entry->id.value_or_default(0));
+        const ResourceName name(package->name, type->type, entry->name);
+
+        std::cout << "    spec resource " << id << " " << name;
+        switch (entry->symbol_status.state) {
+          case SymbolState::kPublic:
+            std::cout << " PUBLIC";
+            break;
+          case SymbolState::kPrivate:
+            std::cout << " _PRIVATE_";
+            break;
+          default:
+            break;
         }
 
-        for (const ResourceEntry* entry : sortedEntries) {
-            ResourceId id = { table->getPackageId(), type->typeId, entry->entryId };
-            ResourceName name = { table->getPackage(), type->type, entry->name };
-            std::cout << "    spec resource " << id << " " << name;
-            if (entry->publicStatus.isPublic) {
-                std::cout << " PUBLIC";
-            }
-            std::cout << std::endl;
+        std::cout << std::endl;
 
-            PrintVisitor visitor;
-            for (const auto& value : entry->values) {
-                std::cout << "      (" << value.config << ") ";
-                value.value->accept(visitor, {});
-                std::cout << std::endl;
-            }
+        for (const auto& value : entry->values) {
+          std::cout << "      (" << value->config << ") ";
+          value->value->Accept(&visitor);
+          if (options.show_sources && !value->value->GetSource().path.empty()) {
+            std::cout << " src=" << value->value->GetSource();
+          }
+          std::cout << std::endl;
         }
+      }
     }
+  }
 }
 
-static size_t getNodeIndex(const std::vector<ResourceName>& names, const ResourceName& name) {
-    auto iter = std::lower_bound(names.begin(), names.end(), name);
-    assert(iter != names.end() && *iter == name);
-    return std::distance(names.begin(), iter);
+static size_t GetNodeIndex(const std::vector<ResourceName>& names, const ResourceName& name) {
+  auto iter = std::lower_bound(names.begin(), names.end(), name);
+  CHECK(iter != names.end());
+  CHECK(*iter == name);
+  return std::distance(names.begin(), iter);
 }
 
-void Debug::printStyleGraph(const std::shared_ptr<ResourceTable>& table,
-                            const ResourceName& targetStyle) {
-    std::map<ResourceName, std::set<ResourceName>> graph;
+void Debug::PrintStyleGraph(ResourceTable* table, const ResourceName& target_style) {
+  std::map<ResourceName, std::set<ResourceName>> graph;
 
-    std::queue<ResourceName> stylesToVisit;
-    stylesToVisit.push(targetStyle);
-    for (; !stylesToVisit.empty(); stylesToVisit.pop()) {
-        const ResourceName& styleName = stylesToVisit.front();
-        std::set<ResourceName>& parents = graph[styleName];
-        if (!parents.empty()) {
-            // We've already visited this style.
-            continue;
+  std::queue<ResourceName> styles_to_visit;
+  styles_to_visit.push(target_style);
+  for (; !styles_to_visit.empty(); styles_to_visit.pop()) {
+    const ResourceName& style_name = styles_to_visit.front();
+    std::set<ResourceName>& parents = graph[style_name];
+    if (!parents.empty()) {
+      // We've already visited this style.
+      continue;
+    }
+
+    Maybe<ResourceTable::SearchResult> result = table->FindResource(style_name);
+    if (result) {
+      ResourceEntry* entry = result.value().entry;
+      for (const auto& value : entry->values) {
+        if (Style* style = ValueCast<Style>(value->value.get())) {
+          if (style->parent && style->parent.value().name) {
+            parents.insert(style->parent.value().name.value());
+            styles_to_visit.push(style->parent.value().name.value());
+          }
         }
-
-        const ResourceTableType* type;
-        const ResourceEntry* entry;
-        std::tie(type, entry) = table->findResource(styleName);
-        if (entry) {
-            for (const auto& value : entry->values) {
-                visitFunc<Style>(*value.value, [&](const Style& style) {
-                    if (style.parent.name.isValid()) {
-                        parents.insert(style.parent.name);
-                        stylesToVisit.push(style.parent.name);
-                    }
-                });
-            }
-        }
+      }
     }
+  }
 
-    std::vector<ResourceName> names;
-    for (const auto& entry : graph) {
-        names.push_back(entry.first);
+  std::vector<ResourceName> names;
+  for (const auto& entry : graph) {
+    names.push_back(entry.first);
+  }
+
+  std::cout << "digraph styles {\n";
+  for (const auto& name : names) {
+    std::cout << "  node_" << GetNodeIndex(names, name) << " [label=\"" << name << "\"];\n";
+  }
+
+  for (const auto& entry : graph) {
+    const ResourceName& style_name = entry.first;
+    size_t style_node_index = GetNodeIndex(names, style_name);
+
+    for (const auto& parent_name : entry.second) {
+      std::cout << "  node_" << style_node_index << " -> "
+                << "node_" << GetNodeIndex(names, parent_name) << ";\n";
     }
+  }
 
-    std::cout << "digraph styles {\n";
-    for (const auto& name : names) {
-        std::cout << "  node_" << getNodeIndex(names, name)
-                  << " [label=\"" << name << "\"];\n";
-    }
-
-    for (const auto& entry : graph) {
-        const ResourceName& styleName = entry.first;
-        size_t styleNodeIndex = getNodeIndex(names, styleName);
-
-        for (const auto& parentName : entry.second) {
-            std::cout << "  node_" << styleNodeIndex << " -> "
-                      << "node_" << getNodeIndex(names, parentName) << ";\n";
-        }
-    }
-
-    std::cout << "}" << std::endl;
+  std::cout << "}" << std::endl;
 }
 
-} // namespace aapt
+void Debug::DumpHex(const void* data, size_t len) {
+  const uint8_t* d = (const uint8_t*)data;
+  for (size_t i = 0; i < len; i++) {
+    std::cerr << std::hex << std::setfill('0') << std::setw(2) << (uint32_t)d[i] << " ";
+    if (i % 8 == 7) {
+      std::cerr << "\n";
+    }
+  }
+
+  if (len - 1 % 8 != 7) {
+    std::cerr << std::endl;
+  }
+}
+
+namespace {
+
+class XmlPrinter : public xml::Visitor {
+ public:
+  using xml::Visitor::Visit;
+
+  void Visit(xml::Element* el) override {
+    const size_t previous_size = prefix_.size();
+
+    for (const xml::NamespaceDecl& decl : el->namespace_decls) {
+      std::cerr << prefix_ << "N: " << decl.prefix << "=" << decl.uri
+                << " (line=" << decl.line_number << ")\n";
+      prefix_ += "  ";
+    }
+
+    std::cerr << prefix_ << "E: ";
+    if (!el->namespace_uri.empty()) {
+      std::cerr << el->namespace_uri << ":";
+    }
+    std::cerr << el->name << " (line=" << el->line_number << ")\n";
+
+    for (const xml::Attribute& attr : el->attributes) {
+      std::cerr << prefix_ << "  A: ";
+      if (!attr.namespace_uri.empty()) {
+        std::cerr << attr.namespace_uri << ":";
+      }
+      std::cerr << attr.name;
+
+      if (attr.compiled_attribute) {
+        std::cerr << "(" << attr.compiled_attribute.value().id.value_or_default(ResourceId(0x0))
+                  << ")";
+      }
+      std::cerr << "=" << attr.value << "\n";
+    }
+
+    prefix_ += "  ";
+    xml::Visitor::Visit(el);
+    prefix_.resize(previous_size);
+  }
+
+  void Visit(xml::Text* text) override {
+    std::cerr << prefix_ << "T: '" << text->text << "'\n";
+  }
+
+ private:
+  std::string prefix_;
+};
+
+}  // namespace
+
+void Debug::DumpXml(xml::XmlResource* doc) {
+  XmlPrinter printer;
+  doc->root->Accept(&printer);
+}
+
+}  // namespace aapt

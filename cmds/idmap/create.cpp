@@ -1,6 +1,6 @@
 #include "idmap.h"
 
-#include <UniquePtr.h>
+#include <memory>
 #include <androidfw/AssetManager.h>
 #include <androidfw/ResourceTypes.h>
 #include <androidfw/ZipFileRO.h>
@@ -15,7 +15,7 @@ using namespace android;
 namespace {
     int get_zip_entry_crc(const char *zip_path, const char *entry_name, uint32_t *crc)
     {
-        UniquePtr<ZipFileRO> zip(ZipFileRO::open(zip_path));
+        std::unique_ptr<ZipFileRO> zip(ZipFileRO::open(zip_path));
         if (zip.get() == NULL) {
             return -1;
         }
@@ -41,7 +41,7 @@ namespace {
             ALOGD("error: fchmod %s: %s\n", path, strerror(errno));
             goto fail;
         }
-        if (TEMP_FAILURE_RETRY(flock(fd, LOCK_EX | LOCK_NB)) != 0) {
+        if (TEMP_FAILURE_RETRY(flock(fd, LOCK_EX)) != 0) {
             ALOGD("error: flock %s: %s\n", path, strerror(errno));
             goto fail;
         }
@@ -57,7 +57,7 @@ fail:
 
     int write_idmap(int fd, const uint32_t *data, size_t size)
     {
-        if (lseek(fd, SEEK_SET, 0) < 0) {
+        if (lseek(fd, 0, SEEK_SET) < 0) {
             return -1;
         }
         size_t bytesLeft = size;
@@ -86,7 +86,7 @@ fail:
 
         char buf[N];
         size_t bytesLeft = N;
-        if (lseek(idmap_fd, SEEK_SET, 0) < 0) {
+        if (lseek(idmap_fd, 0, SEEK_SET) < 0) {
             return true;
         }
         for (;;) {
@@ -220,4 +220,10 @@ int idmap_create_fd(const char *target_apk_path, const char *overlay_apk_path, i
 {
     return create_and_write_idmap(target_apk_path, overlay_apk_path, fd, true) == 0 ?
         EXIT_SUCCESS : EXIT_FAILURE;
+}
+
+int idmap_verify_fd(const char *target_apk_path, const char *overlay_apk_path, int fd)
+{
+    return !is_idmap_stale_fd(target_apk_path, overlay_apk_path, fd) ?
+            EXIT_SUCCESS : EXIT_FAILURE;
 }

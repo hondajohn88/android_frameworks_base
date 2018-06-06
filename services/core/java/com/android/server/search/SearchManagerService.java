@@ -17,35 +17,35 @@
 package com.android.server.search;
 
 import android.app.ActivityManager;
-import android.app.ActivityManagerNative;
-import android.app.AppGlobals;
 import android.app.IActivityManager;
 import android.app.ISearchManager;
 import android.app.SearchManager;
 import android.app.SearchableInfo;
-import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
-import android.content.pm.IPackageManager;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.database.ContentObserver;
 import android.os.Binder;
 import android.os.Bundle;
-import android.os.Process;
+import android.os.Handler;
 import android.os.RemoteException;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.provider.Settings;
+import android.service.voice.VoiceInteractionService;
 import android.util.Log;
 import android.util.SparseArray;
 
+import com.android.internal.annotations.GuardedBy;
 import com.android.internal.content.PackageMonitor;
+import com.android.internal.os.BackgroundThread;
+import com.android.internal.util.DumpUtils;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.server.LocalServices;
+import com.android.server.SystemService;
 import com.android.server.statusbar.StatusBarManagerInternal;
 
 import java.io.FileDescriptor;
@@ -53,19 +53,48 @@ import java.io.PrintWriter;
 import java.util.List;
 
 /**
- * The search manager service handles the search UI, and maintains a registry of searchable
- * activities.
+ * The search manager service handles the search UI, and maintains a registry of
+ * searchable activities.
  */
 public class SearchManagerService extends ISearchManager.Stub {
-
-    // general debugging support
     private static final String TAG = "SearchManagerService";
+    final Handler mHandler;
+
+    public static class Lifecycle extends SystemService {
+        private SearchManagerService mService;
+
+        public Lifecycle(Context context) {
+            super(context);
+        }
+
+        @Override
+        public void onStart() {
+            mService = new SearchManagerService(getContext());
+            publishBinderService(Context.SEARCH_SERVICE, mService);
+        }
+
+        @Override
+        public void onUnlockUser(final int userId) {
+            mService.mHandler.post(new Runnable() {
+                @Override
+                public void run() {
+                    mService.onUnlockUser(userId);
+                }
+            });
+        }
+
+        @Override
+        public void onCleanupUser(int userHandle) {
+            mService.onCleanupUser(userHandle);
+        }
+    }
 
     // Context that the service is running in.
     private final Context mContext;
 
     // This field is initialized lazily in getSearchables(), and then never modified.
-    private final SparseArray<Searchables> mSearchables = new SparseArray<Searchables>();
+    @GuardedBy("mSearchables")
+    private final SparseArray<Searchables> mSearchables = new SparseArray<>();
 
     /**
      * Initializes the Search Manager service in the provided system context.
@@ -75,65 +104,53 @@ public class SearchManagerService extends ISearchManager.Stub {
      */
     public SearchManagerService(Context context)  {
         mContext = context;
-        IntentFilter filter = new IntentFilter(Intent.ACTION_BOOT_COMPLETED);
-        filter.setPriority(IntentFilter.SYSTEM_HIGH_PRIORITY);
-        mContext.registerReceiver(new BootCompletedReceiver(), filter);
-        mContext.registerReceiver(new UserReceiver(),
-                new IntentFilter(Intent.ACTION_USER_REMOVED));
         new MyPackageMonitor().register(context, null, UserHandle.ALL, true);
+        new GlobalSearchProviderObserver(context.getContentResolver());
+        mHandler = BackgroundThread.getHandler();
     }
 
     private Searchables getSearchables(int userId) {
-        long origId = Binder.clearCallingIdentity();
+        return getSearchables(userId, false);
+    }
+
+    private Searchables getSearchables(int userId, boolean forceUpdate) {
+        final long token = Binder.clearCallingIdentity();
         try {
-            boolean userExists = ((UserManager) mContext.getSystemService(Context.USER_SERVICE))
-                    .getUserInfo(userId) != null;
-            if (!userExists) return null;
+            final UserManager um = mContext.getSystemService(UserManager.class);
+            if (um.getUserInfo(userId) == null) {
+                throw new IllegalStateException("User " + userId + " doesn't exist");
+            }
+            if (!um.isUserUnlockingOrUnlocked(userId)) {
+                throw new IllegalStateException("User " + userId + " isn't unlocked");
+            }
         } finally {
-            Binder.restoreCallingIdentity(origId);
+            Binder.restoreCallingIdentity(token);
         }
         synchronized (mSearchables) {
             Searchables searchables = mSearchables.get(userId);
-
             if (searchables == null) {
-                //Log.i(TAG, "Building list of searchable activities for userId=" + userId);
                 searchables = new Searchables(mContext, userId);
-                searchables.buildSearchableList();
+                searchables.updateSearchableList();
                 mSearchables.append(userId, searchables);
+            } else if (forceUpdate) {
+                searchables.updateSearchableList();
             }
             return searchables;
         }
     }
 
-    private void onUserRemoved(int userId) {
-        if (userId != UserHandle.USER_OWNER) {
-            synchronized (mSearchables) {
-                mSearchables.remove(userId);
-            }
+    private void onUnlockUser(int userId) {
+        try {
+            getSearchables(userId, true);
+        } catch (IllegalStateException ignored) {
+            // We're just trying to warm a cache, so we don't mind if the user
+            // was stopped or destroyed before we got here.
         }
     }
 
-    /**
-     * Creates the initial searchables list after boot.
-     */
-    private final class BootCompletedReceiver extends BroadcastReceiver {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            new Thread() {
-                @Override
-                public void run() {
-                    Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND);
-                    mContext.unregisterReceiver(BootCompletedReceiver.this);
-                    getSearchables(0);
-                }
-            }.start();
-        }
-    }
-
-    private final class UserReceiver extends BroadcastReceiver {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            onUserRemoved(intent.getIntExtra(Intent.EXTRA_USER_HANDLE, UserHandle.USER_OWNER));
+    private void onCleanupUser(int userId) {
+        synchronized (mSearchables) {
+            mSearchables.remove(userId);
         }
     }
 
@@ -158,7 +175,7 @@ public class SearchManagerService extends ISearchManager.Stub {
                 // Update list of searchable activities
                 for (int i = 0; i < mSearchables.size(); i++) {
                     if (changingUserId == mSearchables.keyAt(i)) {
-                        getSearchables(mSearchables.keyAt(i)).buildSearchableList();
+                        mSearchables.valueAt(i).updateSearchableList();
                         break;
                     }
                 }
@@ -187,14 +204,13 @@ public class SearchManagerService extends ISearchManager.Stub {
         public void onChange(boolean selfChange) {
             synchronized (mSearchables) {
                 for (int i = 0; i < mSearchables.size(); i++) {
-                    getSearchables(mSearchables.keyAt(i)).buildSearchableList();
+                    mSearchables.valueAt(i).updateSearchableList();
                 }
             }
             Intent intent = new Intent(SearchManager.INTENT_GLOBAL_SEARCH_ACTIVITY_CHANGED);
             intent.addFlags(Intent.FLAG_RECEIVER_REPLACE_PENDING);
             mContext.sendBroadcastAsUser(intent, UserHandle.ALL);
         }
-
     }
 
     //
@@ -208,6 +224,7 @@ public class SearchManagerService extends ISearchManager.Stub {
      * @return Returns a SearchableInfo record describing the parameters of the search,
      * or null if no searchable metadata was available.
      */
+    @Override
     public SearchableInfo getSearchableInfo(final ComponentName launchActivity) {
         if (launchActivity == null) {
             Log.e(TAG, "getSearchableInfo(), activity == null");
@@ -219,10 +236,12 @@ public class SearchManagerService extends ISearchManager.Stub {
     /**
      * Returns a list of the searchable activities that can be included in global search.
      */
+    @Override
     public List<SearchableInfo> getSearchablesInGlobalSearch() {
         return getSearchables(UserHandle.getCallingUserId()).getSearchablesInGlobalSearchList();
     }
 
+    @Override
     public List<ResolveInfo> getGlobalSearchActivities() {
         return getSearchables(UserHandle.getCallingUserId()).getGlobalSearchActivities();
     }
@@ -230,6 +249,7 @@ public class SearchManagerService extends ISearchManager.Stub {
     /**
      * Gets the name of the global search activity.
      */
+    @Override
     public ComponentName getGlobalSearchActivity() {
         return getSearchables(UserHandle.getCallingUserId()).getGlobalSearchActivity();
     }
@@ -237,6 +257,7 @@ public class SearchManagerService extends ISearchManager.Stub {
     /**
      * Gets the name of the web search activity.
      */
+    @Override
     public ComponentName getWebSearchActivity() {
         return getSearchables(UserHandle.getCallingUserId()).getWebSearchActivity();
     }
@@ -250,24 +271,25 @@ public class SearchManagerService extends ISearchManager.Stub {
         }
     }
 
+    // Check and return VIS component
     private ComponentName getLegacyAssistComponent(int userHandle) {
         try {
             userHandle = ActivityManager.handleIncomingUser(Binder.getCallingPid(),
-                    Binder.getCallingUid(), userHandle, true, false, "getLegacyAssistComponent", null);
-            IPackageManager pm = AppGlobals.getPackageManager();
-            Intent assistIntent = new Intent(Intent.ACTION_ASSIST);
-            ResolveInfo info =
-                    pm.resolveIntent(assistIntent,
-                            assistIntent.resolveTypeIfNeeded(mContext.getContentResolver()),
-                            PackageManager.MATCH_DEFAULT_ONLY, userHandle);
-            if (info != null) {
+                    Binder.getCallingUid(), userHandle, true, false, "getLegacyAssistComponent",
+                    null);
+            PackageManager pm = mContext.getPackageManager();
+            Intent intentAssistProbe = new Intent(VoiceInteractionService.SERVICE_INTERFACE);
+            List<ResolveInfo> infoListVis = pm.queryIntentServicesAsUser(intentAssistProbe,
+                    PackageManager.MATCH_SYSTEM_ONLY, userHandle);
+            if (infoListVis == null || infoListVis.isEmpty()) {
+                return null;
+            } else {
+                ResolveInfo rInfo = infoListVis.get(0);
                 return new ComponentName(
-                        info.activityInfo.applicationInfo.packageName,
-                        info.activityInfo.name);
+                        rInfo.serviceInfo.applicationInfo.packageName,
+                        rInfo.serviceInfo.name);
+
             }
-        } catch (RemoteException re) {
-            // Local call
-            Log.e(TAG, "RemoteException in getLegacyAssistComponent: " + re);
         } catch (Exception e) {
             Log.e(TAG, "Exception in getLegacyAssistComponent: " + e);
         }
@@ -282,9 +304,15 @@ public class SearchManagerService extends ISearchManager.Stub {
         }
         long ident = Binder.clearCallingIdentity();
         try {
-            Intent intent = new Intent(Intent.ACTION_ASSIST);
+            Intent intent = new Intent(VoiceInteractionService.SERVICE_INTERFACE);
             intent.setComponent(comp);
-            IActivityManager am = ActivityManagerNative.getDefault();
+
+            IActivityManager am = ActivityManager.getService();
+            if (args != null) {
+                args.putInt(Intent.EXTRA_KEY_EVENT, android.view.KeyEvent.KEYCODE_ASSIST);
+            }
+            intent.putExtras(args);
+
             return am.launchAssistIntent(intent, ActivityManager.ASSIST_CONTEXT_BASIC, hint,
                     userHandle, args);
         } catch (RemoteException e) {
@@ -296,7 +324,7 @@ public class SearchManagerService extends ISearchManager.Stub {
 
     @Override
     public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
-        mContext.enforceCallingOrSelfPermission(android.Manifest.permission.DUMP, TAG);
+        if (!DumpUtils.checkDumpPermission(mContext, TAG, pw)) return;
 
         IndentingPrintWriter ipw = new IndentingPrintWriter(pw, "  ");
         synchronized (mSearchables) {

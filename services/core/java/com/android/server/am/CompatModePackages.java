@@ -17,6 +17,7 @@
 package com.android.server.am;
 
 import static com.android.server.am.ActivityManagerDebugConfig.*;
+import static com.android.server.am.ActivityStackSupervisor.PRESERVE_WINDOWS;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -37,6 +38,7 @@ import android.app.AppGlobals;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.IPackageManager;
 import android.content.res.CompatibilityInfo;
+import android.content.res.Configuration;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
@@ -56,6 +58,8 @@ public final class CompatModePackages {
     public static final int COMPAT_FLAG_DONT_ASK = 1<<0;
     // Compatibility state: compatibility mode is enabled.
     public static final int COMPAT_FLAG_ENABLED = 1<<1;
+    // Unsupported zoom state: don't warn the user about unsupported zoom mode.
+    public static final int UNSUPPORTED_ZOOM_FLAG_DONT_NOTIFY = 1<<2;
 
     private final HashMap<String, Integer> mPackages = new HashMap<String, Integer>();
 
@@ -146,6 +150,24 @@ public final class CompatModePackages {
         return flags != null ? flags : 0;
     }
 
+    public void handlePackageDataClearedLocked(String packageName) {
+        // User has explicitly asked to clear all associated data.
+        removePackage(packageName);
+    }
+
+    public void handlePackageUninstalledLocked(String packageName) {
+        // Clear settings when app is uninstalled since this is an explicit
+        // signal from the user to remove the app and all associated data.
+        removePackage(packageName);
+    }
+
+    private void removePackage(String packageName) {
+        if (mPackages.containsKey(packageName)) {
+            mPackages.remove(packageName);
+            scheduleWrite();
+        }
+    }
+
     public void handlePackageAddedLocked(String packageName, boolean updated) {
         ApplicationInfo ai = null;
         try {
@@ -164,26 +186,31 @@ public final class CompatModePackages {
             // any current settings for it.
             if (!mayCompat && mPackages.containsKey(packageName)) {
                 mPackages.remove(packageName);
-                mHandler.removeMessages(MSG_WRITE);
-                Message msg = mHandler.obtainMessage(MSG_WRITE);
-                mHandler.sendMessageDelayed(msg, 10000);
+                scheduleWrite();
             }
         }
     }
 
+    private void scheduleWrite() {
+        mHandler.removeMessages(MSG_WRITE);
+        Message msg = mHandler.obtainMessage(MSG_WRITE);
+        mHandler.sendMessageDelayed(msg, 10000);
+    }
+
     public CompatibilityInfo compatibilityInfoForPackageLocked(ApplicationInfo ai) {
-        CompatibilityInfo ci = new CompatibilityInfo(ai, mService.mConfiguration.screenLayout,
-                mService.mConfiguration.smallestScreenWidthDp,
+        final Configuration globalConfig = mService.getGlobalConfiguration();
+        CompatibilityInfo ci = new CompatibilityInfo(ai, globalConfig.screenLayout,
+                globalConfig.smallestScreenWidthDp,
                 (getPackageFlags(ai.packageName)&COMPAT_FLAG_ENABLED) != 0);
         //Slog.i(TAG, "*********** COMPAT FOR PKG " + ai.packageName + ": " + ci);
         return ci;
     }
 
     public int computeCompatModeLocked(ApplicationInfo ai) {
-        boolean enabled = (getPackageFlags(ai.packageName)&COMPAT_FLAG_ENABLED) != 0;
-        CompatibilityInfo info = new CompatibilityInfo(ai,
-                mService.mConfiguration.screenLayout,
-                mService.mConfiguration.smallestScreenWidthDp, enabled);
+        final boolean enabled = (getPackageFlags(ai.packageName)&COMPAT_FLAG_ENABLED) != 0;
+        final Configuration globalConfig = mService.getGlobalConfiguration();
+        final CompatibilityInfo info = new CompatibilityInfo(ai, globalConfig.screenLayout,
+                globalConfig.smallestScreenWidthDp, enabled);
         if (info.alwaysSupportsScreen()) {
             return ActivityManager.COMPAT_MODE_NEVER;
         }
@@ -195,7 +222,7 @@ public final class CompatModePackages {
     }
 
     public boolean getFrontActivityAskCompatModeLocked() {
-        ActivityRecord r = mService.getFocusedStack().topRunningActivityLocked(null);
+        ActivityRecord r = mService.getFocusedStack().topRunningActivityLocked();
         if (r == null) {
             return false;
         }
@@ -206,8 +233,12 @@ public final class CompatModePackages {
         return (getPackageFlags(packageName)&COMPAT_FLAG_DONT_ASK) == 0;
     }
 
+    public boolean getPackageNotifyUnsupportedZoomLocked(String packageName) {
+        return (getPackageFlags(packageName)&UNSUPPORTED_ZOOM_FLAG_DONT_NOTIFY) == 0;
+    }
+
     public void setFrontActivityAskCompatModeLocked(boolean ask) {
-        ActivityRecord r = mService.getFocusedStack().topRunningActivityLocked(null);
+        ActivityRecord r = mService.getFocusedStack().topRunningActivityLocked();
         if (r != null) {
             setPackageAskCompatModeLocked(r.packageName, ask);
         }
@@ -222,14 +253,26 @@ public final class CompatModePackages {
             } else {
                 mPackages.remove(packageName);
             }
-            mHandler.removeMessages(MSG_WRITE);
-            Message msg = mHandler.obtainMessage(MSG_WRITE);
-            mHandler.sendMessageDelayed(msg, 10000);
+            scheduleWrite();
+        }
+    }
+
+    public void setPackageNotifyUnsupportedZoomLocked(String packageName, boolean notify) {
+        final int curFlags = getPackageFlags(packageName);
+        final int newFlags = notify ? (curFlags&~UNSUPPORTED_ZOOM_FLAG_DONT_NOTIFY) :
+                (curFlags|UNSUPPORTED_ZOOM_FLAG_DONT_NOTIFY);
+        if (curFlags != newFlags) {
+            if (newFlags != 0) {
+                mPackages.put(packageName, newFlags);
+            } else {
+                mPackages.remove(packageName);
+            }
+            scheduleWrite();
         }
     }
 
     public int getFrontActivityScreenCompatModeLocked() {
-        ActivityRecord r = mService.getFocusedStack().topRunningActivityLocked(null);
+        ActivityRecord r = mService.getFocusedStack().topRunningActivityLocked();
         if (r == null) {
             return ActivityManager.COMPAT_MODE_UNKNOWN;
         }
@@ -237,7 +280,7 @@ public final class CompatModePackages {
     }
 
     public void setFrontActivityScreenCompatModeLocked(int mode) {
-        ActivityRecord r = mService.getFocusedStack().topRunningActivityLocked(null);
+        ActivityRecord r = mService.getFocusedStack().topRunningActivityLocked();
         if (r == null) {
             Slog.w(TAG, "setFrontActivityScreenCompatMode failed: no top activity");
             return;
@@ -320,9 +363,7 @@ public final class CompatModePackages {
             // Need to get compatibility info in new state.
             ci = compatibilityInfoForPackageLocked(ai);
 
-            mHandler.removeMessages(MSG_WRITE);
-            Message msg = mHandler.obtainMessage(MSG_WRITE);
-            mHandler.sendMessageDelayed(msg, 10000);
+            scheduleWrite();
 
             final ActivityStack stack = mService.getFocusedStack();
             ActivityRecord starting = stack.restartPackage(packageName);
@@ -344,10 +385,11 @@ public final class CompatModePackages {
             }
 
             if (starting != null) {
-                stack.ensureActivityConfigurationLocked(starting, 0);
+                starting.ensureActivityConfigurationLocked(0 /* globalChanges */,
+                        false /* preserveWindow */);
                 // And we need to make sure at this point that all other activities
                 // are made visible with the correct configuration.
-                stack.ensureActivitiesVisibleLocked(starting, 0);
+                stack.ensureActivitiesVisibleLocked(starting, 0, !PRESERVE_WINDOWS);
             }
         }
     }
@@ -369,8 +411,9 @@ public final class CompatModePackages {
             out.startTag(null, "compat-packages");
 
             final IPackageManager pm = AppGlobals.getPackageManager();
-            final int screenLayout = mService.mConfiguration.screenLayout;
-            final int smallestScreenWidthDp = mService.mConfiguration.smallestScreenWidthDp;
+            final Configuration globalConfig = mService.getGlobalConfiguration();
+            final int screenLayout = globalConfig.screenLayout;
+            final int smallestScreenWidthDp = globalConfig.smallestScreenWidthDp;
             final Iterator<Map.Entry<String, Integer>> it = pkgs.entrySet().iterator();
             while (it.hasNext()) {
                 Map.Entry<String, Integer> entry = it.next();

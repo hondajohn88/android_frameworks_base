@@ -17,13 +17,15 @@
 
 package android.view;
 
-import android.content.res.Configuration;
 import android.graphics.Rect;
 import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
 import android.view.DragEvent;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
+
+import com.android.internal.os.IResultReceiver;
+import android.util.MergedConfiguration;
 
 /**
  * API back to a client window that the Window Manager uses to inform it of
@@ -47,7 +49,8 @@ oneway interface IWindow {
 
     void resized(in Rect frame, in Rect overscanInsets, in Rect contentInsets,
             in Rect visibleInsets, in Rect stableInsets, in Rect outsets, boolean reportDraw,
-            in Configuration newConfig);
+            in MergedConfiguration newMergedConfiguration, in Rect backDropFrame,
+            boolean forceLayout, boolean alwaysConsumeNavBar, int displayId);
     void moved(int newX, int newY);
     void dispatchAppVisibility(boolean visible);
     void dispatchGetNewSurface();
@@ -74,27 +77,28 @@ oneway interface IWindow {
     void dispatchDragEvent(in DragEvent event);
 
     /**
+     * Pointer icon events
+     */
+    void updatePointerIcon(float x, float y);
+
+    /**
      * System chrome visibility changes
      */
     void dispatchSystemUiVisibilityChanged(int seq, int globalVisibility,
             int localValue, int localChanges);
 
     /**
-     * The window is beginning to animate. The application should stop drawing frames until the
-     * window is not animating anymore, indicated by being called {@link #windowEndAnimating}.
-     *
-     * @param remainingFrameCount how many frames the app might still draw before stopping drawing;
-     *                            pass -1 to let it continue drawing
-     */
-    void onAnimationStarted(int remainingFrameCount);
-
-    /**
-     * The window has ended animating. See {@link #onAnimationStarted}.
-     */
-    void onAnimationStopped();
-
-    /**
      * Called for non-application windows when the enter animation has completed.
      */
     void dispatchWindowShown();
+
+    /**
+     * Called when Keyboard Shortcuts are requested for the window.
+     */
+    void requestAppKeyboardShortcuts(IResultReceiver receiver, int deviceId);
+
+    /**
+     * Tell the window that it is either gaining or losing pointer capture.
+     */
+    void dispatchPointerCaptureChanged(boolean hasCapture);
 }

@@ -17,14 +17,14 @@
 package android.os;
 
 import android.annotation.MainThread;
+import android.annotation.Nullable;
 import android.annotation.WorkerThread;
-
 import java.util.ArrayDeque;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
-import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadFactory;
@@ -35,8 +35,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * <p>AsyncTask enables proper and easy use of the UI thread. This class allows to
- * perform background operations and publish results on the UI thread without
+ * <p>AsyncTask enables proper and easy use of the UI thread. This class allows you
+ * to perform background operations and publish results on the UI thread without
  * having to manipulate threads and/or handlers.</p>
  *
  * <p>AsyncTask is designed to be a helper class around {@link Thread} and {@link Handler}
@@ -55,7 +55,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <div class="special reference">
  * <h3>Developer Guides</h3>
  * <p>For more information about using tasks and threads, read the
- * <a href="{@docRoot}guide/topics/fundamentals/processes-and-threads.html">Processes and
+ * <a href="{@docRoot}guide/components/processes-and-threads.html">Processes and
  * Threads</a> developer guide.</p>
  * </div>
  *
@@ -181,9 +181,12 @@ public abstract class AsyncTask<Params, Progress, Result> {
     private static final String LOG_TAG = "AsyncTask";
 
     private static final int CPU_COUNT = Runtime.getRuntime().availableProcessors();
-    private static final int CORE_POOL_SIZE = CPU_COUNT + 1;
+    // We want at least 2 threads and at most 4 threads in the core pool,
+    // preferring to have 1 less than the CPU count to avoid saturating
+    // the CPU with background work
+    private static final int CORE_POOL_SIZE = Math.max(2, Math.min(CPU_COUNT - 1, 4));
     private static final int MAXIMUM_POOL_SIZE = CPU_COUNT * 2 + 1;
-    private static final int KEEP_ALIVE = 1;
+    private static final int KEEP_ALIVE_SECONDS = 30;
 
     private static final ThreadFactory sThreadFactory = new ThreadFactory() {
         private final AtomicInteger mCount = new AtomicInteger(1);
@@ -199,9 +202,15 @@ public abstract class AsyncTask<Params, Progress, Result> {
     /**
      * An {@link Executor} that can be used to execute tasks in parallel.
      */
-    public static final Executor THREAD_POOL_EXECUTOR
-            = new ThreadPoolExecutor(CORE_POOL_SIZE, MAXIMUM_POOL_SIZE, KEEP_ALIVE,
-                    TimeUnit.SECONDS, sPoolWorkQueue, sThreadFactory);
+    public static final Executor THREAD_POOL_EXECUTOR;
+
+    static {
+        ThreadPoolExecutor threadPoolExecutor = new ThreadPoolExecutor(
+                CORE_POOL_SIZE, MAXIMUM_POOL_SIZE, KEEP_ALIVE_SECONDS, TimeUnit.SECONDS,
+                sPoolWorkQueue, sThreadFactory);
+        threadPoolExecutor.allowCoreThreadTimeOut(true);
+        THREAD_POOL_EXECUTOR = threadPoolExecutor;
+    }
 
     /**
      * An {@link Executor} that executes tasks one at a time in serial
@@ -222,6 +231,8 @@ public abstract class AsyncTask<Params, Progress, Result> {
     
     private final AtomicBoolean mCancelled = new AtomicBoolean();
     private final AtomicBoolean mTaskInvoked = new AtomicBoolean();
+
+    private final Handler mHandler;
 
     private static class SerialExecutor implements Executor {
         final ArrayDeque<Runnable> mTasks = new ArrayDeque<Runnable>();
@@ -268,13 +279,17 @@ public abstract class AsyncTask<Params, Progress, Result> {
         FINISHED,
     }
 
-    private static Handler getHandler() {
+    private static Handler getMainHandler() {
         synchronized (AsyncTask.class) {
             if (sHandler == null) {
-                sHandler = new InternalHandler();
+                sHandler = new InternalHandler(Looper.getMainLooper());
             }
             return sHandler;
         }
+    }
+
+    private Handler getHandler() {
+        return mHandler;
     }
 
     /** @hide */
@@ -286,15 +301,44 @@ public abstract class AsyncTask<Params, Progress, Result> {
      * Creates a new asynchronous task. This constructor must be invoked on the UI thread.
      */
     public AsyncTask() {
+        this((Looper) null);
+    }
+
+    /**
+     * Creates a new asynchronous task. This constructor must be invoked on the UI thread.
+     *
+     * @hide
+     */
+    public AsyncTask(@Nullable Handler handler) {
+        this(handler != null ? handler.getLooper() : null);
+    }
+
+    /**
+     * Creates a new asynchronous task. This constructor must be invoked on the UI thread.
+     *
+     * @hide
+     */
+    public AsyncTask(@Nullable Looper callbackLooper) {
+        mHandler = callbackLooper == null || callbackLooper == Looper.getMainLooper()
+            ? getMainHandler()
+            : new Handler(callbackLooper);
+
         mWorker = new WorkerRunnable<Params, Result>() {
             public Result call() throws Exception {
                 mTaskInvoked.set(true);
-
-                Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND);
-                //noinspection unchecked
-                Result result = doInBackground(mParams);
-                Binder.flushPendingCommands();
-                return postResult(result);
+                Result result = null;
+                try {
+                    Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND);
+                    //noinspection unchecked
+                    result = doInBackground(mParams);
+                    Binder.flushPendingCommands();
+                } catch (Throwable tr) {
+                    mCancelled.set(true);
+                    throw tr;
+                } finally {
+                    postResult(result);
+                }
+                return result;
             }
         };
 
@@ -654,8 +698,8 @@ public abstract class AsyncTask<Params, Progress, Result> {
     }
 
     private static class InternalHandler extends Handler {
-        public InternalHandler() {
-            super(Looper.getMainLooper());
+        public InternalHandler(Looper looper) {
+            super(looper);
         }
 
         @SuppressWarnings({"unchecked", "RawUseOfParameterizedType"})

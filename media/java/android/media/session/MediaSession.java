@@ -43,11 +43,13 @@ import android.service.media.MediaBrowserService;
 import android.text.TextUtils;
 import android.util.Log;
 import android.view.KeyEvent;
+import android.view.ViewConfiguration;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.ref.WeakReference;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Allows interaction with media controllers, volume keys, media buttons, and
@@ -77,13 +79,19 @@ public final class MediaSession {
     /**
      * Set this flag on the session to indicate that it can handle media button
      * events.
+     * @deprecated This flag is no longer used. All media sessions are expected to handle media
+     * button events now.
      */
+    @Deprecated
     public static final int FLAG_HANDLES_MEDIA_BUTTONS = 1 << 0;
 
     /**
      * Set this flag on the session to indicate that it handles transport
      * control commands through its {@link Callback}.
+     * @deprecated This flag is no longer used. All media sessions are expected to handle transport
+     * controls now.
      */
+    @Deprecated
     public static final int FLAG_HANDLES_TRANSPORT_CONTROLS = 1 << 1;
 
     /**
@@ -194,8 +202,7 @@ public final class MediaSession {
                 return;
             }
             if (mCallback != null) {
-                // We're updating the callback, clear the session from the old
-                // one.
+                // We're updating the callback, clear the session from the old one.
                 mCallback.mCallback.mSession = null;
             }
             if (handler == null) {
@@ -407,12 +414,14 @@ public final class MediaSession {
 
     /**
      * Update the current metadata. New metadata can be created using
-     * {@link android.media.MediaMetadata.Builder}.
+     * {@link android.media.MediaMetadata.Builder}. This operation may take time proportional to
+     * the size of the bitmap to replace large bitmaps with a scaled down copy.
      *
      * @param metadata The new metadata
+     * @see android.media.MediaMetadata.Builder#putBitmap
      */
     public void setMetadata(@Nullable MediaMetadata metadata) {
-        if (metadata != null ) {
+        if (metadata != null) {
             metadata = (new MediaMetadata.Builder(metadata, mMaxBitmapSize)).build();
         }
         try {
@@ -469,7 +478,7 @@ public final class MediaSession {
      * <li>{@link Rating#RATING_THUMB_UP_DOWN}</li>
      * </ul>
      */
-    public void setRatingType(int type) {
+    public void setRatingType(@Rating.Style int type) {
         try {
             mBinder.setRatingType(type);
         } catch (RemoteException e) {
@@ -510,6 +519,38 @@ public final class MediaSession {
         } catch (RemoteException e) {
             Log.e(TAG, "Error in notifyVolumeChanged", e);
         }
+    }
+
+    /**
+     * Returns the name of the package that sent the last media button, transport control, or
+     * command from controllers and the system. This is only valid while in a request callback, such
+     * as {@link Callback#onPlay}.
+     *
+     * @hide
+     */
+    public String getCallingPackage() {
+        try {
+            return mBinder.getCallingPackage();
+        } catch (RemoteException e) {
+            Log.wtf(TAG, "Dead object in getCallingPackage.", e);
+        }
+        return null;
+    }
+
+    private void dispatchPrepare() {
+        postToCallback(CallbackMessageHandler.MSG_PREPARE);
+    }
+
+    private void dispatchPrepareFromMediaId(String mediaId, Bundle extras) {
+        postToCallback(CallbackMessageHandler.MSG_PREPARE_MEDIA_ID, mediaId, extras);
+    }
+
+    private void dispatchPrepareFromSearch(String query, Bundle extras) {
+        postToCallback(CallbackMessageHandler.MSG_PREPARE_SEARCH, query, extras);
+    }
+
+    private void dispatchPrepareFromUri(Uri uri, Bundle extras) {
+        postToCallback(CallbackMessageHandler.MSG_PREPARE_URI, uri, extras);
     }
 
     private void dispatchPlay() {
@@ -695,6 +736,8 @@ public final class MediaSession {
      */
     public abstract static class Callback {
         private MediaSession mSession;
+        private CallbackMessageHandler mHandler;
+        private boolean mMediaPlayPauseKeyPending;
 
         public Callback() {
         }
@@ -726,12 +769,40 @@ public final class MediaSession {
          * @return True if the event was handled, false otherwise.
          */
         public boolean onMediaButtonEvent(@NonNull Intent mediaButtonIntent) {
-            if (mSession != null
+            if (mSession != null && mHandler != null
                     && Intent.ACTION_MEDIA_BUTTON.equals(mediaButtonIntent.getAction())) {
                 KeyEvent ke = mediaButtonIntent.getParcelableExtra(Intent.EXTRA_KEY_EVENT);
                 if (ke != null && ke.getAction() == KeyEvent.ACTION_DOWN) {
                     PlaybackState state = mSession.mPlaybackState;
                     long validActions = state == null ? 0 : state.getActions();
+                    switch (ke.getKeyCode()) {
+                        case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+                        case KeyEvent.KEYCODE_HEADSETHOOK:
+                            if (ke.getRepeatCount() > 0) {
+                                // Consider long-press as a single tap.
+                                handleMediaPlayPauseKeySingleTapIfPending();
+                            } else if (mMediaPlayPauseKeyPending) {
+                                // Consider double tap as the next.
+                                mHandler.removeMessages(CallbackMessageHandler
+                                        .MSG_PLAY_PAUSE_KEY_DOUBLE_TAP_TIMEOUT);
+                                mMediaPlayPauseKeyPending = false;
+                                if ((validActions & PlaybackState.ACTION_SKIP_TO_NEXT) != 0) {
+                                    onSkipToNext();
+                                }
+                            } else {
+                                mMediaPlayPauseKeyPending = true;
+                                mHandler.sendEmptyMessageDelayed(CallbackMessageHandler
+                                        .MSG_PLAY_PAUSE_KEY_DOUBLE_TAP_TIMEOUT,
+                                        ViewConfiguration.getDoubleTapTimeout());
+                            }
+                            return true;
+                        default:
+                            // If another key is pressed within double tap timeout, consider the
+                            // pending play/pause as a single tap to handle media keys in order.
+                            handleMediaPlayPauseKeySingleTapIfPending();
+                            break;
+                    }
+
                     switch (ke.getKeyCode()) {
                         case KeyEvent.KEYCODE_MEDIA_PLAY:
                             if ((validActions & PlaybackState.ACTION_PLAY) != 0) {
@@ -775,26 +846,76 @@ public final class MediaSession {
                                 return true;
                             }
                             break;
-                        case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
-                        case KeyEvent.KEYCODE_HEADSETHOOK:
-                            boolean isPlaying = state == null ? false
-                                    : state.getState() == PlaybackState.STATE_PLAYING;
-                            boolean canPlay = (validActions & (PlaybackState.ACTION_PLAY_PAUSE
-                                    | PlaybackState.ACTION_PLAY)) != 0;
-                            boolean canPause = (validActions & (PlaybackState.ACTION_PLAY_PAUSE
-                                    | PlaybackState.ACTION_PAUSE)) != 0;
-                            if (isPlaying && canPause) {
-                                onPause();
-                                return true;
-                            } else if (!isPlaying && canPlay) {
-                                onPlay();
-                                return true;
-                            }
-                            break;
                     }
                 }
             }
             return false;
+        }
+
+        private void handleMediaPlayPauseKeySingleTapIfPending() {
+            if (!mMediaPlayPauseKeyPending) {
+                return;
+            }
+            mMediaPlayPauseKeyPending = false;
+            mHandler.removeMessages(CallbackMessageHandler.MSG_PLAY_PAUSE_KEY_DOUBLE_TAP_TIMEOUT);
+            PlaybackState state = mSession.mPlaybackState;
+            long validActions = state == null ? 0 : state.getActions();
+            boolean isPlaying = state != null
+                    && state.getState() == PlaybackState.STATE_PLAYING;
+            boolean canPlay = (validActions & (PlaybackState.ACTION_PLAY_PAUSE
+                        | PlaybackState.ACTION_PLAY)) != 0;
+            boolean canPause = (validActions & (PlaybackState.ACTION_PLAY_PAUSE
+                        | PlaybackState.ACTION_PAUSE)) != 0;
+            if (isPlaying && canPause) {
+                onPause();
+            } else if (!isPlaying && canPlay) {
+                onPlay();
+            }
+        }
+
+        /**
+         * Override to handle requests to prepare playback. During the preparation, a session should
+         * not hold audio focus in order to allow other sessions play seamlessly. The state of
+         * playback should be updated to {@link PlaybackState#STATE_PAUSED} after the preparation is
+         * done.
+         */
+        public void onPrepare() {
+        }
+
+        /**
+         * Override to handle requests to prepare for playing a specific mediaId that was provided
+         * by your app's {@link MediaBrowserService}. During the preparation, a session should not
+         * hold audio focus in order to allow other sessions play seamlessly. The state of playback
+         * should be updated to {@link PlaybackState#STATE_PAUSED} after the preparation is done.
+         * The playback of the prepared content should start in the implementation of
+         * {@link #onPlay}. Override {@link #onPlayFromMediaId} to handle requests for starting
+         * playback without preparation.
+         */
+        public void onPrepareFromMediaId(String mediaId, Bundle extras) {
+        }
+
+        /**
+         * Override to handle requests to prepare playback from a search query. An empty query
+         * indicates that the app may prepare any music. The implementation should attempt to make a
+         * smart choice about what to play. During the preparation, a session should not hold audio
+         * focus in order to allow other sessions play seamlessly. The state of playback should be
+         * updated to {@link PlaybackState#STATE_PAUSED} after the preparation is done. The playback
+         * of the prepared content should start in the implementation of {@link #onPlay}. Override
+         * {@link #onPlayFromSearch} to handle requests for starting playback without preparation.
+         */
+        public void onPrepareFromSearch(String query, Bundle extras) {
+        }
+
+        /**
+         * Override to handle requests to prepare a specific media item represented by a URI.
+         * During the preparation, a session should not hold audio focus in order to allow
+         * other sessions play seamlessly. The state of playback should be updated to
+         * {@link PlaybackState#STATE_PAUSED} after the preparation is done.
+         * The playback of the prepared content should start in the implementation of
+         * {@link #onPlay}. Override {@link #onPlayFromUri} to handle requests
+         * for starting playback without preparation.
+         */
+        public void onPrepareFromUri(Uri uri, Bundle extras) {
         }
 
         /**
@@ -804,19 +925,19 @@ public final class MediaSession {
         }
 
         /**
-         * Override to handle requests to play a specific mediaId that was
-         * provided by your app's {@link MediaBrowserService}.
-         */
-        public void onPlayFromMediaId(String mediaId, Bundle extras) {
-        }
-
-        /**
          * Override to handle requests to begin playback from a search query. An
          * empty query indicates that the app may play any music. The
          * implementation should attempt to make a smart choice about what to
          * play.
          */
         public void onPlayFromSearch(String query, Bundle extras) {
+        }
+
+        /**
+         * Override to handle requests to play a specific mediaId that was
+         * provided by your app's {@link MediaBrowserService}.
+         */
+        public void onPlayFromMediaId(String mediaId, Bundle extras) {
         }
 
         /**
@@ -926,6 +1047,38 @@ public final class MediaSession {
                 if (cb != null) {
                     cb.send(sequenceNumber, null);
                 }
+            }
+        }
+
+        @Override
+        public void onPrepare() {
+            MediaSession session = mMediaSession.get();
+            if (session != null) {
+                session.dispatchPrepare();
+            }
+        }
+
+        @Override
+        public void onPrepareFromMediaId(String mediaId, Bundle extras) {
+            MediaSession session = mMediaSession.get();
+            if (session != null) {
+                session.dispatchPrepareFromMediaId(mediaId, extras);
+            }
+        }
+
+        @Override
+        public void onPrepareFromSearch(String query, Bundle extras) {
+            MediaSession session = mMediaSession.get();
+            if (session != null) {
+                session.dispatchPrepareFromSearch(query, extras);
+            }
+        }
+
+        @Override
+        public void onPrepareFromUri(Uri uri, Bundle extras) {
+            MediaSession session = mMediaSession.get();
+            if (session != null) {
+                session.dispatchPrepareFromUri(uri, extras);
             }
         }
 
@@ -1065,7 +1218,7 @@ public final class MediaSession {
      */
     public static final class QueueItem implements Parcelable {
         /**
-         * This id is reserved. No items can be explicitly asigned this id.
+         * This id is reserved. No items can be explicitly assigned this id.
          */
         public static final int UNKNOWN_ID = -1;
 
@@ -1139,6 +1292,28 @@ public final class MediaSession {
                     "Description=" + mDescription +
                     ", Id=" + mId + " }";
         }
+
+        @Override
+        public boolean equals(Object o) {
+            if (o == null) {
+                return false;
+            }
+
+            if (!(o instanceof QueueItem)) {
+                return false;
+            }
+
+            final QueueItem item = (QueueItem) o;
+            if (mId != item.mId) {
+                return false;
+            }
+
+            if (!Objects.equals(mDescription, item.mDescription)) {
+                return false;
+            }
+
+            return true;
+        }
     }
 
     private static final class Command {
@@ -1155,30 +1330,36 @@ public final class MediaSession {
 
     private class CallbackMessageHandler extends Handler {
 
-        private static final int MSG_PLAY = 1;
-        private static final int MSG_PLAY_MEDIA_ID = 2;
-        private static final int MSG_PLAY_SEARCH = 3;
-        private static final int MSG_SKIP_TO_ITEM = 4;
-        private static final int MSG_PAUSE = 5;
-        private static final int MSG_STOP = 6;
-        private static final int MSG_NEXT = 7;
-        private static final int MSG_PREVIOUS = 8;
-        private static final int MSG_FAST_FORWARD = 9;
-        private static final int MSG_REWIND = 10;
-        private static final int MSG_SEEK_TO = 11;
-        private static final int MSG_RATE = 12;
-        private static final int MSG_CUSTOM_ACTION = 13;
-        private static final int MSG_MEDIA_BUTTON = 14;
-        private static final int MSG_COMMAND = 15;
-        private static final int MSG_ADJUST_VOLUME = 16;
-        private static final int MSG_SET_VOLUME = 17;
-        private static final int MSG_PLAY_URI = 18;
+        private static final int MSG_COMMAND = 1;
+        private static final int MSG_MEDIA_BUTTON = 2;
+        private static final int MSG_PREPARE = 3;
+        private static final int MSG_PREPARE_MEDIA_ID = 4;
+        private static final int MSG_PREPARE_SEARCH = 5;
+        private static final int MSG_PREPARE_URI = 6;
+        private static final int MSG_PLAY = 7;
+        private static final int MSG_PLAY_MEDIA_ID = 8;
+        private static final int MSG_PLAY_SEARCH = 9;
+        private static final int MSG_PLAY_URI = 10;
+        private static final int MSG_SKIP_TO_ITEM = 11;
+        private static final int MSG_PAUSE = 12;
+        private static final int MSG_STOP = 13;
+        private static final int MSG_NEXT = 14;
+        private static final int MSG_PREVIOUS = 15;
+        private static final int MSG_FAST_FORWARD = 16;
+        private static final int MSG_REWIND = 17;
+        private static final int MSG_SEEK_TO = 18;
+        private static final int MSG_RATE = 19;
+        private static final int MSG_CUSTOM_ACTION = 20;
+        private static final int MSG_ADJUST_VOLUME = 21;
+        private static final int MSG_SET_VOLUME = 22;
+        private static final int MSG_PLAY_PAUSE_KEY_DOUBLE_TAP_TIMEOUT = 23;
 
         private MediaSession.Callback mCallback;
 
         public CallbackMessageHandler(Looper looper, MediaSession.Callback callback) {
             super(looper, null, true);
             mCallback = callback;
+            mCallback.mHandler = this;
         }
 
         public void post(int what, Object obj, Bundle bundle) {
@@ -1203,6 +1384,25 @@ public final class MediaSession {
         public void handleMessage(Message msg) {
             VolumeProvider vp;
             switch (msg.what) {
+                case MSG_COMMAND:
+                    Command cmd = (Command) msg.obj;
+                    mCallback.onCommand(cmd.command, cmd.extras, cmd.stub);
+                    break;
+                case MSG_MEDIA_BUTTON:
+                    mCallback.onMediaButtonEvent((Intent) msg.obj);
+                    break;
+                case MSG_PREPARE:
+                    mCallback.onPrepare();
+                    break;
+                case MSG_PREPARE_MEDIA_ID:
+                    mCallback.onPrepareFromMediaId((String) msg.obj, msg.getData());
+                    break;
+                case MSG_PREPARE_SEARCH:
+                    mCallback.onPrepareFromSearch((String) msg.obj, msg.getData());
+                    break;
+                case MSG_PREPARE_URI:
+                    mCallback.onPrepareFromUri((Uri) msg.obj, msg.getData());
+                    break;
                 case MSG_PLAY:
                     mCallback.onPlay();
                     break;
@@ -1245,13 +1445,6 @@ public final class MediaSession {
                 case MSG_CUSTOM_ACTION:
                     mCallback.onCustomAction((String) msg.obj, msg.getData());
                     break;
-                case MSG_MEDIA_BUTTON:
-                    mCallback.onMediaButtonEvent((Intent) msg.obj);
-                    break;
-                case MSG_COMMAND:
-                    Command cmd = (Command) msg.obj;
-                    mCallback.onCommand(cmd.command, cmd.extras, cmd.stub);
-                    break;
                 case MSG_ADJUST_VOLUME:
                     synchronized (mLock) {
                         vp = mVolumeProvider;
@@ -1267,6 +1460,9 @@ public final class MediaSession {
                     if (vp != null) {
                         vp.onSetVolumeTo((int) msg.obj);
                     }
+                    break;
+                case MSG_PLAY_PAUSE_KEY_DOUBLE_TAP_TIMEOUT:
+                    mCallback.handleMediaPlayPauseKeySingleTapIfPending();
                     break;
             }
         }

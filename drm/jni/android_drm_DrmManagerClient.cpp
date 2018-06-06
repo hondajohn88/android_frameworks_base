@@ -19,8 +19,8 @@
 #include <utils/Log.h>
 
 #include <jni.h>
-#include <JNIHelp.h>
-#include <ScopedLocalRef.h>
+#include <nativehelper/JNIHelp.h>
+#include <nativehelper/ScopedLocalRef.h>
 #include <android_runtime/AndroidRuntime.h>
 
 #include <drm/DrmInfo.h>
@@ -702,7 +702,7 @@ static jobject android_drm_DrmManagerClient_closeConvertSession(
     return status;
 }
 
-static JNINativeMethod nativeMethods[] = {
+static const JNINativeMethod nativeMethods[] = {
 
     {"_initialize", "()I",
                                     (void*)android_drm_DrmManagerClient_initialize},

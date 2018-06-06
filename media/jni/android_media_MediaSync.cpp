@@ -26,7 +26,7 @@
 #include "android_runtime/AndroidRuntime.h"
 #include "android_runtime/android_view_Surface.h"
 #include "jni.h"
-#include "JNIHelp.h"
+#include <nativehelper/JNIHelp.h>
 
 #include <gui/Surface.h>
 
@@ -159,7 +159,7 @@ static void throwExceptionAsNecessary(
             if (err > 0) {
                 break;
             }
-            AString msgWithErrorCode(msg);
+            AString msgWithErrorCode(msg == NULL ? "" : msg);
             msgWithErrorCode.append(" error:");
             msgWithErrorCode.append(err);
             jniThrowException(env, "java/lang/IllegalStateException", msgWithErrorCode.c_str());

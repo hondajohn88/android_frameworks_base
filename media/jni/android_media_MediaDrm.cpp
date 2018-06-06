@@ -24,12 +24,13 @@
 #include "android_runtime/Log.h"
 #include "android_os_Parcel.h"
 #include "jni.h"
-#include "JNIHelp.h"
+#include <nativehelper/JNIHelp.h>
 
 #include <binder/IServiceManager.h>
 #include <binder/Parcel.h>
+#include <cutils/properties.h>
 #include <media/IDrm.h>
-#include <media/IMediaPlayerService.h>
+#include <media/IMediaDrmService.h>
 #include <media/stagefright/foundation/ADebug.h>
 #include <media/stagefright/MediaErrors.h>
 
@@ -37,23 +38,23 @@ namespace android {
 
 #define FIND_CLASS(var, className) \
     var = env->FindClass(className); \
-    LOG_FATAL_IF(! var, "Unable to find class " className);
+    LOG_FATAL_IF(! (var), "Unable to find class " className);
 
 #define GET_FIELD_ID(var, clazz, fieldName, fieldDescriptor) \
     var = env->GetFieldID(clazz, fieldName, fieldDescriptor); \
-    LOG_FATAL_IF(! var, "Unable to find field " fieldName);
+    LOG_FATAL_IF(! (var), "Unable to find field " fieldName);
 
 #define GET_METHOD_ID(var, clazz, fieldName, fieldDescriptor) \
     var = env->GetMethodID(clazz, fieldName, fieldDescriptor); \
-    LOG_FATAL_IF(! var, "Unable to find method " fieldName);
+    LOG_FATAL_IF(! (var), "Unable to find method " fieldName);
 
 #define GET_STATIC_FIELD_ID(var, clazz, fieldName, fieldDescriptor) \
     var = env->GetStaticFieldID(clazz, fieldName, fieldDescriptor); \
-    LOG_FATAL_IF(! var, "Unable to find field " fieldName);
+    LOG_FATAL_IF(! (var), "Unable to find field " fieldName);
 
 #define GET_STATIC_METHOD_ID(var, clazz, fieldName, fieldDescriptor) \
     var = env->GetStaticMethodID(clazz, fieldName, fieldDescriptor); \
-    LOG_FATAL_IF(! var, "Unable to find static method " fieldName);
+    LOG_FATAL_IF(! (var), "Unable to find static method " fieldName);
 
 
 struct RequestFields {
@@ -334,9 +335,10 @@ static sp<IDrm> GetDrm(JNIEnv *env, jobject thiz) {
 }
 
 JDrm::JDrm(
-        JNIEnv *env, jobject thiz, const uint8_t uuid[16]) {
+        JNIEnv *env, jobject thiz, const uint8_t uuid[16],
+        const String8 &appPackageName) {
     mObject = env->NewWeakGlobalRef(thiz);
-    mDrm = MakeDrm(uuid);
+    mDrm = MakeDrm(uuid, appPackageName);
     if (mDrm != NULL) {
         mDrm->setListener(this);
     }
@@ -353,18 +355,13 @@ JDrm::~JDrm() {
 sp<IDrm> JDrm::MakeDrm() {
     sp<IServiceManager> sm = defaultServiceManager();
 
-    sp<IBinder> binder =
-        sm->getService(String16("media.player"));
-
-    sp<IMediaPlayerService> service =
-        interface_cast<IMediaPlayerService>(binder);
-
+    sp<IBinder> binder = sm->getService(String16("media.drm"));
+    sp<IMediaDrmService> service = interface_cast<IMediaDrmService>(binder);
     if (service == NULL) {
         return NULL;
     }
 
     sp<IDrm> drm = service->makeDrm();
-
     if (drm == NULL || (drm->initCheck() != OK && drm->initCheck() != NO_INIT)) {
         return NULL;
     }
@@ -373,14 +370,14 @@ sp<IDrm> JDrm::MakeDrm() {
 }
 
 // static
-sp<IDrm> JDrm::MakeDrm(const uint8_t uuid[16]) {
+sp<IDrm> JDrm::MakeDrm(const uint8_t uuid[16], const String8 &appPackageName) {
     sp<IDrm> drm = MakeDrm();
 
     if (drm == NULL) {
         return NULL;
     }
 
-    status_t err = drm->createPlugin(uuid);
+    status_t err = drm->createPlugin(uuid, appPackageName);
 
     if (err != OK) {
         return NULL;
@@ -687,7 +684,7 @@ static void android_media_MediaDrm_native_init(JNIEnv *env) {
 
 static void android_media_MediaDrm_native_setup(
         JNIEnv *env, jobject thiz,
-        jobject weak_this, jbyteArray uuidObj) {
+        jobject weak_this, jbyteArray uuidObj, jstring jappPackageName) {
 
     if (uuidObj == NULL) {
         jniThrowException(env, "java/lang/IllegalArgumentException", "uuid is null");
@@ -702,7 +699,15 @@ static void android_media_MediaDrm_native_setup(
         return;
     }
 
-    sp<JDrm> drm = new JDrm(env, thiz, uuid.array());
+    String8 packageName;
+    if (jappPackageName == NULL) {
+        jniThrowException(env, "java/lang/IllegalArgumentException",
+                          "application package name cannot be null");
+        return;
+    }
+
+    packageName = JStringToString8(env, jappPackageName);
+    sp<JDrm> drm = new JDrm(env, thiz, uuid.array(), packageName);
 
     status_t err = drm->initCheck();
 
@@ -1046,22 +1051,6 @@ static jobject android_media_MediaDrm_provideProvisionResponseNative(
 
     throwExceptionAsNecessary(env, err, "Failed to handle provision response");
     return certificateObj;
-}
-
-static void android_media_MediaDrm_unprovisionDeviceNative(
-    JNIEnv *env, jobject thiz) {
-    sp<IDrm> drm = GetDrm(env, thiz);
-
-    if (drm == NULL) {
-        jniThrowException(env, "java/lang/IllegalStateException",
-                          "MediaDrm obj is null");
-        return;
-    }
-
-    status_t err = drm->unprovisionDevice();
-
-    throwExceptionAsNecessary(env, err, "Failed to handle provision response");
-    return;
 }
 
 static jobject android_media_MediaDrm_getSecureStops(
@@ -1455,11 +1444,11 @@ static jbyteArray android_media_MediaDrm_signRSANative(
 }
 
 
-static JNINativeMethod gMethods[] = {
+static const JNINativeMethod gMethods[] = {
     { "release", "()V", (void *)android_media_MediaDrm_release },
     { "native_init", "()V", (void *)android_media_MediaDrm_native_init },
 
-    { "native_setup", "(Ljava/lang/Object;[B)V",
+    { "native_setup", "(Ljava/lang/Object;[BLjava/lang/String;)V",
       (void *)android_media_MediaDrm_native_setup },
 
     { "native_finalize", "()V",
@@ -1495,9 +1484,6 @@ static JNINativeMethod gMethods[] = {
 
     { "provideProvisionResponseNative", "([B)Landroid/media/MediaDrm$Certificate;",
       (void *)android_media_MediaDrm_provideProvisionResponseNative },
-
-    { "unprovisionDevice", "()V",
-      (void *)android_media_MediaDrm_unprovisionDeviceNative },
 
     { "getSecureStops", "()Ljava/util/List;",
       (void *)android_media_MediaDrm_getSecureStops },

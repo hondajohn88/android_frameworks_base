@@ -547,6 +547,11 @@ final class ColorFade {
                 logEglError("eglChooseConfig");
                 return false;
             }
+            if (numEglConfigs[0] <= 0) {
+                Slog.e(TAG, "no valid config found");
+                return false;
+            }
+
             mEglConfig = eglConfigs[0];
         }
 
@@ -587,16 +592,16 @@ final class ColorFade {
                     Slog.e(TAG, "Unable to create surface.", ex);
                     return false;
                 }
+
+                mSurfaceControl.setLayerStack(mDisplayLayerStack);
+                mSurfaceControl.setSize(mDisplayWidth, mDisplayHeight);
+                mSurface = new Surface();
+                mSurface.copyFrom(mSurfaceControl);
+
+                mSurfaceLayout = new NaturalSurfaceLayout(mDisplayManagerInternal,
+                        mDisplayId, mSurfaceControl);
+                mSurfaceLayout.onDisplayTransaction();
             }
-
-            mSurfaceControl.setLayerStack(mDisplayLayerStack);
-            mSurfaceControl.setSize(mDisplayWidth, mDisplayHeight);
-            mSurface = new Surface();
-            mSurface.copyFrom(mSurfaceControl);
-
-            mSurfaceLayout = new NaturalSurfaceLayout(mDisplayManagerInternal,
-                    mDisplayId, mSurfaceControl);
-            mSurfaceLayout.onDisplayTransaction();
         } finally {
             SurfaceControl.closeTransaction();
         }

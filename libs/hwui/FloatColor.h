@@ -16,7 +16,9 @@
 #ifndef FLOATCOLOR_H
 #define FLOATCOLOR_H
 
+#include "utils/Color.h"
 #include "utils/Macros.h"
+#include "utils/MathUtils.h"
 
 #include <stdint.h>
 
@@ -24,11 +26,26 @@ namespace android {
 namespace uirenderer {
 
 struct FloatColor {
+    // "color" is a gamma-encoded sRGB color
+    // After calling this method, the color is stored as a pre-multiplied linear color
+    // if linear blending is enabled. Otherwise, the color is stored as a pre-multiplied
+    // gamma-encoded sRGB color
     void set(uint32_t color) {
         a = ((color >> 24) & 0xff) / 255.0f;
-        r = a * ((color >> 16) & 0xff) / 255.0f;
-        g = a * ((color >>  8) & 0xff) / 255.0f;
-        b = a * ((color      ) & 0xff) / 255.0f;
+        r = a * EOCF(((color >> 16) & 0xff) / 255.0f);
+        g = a * EOCF(((color >>  8) & 0xff) / 255.0f);
+        b = a * EOCF(((color      ) & 0xff) / 255.0f);
+    }
+
+    // "color" is a gamma-encoded sRGB color
+    // After calling this method, the color is stored as a un-premultiplied linear color
+    // if linear blending is enabled. Otherwise, the color is stored as a un-premultiplied
+    // gamma-encoded sRGB color
+    void setUnPreMultiplied(uint32_t color) {
+        a = ((color >> 24) & 0xff) / 255.0f;
+        r = EOCF(((color >> 16) & 0xff) / 255.0f);
+        g = EOCF(((color >>  8) & 0xff) / 255.0f);
+        b = EOCF(((color      ) & 0xff) / 255.0f);
     }
 
     bool isNotBlack() {
@@ -36,6 +53,17 @@ struct FloatColor {
                 || r > 0.0f
                 || g > 0.0f
                 || b > 0.0f;
+    }
+
+    bool operator==(const FloatColor& other) const {
+        return MathUtils::areEqual(r, other.r)
+                && MathUtils::areEqual(g, other.g)
+                && MathUtils::areEqual(b, other.b)
+                && MathUtils::areEqual(a, other.a);
+    }
+
+    bool operator!=(const FloatColor& other) const {
+        return !(*this == other);
     }
 
     float r;

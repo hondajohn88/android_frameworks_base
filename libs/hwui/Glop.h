@@ -14,8 +14,7 @@
  * limitations under the License.
  */
 
-#ifndef ANDROID_HWUI_GLOP_H
-#define ANDROID_HWUI_GLOP_H
+#pragma once
 
 #include "FloatColor.h"
 #include "Matrix.h"
@@ -26,7 +25,6 @@
 
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
-#include <SkXfermode.h>
 
 namespace android {
 namespace uirenderer {
@@ -44,9 +42,14 @@ class Texture;
 
 namespace VertexAttribFlags {
     enum {
+        // Mesh is pure x,y vertex pairs
         None = 0,
+        // Mesh has texture coordinates embedded. Note that texture can exist without this flag
+        // being set, if coordinates passed to sampler are determined another way.
         TextureCoord = 1 << 0,
+        // Mesh has color embedded (to export to varying)
         Color = 1 << 1,
+        // Mesh has alpha embedded (to export to varying)
         Alpha = 1 << 2,
     };
 };
@@ -63,8 +66,8 @@ namespace TransformFlags {
         OffsetByFudgeFactor = 1 << 0,
 
         // Canvas transform isn't applied to the mesh at draw time,
-        //since it's already built in.
-        MeshIgnoresCanvasTransform = 1 << 1,
+        // since it's already built in.
+        MeshIgnoresCanvasTransform = 1 << 1, // TODO: remove for HWUI_NEW_OPS
     };
 };
 
@@ -81,8 +84,10 @@ namespace TransformFlags {
  * vertex/index/Texture/RoundRectClipState pointers prevent this from
  * being safe.
  */
-// TODO: PREVENT_COPY_AND_ASSIGN(...) or similar
 struct Glop {
+    PREVENT_COPY_AND_ASSIGN(Glop);
+public:
+    Glop() { }
     struct Mesh {
         GLuint primitiveMode; // GL_TRIANGLES and GL_TRIANGLE_STRIP supported
 
@@ -105,6 +110,7 @@ struct Glop {
         } vertices;
 
         int elementCount;
+        int vertexCount; // only used for meshes (for glDrawRangeElements)
         TextureVertex mappedVertices[4];
     } mesh;
 
@@ -113,7 +119,6 @@ struct Glop {
 
         struct TextureData {
             Texture* texture;
-            GLenum target;
             GLenum filter;
             GLenum clamp;
             Matrix4* textureTransform;
@@ -135,10 +140,6 @@ struct Glop {
     } fill;
 
     struct Transform {
-        // Orthographic projection matrix for current FBO
-        // TODO: move out of Glop, since this is static per FBO
-        Matrix4 ortho;
-
         // modelView transform, accounting for delta between mesh transform and content of the mesh
         // often represents x/y offsets within command, or scaling for mesh unit size
         Matrix4 modelView;
@@ -153,7 +154,7 @@ struct Glop {
        }
     } transform;
 
-    const RoundRectClipState* roundRectClipState;
+    const RoundRectClipState* roundRectClipState = nullptr;
 
     /**
      * Blending to be used by this draw - both GL_NONE if blending is disabled.
@@ -166,12 +167,6 @@ struct Glop {
     } blend;
 
     /**
-     * Bounds of the drawing command in layer space. Only mapped into layer
-     * space once GlopBuilder::build() is called.
-     */
-    Rect bounds;
-
-    /**
      * Additional render state to enumerate:
      * - scissor + (bits for whether each of LTRB needed?)
      * - stencil mode (draw into, mask, count, etc)
@@ -180,5 +175,3 @@ struct Glop {
 
 } /* namespace uirenderer */
 } /* namespace android */
-
-#endif // ANDROID_HWUI_GLOP_H

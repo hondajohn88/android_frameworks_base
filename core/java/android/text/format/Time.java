@@ -18,12 +18,12 @@ package android.text.format;
 
 import android.util.TimeFormatException;
 
+import libcore.util.ZoneInfo;
+import libcore.util.ZoneInfoDB;
+
 import java.io.IOException;
 import java.util.Locale;
 import java.util.TimeZone;
-
-import libcore.util.ZoneInfo;
-import libcore.util.ZoneInfoDB;
 
 /**
  * An alternative to the {@link java.util.Calendar} and
@@ -331,7 +331,7 @@ public class Time {
      * @throws IllegalArgumentException if {@link #allDay} is true but {@code
      *             hour}, {@code minute}, and {@code second} are not 0.
      * @return a negative result if {@code a} is earlier, a positive result if
-     *         {@code a} is earlier, or 0 if they are equal.
+     *         {@code b} is earlier, or 0 if they are equal.
      */
     public static int compare(Time a, Time b) {
         if (a == null) {
@@ -842,7 +842,7 @@ public class Time {
      * the given time.
      *
      * <p>
-     * Equivalent to {@code Time.compare(this, that) &lt; 0}. See
+     * Equivalent to {@code Time.compare(this, that) < 0}. See
      * {@link #compare(Time, Time)} for details.
      *
      * @param that a given Time object to compare against
@@ -858,7 +858,7 @@ public class Time {
      * the given time.
      *
      * <p>
-     * Equivalent to {@code Time.compare(this, that) &gt; 0}. See
+     * Equivalent to {@code Time.compare(this, that) > 0}. See
      * {@link #compare(Time, Time)} for details.
      *
      * @param that a given Time object to compare against

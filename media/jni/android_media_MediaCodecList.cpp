@@ -26,7 +26,7 @@
 
 #include "android_runtime/AndroidRuntime.h"
 #include "jni.h"
-#include "JNIHelp.h"
+#include <nativehelper/JNIHelp.h>
 #include "android_media_Utils.h"
 
 using namespace android;
@@ -286,7 +286,7 @@ static jobject android_media_MediaCodecList_getGlobalSettings(JNIEnv *env, jobje
 static void android_media_MediaCodecList_native_init(JNIEnv* /* env */) {
 }
 
-static JNINativeMethod gMethods[] = {
+static const JNINativeMethod gMethods[] = {
     { "native_getCodecCount", "()I", (void *)android_media_MediaCodecList_getCodecCount },
     { "getCodecName", "(I)Ljava/lang/String;",
       (void *)android_media_MediaCodecList_getCodecName },

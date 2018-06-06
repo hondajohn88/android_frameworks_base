@@ -18,7 +18,7 @@
 #undef LOG_TAG
 #define LOG_TAG "DdmHandleNativeHeap"
 
-#include <JNIHelp.h>
+#include <nativehelper/JNIHelp.h>
 #include <jni.h>
 #include "core_jni_helpers.h"
 
@@ -105,7 +105,7 @@ static jbyteArray DdmHandleNativeHeap_getLeakInfo(JNIEnv* env, jobject) {
     return array;
 }
 
-static JNINativeMethod method_table[] = {
+static const JNINativeMethod method_table[] = {
     { "getLeakInfo", "()[B", (void*) DdmHandleNativeHeap_getLeakInfo },
 };
 

@@ -16,11 +16,16 @@
 
 package com.android.server.print;
 
+import android.annotation.FloatRange;
+import android.annotation.NonNull;
+import android.annotation.Nullable;
+import android.annotation.StringRes;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.pm.ParceledListSlice;
+import android.graphics.drawable.Icon;
 import android.os.Binder;
 import android.os.Handler;
 import android.os.IBinder;
@@ -95,6 +100,15 @@ final class RemotePrintService implements DeathRecipient {
         public void onPrintersAdded(List<PrinterInfo> printers);
         public void onPrintersRemoved(List<PrinterId> printerIds);
         public void onServiceDied(RemotePrintService service);
+
+        /**
+         * Handle that a custom icon for a printer was loaded.
+         *
+         * @param printerId the id of the printer the icon belongs to
+         * @param icon the icon that was loaded
+         * @see android.print.PrinterInfo.Builder#setHasCustomPrinterIcon()
+         */
+        public void onCustomPrinterIconLoaded(PrinterId printerId, Icon icon);
     }
 
     public RemotePrintService(Context context, ComponentName componentName, int userId,
@@ -118,8 +132,6 @@ final class RemotePrintService implements DeathRecipient {
     }
 
     private void handleDestroy() {
-        throwIfDestroyed();
-
         // Stop tracking printers.
         stopTrackingAllPrinters();
 
@@ -146,7 +158,10 @@ final class RemotePrintService implements DeathRecipient {
     }
 
     private void handleBinderDied() {
-        mPrintService.asBinder().unlinkToDeath(this, 0);
+        if (mPrintService != null) {
+            mPrintService.asBinder().unlinkToDeath(this, 0);
+        }
+
         mPrintService = null;
         mServiceDied = true;
         mCallbacks.onServiceDied(this);
@@ -157,7 +172,6 @@ final class RemotePrintService implements DeathRecipient {
     }
 
     private void handleOnAllPrintJobsHandled() {
-        throwIfDestroyed();
         mHasActivePrintJobs = false;
         if (!isBound()) {
             // The service is dead and neither has active jobs nor discovery
@@ -191,7 +205,6 @@ final class RemotePrintService implements DeathRecipient {
     }
 
     private void handleRequestCancelPrintJob(final PrintJobInfo printJob) {
-        throwIfDestroyed();
         if (!isBound()) {
             ensureBound();
             mPendingCommands.add(new Runnable() {
@@ -218,7 +231,6 @@ final class RemotePrintService implements DeathRecipient {
     }
 
     private void handleOnPrintJobQueued(final PrintJobInfo printJob) {
-        throwIfDestroyed();
         mHasActivePrintJobs = true;
         if (!isBound()) {
             ensureBound();
@@ -245,7 +257,6 @@ final class RemotePrintService implements DeathRecipient {
     }
 
     private void handleCreatePrinterDiscoverySession() {
-        throwIfDestroyed();
         mHasPrinterDiscoverySession = true;
         if (!isBound()) {
             ensureBound();
@@ -272,7 +283,6 @@ final class RemotePrintService implements DeathRecipient {
     }
 
     private void handleDestroyPrinterDiscoverySession() {
-        throwIfDestroyed();
         mHasPrinterDiscoverySession = false;
         if (!isBound()) {
             // The service is dead and neither has active jobs nor discovery
@@ -311,7 +321,6 @@ final class RemotePrintService implements DeathRecipient {
     }
 
     private void handleStartPrinterDiscovery(final List<PrinterId> priorityList) {
-        throwIfDestroyed();
         // Take a note that we are doing discovery.
         mDiscoveryPriorityList = new ArrayList<PrinterId>();
         if (priorityList != null) {
@@ -342,7 +351,6 @@ final class RemotePrintService implements DeathRecipient {
     }
 
     private void handleStopPrinterDiscovery() {
-        throwIfDestroyed();
         // We are not doing discovery anymore.
         mDiscoveryPriorityList = null;
         if (!isBound()) {
@@ -375,7 +383,6 @@ final class RemotePrintService implements DeathRecipient {
     }
 
     private void handleValidatePrinters(final List<PrinterId> printerIds) {
-        throwIfDestroyed();
         if (!isBound()) {
             ensureBound();
             mPendingCommands.add(new Runnable() {
@@ -396,13 +403,46 @@ final class RemotePrintService implements DeathRecipient {
         }
     }
 
-    public void startPrinterStateTracking(PrinterId printerId) {
+    public void startPrinterStateTracking(@NonNull PrinterId printerId) {
         mHandler.obtainMessage(MyHandler.MSG_START_PRINTER_STATE_TRACKING,
                 printerId).sendToTarget();
     }
 
-    private void handleStartPrinterStateTracking(final PrinterId printerId) {
-        throwIfDestroyed();
+    /**
+     * Queue a request for a custom printer icon for a printer.
+     *
+     * @param printerId the id of the printer the icon should be loaded for
+     * @see android.print.PrinterInfo.Builder#setHasCustomPrinterIcon
+     */
+    public void requestCustomPrinterIcon(@NonNull PrinterId printerId) {
+        mHandler.obtainMessage(MyHandler.MSG_REQUEST_CUSTOM_PRINTER_ICON,
+                printerId).sendToTarget();
+    }
+
+    /**
+     * Request a custom printer icon for a printer.
+     *
+     * @param printerId the id of the printer the icon should be loaded for
+     * @see android.print.PrinterInfo.Builder#setHasCustomPrinterIcon
+     */
+    private void handleRequestCustomPrinterIcon(@NonNull PrinterId printerId) {
+        if (!isBound()) {
+            ensureBound();
+            mPendingCommands.add(() -> handleRequestCustomPrinterIcon(printerId));
+        } else {
+            if (DEBUG) {
+                Slog.i(LOG_TAG, "[user: " + mUserId + "] requestCustomPrinterIcon()");
+            }
+
+            try {
+                mPrintService.requestCustomPrinterIcon(printerId);
+            } catch (RemoteException re) {
+                Slog.e(LOG_TAG, "Error requesting icon for " + printerId, re);
+            }
+        }
+    }
+
+    private void handleStartPrinterStateTracking(final @NonNull PrinterId printerId) {
         // Take a note we are tracking the printer.
         if (mTrackedPrinterList == null) {
             mTrackedPrinterList = new ArrayList<PrinterId>();
@@ -434,7 +474,6 @@ final class RemotePrintService implements DeathRecipient {
     }
 
     private void handleStopPrinterStateTracking(final PrinterId printerId) {
-        throwIfDestroyed();
         // We are no longer tracking the printer.
         if (mTrackedPrinterList == null || !mTrackedPrinterList.remove(printerId)) {
             return;
@@ -506,9 +545,21 @@ final class RemotePrintService implements DeathRecipient {
             Slog.i(LOG_TAG, "[user: " + mUserId + "] ensureBound()");
         }
         mBinding = true;
-        mContext.bindServiceAsUser(mIntent, mServiceConnection,
+
+        boolean wasBound = mContext.bindServiceAsUser(mIntent, mServiceConnection,
                 Context.BIND_AUTO_CREATE | Context.BIND_FOREGROUND_SERVICE,
                 new UserHandle(mUserId));
+
+        if (!wasBound) {
+            if (DEBUG) {
+                Slog.i(LOG_TAG, "[user: " + mUserId + "] could not bind to " + mIntent);
+            }
+            mBinding = false;
+
+            if (!mServiceDied) {
+                handleBinderDied();
+            }
+        }
     }
 
     private void ensureUnbound() {
@@ -533,12 +584,6 @@ final class RemotePrintService implements DeathRecipient {
             mPrintService.asBinder().unlinkToDeath(this, 0);
             mPrintService = null;
             mContext.unbindService(mServiceConnection);
-        }
-    }
-
-    private void throwIfDestroyed() {
-        if (mDestroyed) {
-            throw new IllegalStateException("Cannot interact with a destroyed service");
         }
     }
 
@@ -612,6 +657,7 @@ final class RemotePrintService implements DeathRecipient {
         public static final int MSG_ON_PRINT_JOB_QUEUED = 10;
         public static final int MSG_DESTROY = 11;
         public static final int MSG_BINDER_DIED = 12;
+        public static final int MSG_REQUEST_CUSTOM_PRINTER_ICON = 13;
 
         public MyHandler(Looper looper) {
             super(looper, null, false);
@@ -620,6 +666,11 @@ final class RemotePrintService implements DeathRecipient {
         @Override
         @SuppressWarnings("unchecked")
         public void handleMessage(Message message) {
+            if (mDestroyed) {
+                Slog.w(LOG_TAG, "Not handling " + message + " as service for " + mComponentName
+                        + " is already destroyed");
+                return;
+            }
             switch (message.what) {
                 case MSG_CREATE_PRINTER_DISCOVERY_SESSION: {
                     handleCreatePrinterDiscoverySession();
@@ -673,6 +724,11 @@ final class RemotePrintService implements DeathRecipient {
 
                 case MSG_BINDER_DIED: {
                     handleBinderDied();
+                } break;
+
+                case MSG_REQUEST_CUSTOM_PRINTER_ICON: {
+                    PrinterId printerId = (PrinterId) message.obj;
+                    handleRequestCustomPrinterIcon(printerId);
                 } break;
             }
         }
@@ -757,6 +813,47 @@ final class RemotePrintService implements DeathRecipient {
         }
 
         @Override
+        public void setProgress(@NonNull PrintJobId printJobId,
+                @FloatRange(from=0.0, to=1.0) float progress) {
+            RemotePrintService service = mWeakService.get();
+            if (service != null) {
+                final long identity = Binder.clearCallingIdentity();
+                try {
+                    service.mSpooler.setProgress(printJobId, progress);
+                } finally {
+                    Binder.restoreCallingIdentity(identity);
+                }
+            }
+        }
+
+        @Override
+        public void setStatus(@NonNull PrintJobId printJobId, @Nullable CharSequence status) {
+            RemotePrintService service = mWeakService.get();
+            if (service != null) {
+                final long identity = Binder.clearCallingIdentity();
+                try {
+                    service.mSpooler.setStatus(printJobId, status);
+                } finally {
+                    Binder.restoreCallingIdentity(identity);
+                }
+            }
+        }
+
+        @Override
+        public void setStatusRes(@NonNull PrintJobId printJobId, @StringRes int status,
+                @NonNull CharSequence appPackageName) {
+            RemotePrintService service = mWeakService.get();
+            if (service != null) {
+                final long identity = Binder.clearCallingIdentity();
+                try {
+                    service.mSpooler.setStatus(printJobId, status, appPackageName);
+                } finally {
+                    Binder.restoreCallingIdentity(identity);
+                }
+            }
+        }
+
+        @Override
         @SuppressWarnings({"rawtypes", "unchecked"})
         public void onPrintersAdded(ParceledListSlice printers) {
             RemotePrintService service = mWeakService.get();
@@ -807,9 +904,22 @@ final class RemotePrintService implements DeathRecipient {
         }
 
         private void throwIfPrinterIdTampered(ComponentName serviceName, PrinterId printerId) {
-            if (printerId == null || printerId.getServiceName() == null
-                    || !printerId.getServiceName().equals(serviceName)) {
+            if (printerId == null || !printerId.getServiceName().equals(serviceName)) {
                 throw new IllegalArgumentException("Invalid printer id: " + printerId);
+            }
+        }
+
+        @Override
+        public void onCustomPrinterIconLoaded(PrinterId printerId, Icon icon)
+                throws RemoteException {
+            RemotePrintService service = mWeakService.get();
+            if (service != null) {
+                final long identity = Binder.clearCallingIdentity();
+                try {
+                    service.mCallbacks.onCustomPrinterIconLoaded(printerId, icon);
+                } finally {
+                    Binder.restoreCallingIdentity(identity);
+                }
             }
         }
     }

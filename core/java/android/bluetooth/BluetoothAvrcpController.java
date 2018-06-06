@@ -20,6 +20,7 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
+import android.os.Binder;
 import android.os.IBinder;
 import android.os.RemoteException;
 import android.util.Log;
@@ -28,8 +29,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * This class provides the public APIs to control the Bluetooth AVRCP Controller
- * profile.
+ * This class provides the public APIs to control the Bluetooth AVRCP Controller. It currently
+ * supports player information, playback support and track metadata.
  *
  *<p>BluetoothAvrcpController is a proxy object for controlling the Bluetooth AVRCP
  * Service via IPC. Use {@link BluetoothAdapter#getProfileProxy} to get
@@ -39,7 +40,7 @@ import java.util.List;
  */
 public final class BluetoothAvrcpController implements BluetoothProfile {
     private static final String TAG = "BluetoothAvrcpController";
-    private static final boolean DBG = true;
+    private static final boolean DBG = false;
     private static final boolean VDBG = false;
 
     /**
@@ -61,41 +62,56 @@ public final class BluetoothAvrcpController implements BluetoothProfile {
      * receive.
      */
     public static final String ACTION_CONNECTION_STATE_CHANGED =
-        "android.bluetooth.acrcp-controller.profile.action.CONNECTION_STATE_CHANGED";
+        "android.bluetooth.avrcp-controller.profile.action.CONNECTION_STATE_CHANGED";
+
+    /**
+     * Intent used to broadcast the change in player application setting state on AVRCP AG.
+     *
+     * <p>This intent will have the following extras:
+     * <ul>
+     *    <li> {@link #EXTRA_PLAYER_SETTING} - {@link BluetoothAvrcpPlayerSettings} containing the
+     *    most recent player setting. </li>
+     * </ul>
+     */
+    public static final String ACTION_PLAYER_SETTING =
+        "android.bluetooth.avrcp-controller.profile.action.PLAYER_SETTING";
+
+    public static final String EXTRA_PLAYER_SETTING =
+            "android.bluetooth.avrcp-controller.profile.extra.PLAYER_SETTING";
 
     private Context mContext;
     private ServiceListener mServiceListener;
-    private IBluetoothAvrcpController mService;
+    private volatile IBluetoothAvrcpController mService;
     private BluetoothAdapter mAdapter;
 
     final private IBluetoothStateChangeCallback mBluetoothStateChangeCallback =
-            new IBluetoothStateChangeCallback.Stub() {
-                public void onBluetoothStateChange(boolean up) {
-                    if (DBG) Log.d(TAG, "onBluetoothStateChange: up=" + up);
-                    if (!up) {
-                        if (VDBG) Log.d(TAG,"Unbinding service...");
-                        synchronized (mConnection) {
-                            try {
-                                mService = null;
-                                mContext.unbindService(mConnection);
-                            } catch (Exception re) {
-                                Log.e(TAG,"",re);
-                            }
+        new IBluetoothStateChangeCallback.Stub() {
+            public void onBluetoothStateChange(boolean up) {
+                if (DBG) Log.d(TAG, "onBluetoothStateChange: up=" + up);
+                if (!up) {
+                    if (VDBG) Log.d(TAG,"Unbinding service...");
+                    synchronized (mConnection) {
+                        try {
+                            mService = null;
+                            mContext.unbindService(mConnection);
+                        } catch (Exception re) {
+                            Log.e(TAG,"",re);
                         }
-                    } else {
-                        synchronized (mConnection) {
-                            try {
-                                if (mService == null) {
-                                    if (VDBG) Log.d(TAG,"Binding service...");
-                                    doBind();
-                                }
-                            } catch (Exception re) {
-                                Log.e(TAG,"",re);
+                    }
+                } else {
+                    synchronized (mConnection) {
+                        try {
+                            if (mService == null) {
+                                if (VDBG) Log.d(TAG,"Binding service...");
+                                doBind();
                             }
+                        } catch (Exception re) {
+                            Log.e(TAG,"",re);
                         }
                     }
                 }
-        };
+            }
+      };
 
     /**
      * Create a BluetoothAvrcpController proxy object for interacting with the local
@@ -162,15 +178,16 @@ public final class BluetoothAvrcpController implements BluetoothProfile {
      */
     public List<BluetoothDevice> getConnectedDevices() {
         if (VDBG) log("getConnectedDevices()");
-        if (mService != null && isEnabled()) {
+        final IBluetoothAvrcpController service = mService;
+        if (service != null && isEnabled()) {
             try {
-                return mService.getConnectedDevices();
+                return service.getConnectedDevices();
             } catch (RemoteException e) {
                 Log.e(TAG, "Stack:" + Log.getStackTraceString(new Throwable()));
                 return new ArrayList<BluetoothDevice>();
             }
         }
-        if (mService == null) Log.w(TAG, "Proxy not attached to service");
+        if (service == null) Log.w(TAG, "Proxy not attached to service");
         return new ArrayList<BluetoothDevice>();
     }
 
@@ -179,15 +196,16 @@ public final class BluetoothAvrcpController implements BluetoothProfile {
      */
     public List<BluetoothDevice> getDevicesMatchingConnectionStates(int[] states) {
         if (VDBG) log("getDevicesMatchingStates()");
-        if (mService != null && isEnabled()) {
+        final IBluetoothAvrcpController service = mService;
+        if (service != null && isEnabled()) {
             try {
-                return mService.getDevicesMatchingConnectionStates(states);
+                return service.getDevicesMatchingConnectionStates(states);
             } catch (RemoteException e) {
                 Log.e(TAG, "Stack:" + Log.getStackTraceString(new Throwable()));
                 return new ArrayList<BluetoothDevice>();
             }
         }
-        if (mService == null) Log.w(TAG, "Proxy not attached to service");
+        if (service == null) Log.w(TAG, "Proxy not attached to service");
         return new ArrayList<BluetoothDevice>();
     }
 
@@ -196,38 +214,82 @@ public final class BluetoothAvrcpController implements BluetoothProfile {
      */
     public int getConnectionState(BluetoothDevice device) {
         if (VDBG) log("getState(" + device + ")");
-        if (mService != null && isEnabled()
-            && isValidDevice(device)) {
+        final IBluetoothAvrcpController service = mService;
+        if (service != null && isEnabled() && isValidDevice(device)) {
             try {
-                return mService.getConnectionState(device);
+                return service.getConnectionState(device);
             } catch (RemoteException e) {
                 Log.e(TAG, "Stack:" + Log.getStackTraceString(new Throwable()));
                 return BluetoothProfile.STATE_DISCONNECTED;
             }
         }
-        if (mService == null) Log.w(TAG, "Proxy not attached to service");
+        if (service == null) Log.w(TAG, "Proxy not attached to service");
         return BluetoothProfile.STATE_DISCONNECTED;
     }
 
-    public void sendPassThroughCmd(BluetoothDevice device, int keyCode, int keyState) {
-        if (DBG) Log.d(TAG, "sendPassThroughCmd");
-        if (mService != null && isEnabled()) {
+    /**
+     * Gets the player application settings.
+     *
+     * @return the {@link BluetoothAvrcpPlayerSettings} or {@link null} if there is an error.
+     */
+    public BluetoothAvrcpPlayerSettings getPlayerSettings(BluetoothDevice device) {
+        if (DBG) Log.d(TAG, "getPlayerSettings");
+        BluetoothAvrcpPlayerSettings settings = null;
+        final IBluetoothAvrcpController service = mService;
+        if (service != null && isEnabled()) {
             try {
-                mService.sendPassThroughCmd(device, keyCode, keyState);
+                settings = service.getPlayerSettings(device);
+            } catch (RemoteException e) {
+                Log.e(TAG, "Error talking to BT service in getMetadata() " + e);
+                return null;
+            }
+        }
+        return settings;
+    }
+
+    /**
+     * Sets the player app setting for current player.
+     * returns true in case setting is supported by remote, false otherwise
+     */
+    public boolean setPlayerApplicationSetting(BluetoothAvrcpPlayerSettings plAppSetting) {
+        if (DBG) Log.d(TAG, "setPlayerApplicationSetting");
+        final IBluetoothAvrcpController service = mService;
+        if (service != null && isEnabled()) {
+            try {
+                return service.setPlayerApplicationSetting(plAppSetting);
+            } catch (RemoteException e) {
+                Log.e(TAG, "Error talking to BT service in setPlayerApplicationSetting() " + e);
+                return false;
+            }
+        }
+        if (service == null) Log.w(TAG, "Proxy not attached to service");
+        return false;
+    }
+
+    /*
+     * Send Group Navigation Command to Remote.
+     * possible keycode values: next_grp, previous_grp defined above
+     */
+    public void sendGroupNavigationCmd(BluetoothDevice device, int keyCode, int keyState) {
+        Log.d(TAG, "sendGroupNavigationCmd dev = " + device + " key " + keyCode + " State = "
+                + keyState);
+        final IBluetoothAvrcpController service = mService;
+        if (service != null && isEnabled()) {
+            try {
+                service.sendGroupNavigationCmd(device, keyCode, keyState);
                 return;
             } catch (RemoteException e) {
-                Log.e(TAG, "Error talking to BT service in sendPassThroughCmd()", e);
+                Log.e(TAG, "Error talking to BT service in sendGroupNavigationCmd()", e);
                 return;
             }
         }
-        if (mService == null) Log.w(TAG, "Proxy not attached to service");
+        if (service == null) Log.w(TAG, "Proxy not attached to service");
     }
 
     private final ServiceConnection mConnection = new ServiceConnection() {
         public void onServiceConnected(ComponentName className, IBinder service) {
             if (DBG) Log.d(TAG, "Proxy object connected");
-            mService = IBluetoothAvrcpController.Stub.asInterface(service);
-
+            mService = IBluetoothAvrcpController.Stub.asInterface(Binder.allowBlocking(service));
             if (mServiceListener != null) {
                 mServiceListener.onServiceConnected(BluetoothProfile.AVRCP_CONTROLLER,
                         BluetoothAvrcpController.this);
@@ -243,15 +305,11 @@ public final class BluetoothAvrcpController implements BluetoothProfile {
     };
 
     private boolean isEnabled() {
-       if (mAdapter.getState() == BluetoothAdapter.STATE_ON) return true;
-       return false;
+        return mAdapter.getState() == BluetoothAdapter.STATE_ON;
     }
 
-    private boolean isValidDevice(BluetoothDevice device) {
-       if (device == null) return false;
-
-       if (BluetoothAdapter.checkBluetoothAddress(device.getAddress())) return true;
-       return false;
+    private static boolean isValidDevice(BluetoothDevice device) {
+        return device != null && BluetoothAdapter.checkBluetoothAddress(device.getAddress());
     }
 
     private static void log(String msg) {

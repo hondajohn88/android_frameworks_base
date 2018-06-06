@@ -48,7 +48,6 @@ class IntervalStats {
             usageStats.mPackageName = getCachedStringRef(packageName);
             usageStats.mBeginTimeStamp = beginTime;
             usageStats.mEndTimeStamp = endTime;
-            usageStats.mBeginIdleTime = 0;
             packageStats.put(usageStats.mPackageName, usageStats);
         }
         return usageStats;
@@ -113,7 +112,6 @@ class IntervalStats {
         if (eventType != UsageEvents.Event.SYSTEM_INTERACTION) {
             usageStats.mLastTimeUsed = timeStamp;
         }
-        usageStats.mLastTimeSystemUsed = timeStamp;
         usageStats.mEndTimeStamp = timeStamp;
 
         if (eventType == UsageEvents.Event.MOVE_TO_FOREGROUND) {
@@ -123,20 +121,21 @@ class IntervalStats {
         endTime = timeStamp;
     }
 
-    /**
-     * Updates the last active time for the package. The timestamp uses a timebase that
-     * tracks the device usage time.
-     * @param packageName
-     * @param timeStamp
-     */
-    void updateBeginIdleTime(String packageName, long timeStamp) {
+    void updateChooserCounts(String packageName, String category, String action) {
         UsageStats usageStats = getOrCreateUsageStats(packageName);
-        usageStats.mBeginIdleTime = timeStamp;
-    }
-
-    void updateSystemLastUsedTime(String packageName, long lastUsedTime) {
-        UsageStats usageStats = getOrCreateUsageStats(packageName);
-        usageStats.mLastTimeSystemUsed = lastUsedTime;
+        if (usageStats.mChooserCounts == null) {
+            usageStats.mChooserCounts = new ArrayMap<>();
+        }
+        ArrayMap<String, Integer> chooserCounts;
+        final int idx = usageStats.mChooserCounts.indexOfKey(action);
+        if (idx < 0) {
+            chooserCounts = new ArrayMap<>();
+            usageStats.mChooserCounts.put(action, chooserCounts);
+        } else {
+            chooserCounts = usageStats.mChooserCounts.valueAt(idx);
+        }
+        int currentCount = chooserCounts.getOrDefault(category, 0);
+        chooserCounts.put(category, currentCount + 1);
     }
 
     void updateConfigurationStats(Configuration config, long timeStamp) {

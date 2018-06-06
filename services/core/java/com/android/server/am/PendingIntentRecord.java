@@ -20,7 +20,6 @@ import static com.android.server.am.ActivityManagerDebugConfig.TAG_AM;
 import static com.android.server.am.ActivityManagerDebugConfig.TAG_WITH_CLASS_NAME;
 
 import android.app.ActivityManager;
-import android.app.IActivityContainer;
 import android.content.IIntentSender;
 import android.content.IIntentReceiver;
 import android.app.PendingIntent;
@@ -28,15 +27,19 @@ import android.content.Intent;
 import android.os.Binder;
 import android.os.Bundle;
 import android.os.IBinder;
+import android.os.RemoteCallbackList;
 import android.os.RemoteException;
 import android.os.TransactionTooLargeException;
 import android.os.UserHandle;
+import android.util.ArrayMap;
 import android.util.Slog;
+import android.util.TimeUtils;
 
-import com.android.server.am.ActivityStackSupervisor.ActivityContainer;
+import com.android.internal.os.IResultReceiver;
 
 import java.io.PrintWriter;
 import java.lang.ref.WeakReference;
+import java.util.Objects;
 
 final class PendingIntentRecord extends IIntentSender.Stub {
     private static final String TAG = TAG_WITH_CLASS_NAME ? "PendingIntentRecord" : TAG_AM;
@@ -47,6 +50,8 @@ final class PendingIntentRecord extends IIntentSender.Stub {
     final WeakReference<PendingIntentRecord> ref;
     boolean sent = false;
     boolean canceled = false;
+    private ArrayMap<IBinder, Long> whitelistDuration;
+    private RemoteCallbackList<IResultReceiver> mCancelCallbacks;
 
     String stringName;
     String lastTagPrefix;
@@ -66,9 +71,9 @@ final class PendingIntentRecord extends IIntentSender.Stub {
         final int flags;
         final int hashCode;
         final int userId;
-        
+
         private static final int ODD_PRIME_NUMBER = 37;
-        
+
         Key(int _t, String _p, ActivityRecord _a, String _w,
                 int _r, Intent[] _i, String[] _it, int _f, Bundle _o, int _userId) {
             type = _t;
@@ -100,13 +105,13 @@ final class PendingIntentRecord extends IIntentSender.Stub {
             if (requestResolvedType != null) {
                 hash = (ODD_PRIME_NUMBER*hash) + requestResolvedType.hashCode();
             }
-            hash = (ODD_PRIME_NUMBER*hash) + _p.hashCode();
+            hash = (ODD_PRIME_NUMBER*hash) + (_p != null ? _p.hashCode() : 0);
             hash = (ODD_PRIME_NUMBER*hash) + _t;
             hashCode = hash;
             //Slog.i(ActivityManagerService.TAG, this + " hashCode=0x"
             //        + Integer.toHexString(hashCode));
         }
-        
+
         public boolean equals(Object otherObj) {
             if (otherObj == null) {
                 return false;
@@ -119,20 +124,14 @@ final class PendingIntentRecord extends IIntentSender.Stub {
                 if (userId != other.userId){
                     return false;
                 }
-                if (!packageName.equals(other.packageName)) {
+                if (!Objects.equals(packageName, other.packageName)) {
                     return false;
                 }
                 if (activity != other.activity) {
                     return false;
                 }
-                if (who != other.who) {
-                    if (who != null) {
-                        if (!who.equals(other.who)) {
-                            return false;
-                        }
-                    } else if (other.who != null) {
-                        return false;
-                    }
+                if (!Objects.equals(who, other.who)) {
+                    return false;
                 }
                 if (requestCode != other.requestCode) {
                     return false;
@@ -146,14 +145,8 @@ final class PendingIntentRecord extends IIntentSender.Stub {
                         return false;
                     }
                 }
-                if (requestResolvedType != other.requestResolvedType) {
-                    if (requestResolvedType != null) {
-                        if (!requestResolvedType.equals(other.requestResolvedType)) {
-                            return false;
-                        }
-                    } else if (other.requestResolvedType != null) {
-                        return false;
-                    }
+                if (!Objects.equals(requestResolvedType, other.requestResolvedType)) {
+                    return false;
                 }
                 if (flags != other.flags) {
                     return false;
@@ -184,6 +177,8 @@ final class PendingIntentRecord extends IIntentSender.Stub {
                     return "broadcastIntent";
                 case ActivityManager.INTENT_SENDER_SERVICE:
                     return "startService";
+                case ActivityManager.INTENT_SENDER_FOREGROUND_SERVICE:
+                    return "startForegroundService";
                 case ActivityManager.INTENT_SENDER_ACTIVITY_RESULT:
                     return "activityResult";
             }
@@ -198,29 +193,66 @@ final class PendingIntentRecord extends IIntentSender.Stub {
         ref = new WeakReference<PendingIntentRecord>(this);
     }
 
-    public int send(int code, Intent intent, String resolvedType, IIntentReceiver finishedReceiver,
-            String requiredPermission, Bundle options) throws TransactionTooLargeException {
-        return sendInner(code, intent, resolvedType, finishedReceiver,
-                requiredPermission, null, null, 0, 0, 0, options, null);
+    void setWhitelistDurationLocked(IBinder whitelistToken, long duration) {
+        if (duration > 0) {
+            if (whitelistDuration == null) {
+                whitelistDuration = new ArrayMap<>();
+            }
+            whitelistDuration.put(whitelistToken, duration);
+        } else if (whitelistDuration != null) {
+            whitelistDuration.remove(whitelistToken);
+            if (whitelistDuration.size() <= 0) {
+                whitelistDuration = null;
+            }
+
+        }
+        this.stringName = null;
     }
 
-    int sendInner(int code, Intent intent, String resolvedType, IIntentReceiver finishedReceiver,
+    public void registerCancelListenerLocked(IResultReceiver receiver) {
+        if (mCancelCallbacks == null) {
+            mCancelCallbacks = new RemoteCallbackList<>();
+        }
+        mCancelCallbacks.register(receiver);
+    }
+
+    public void unregisterCancelListenerLocked(IResultReceiver receiver) {
+        mCancelCallbacks.unregister(receiver);
+        if (mCancelCallbacks.getRegisteredCallbackCount() <= 0) {
+            mCancelCallbacks = null;
+        }
+    }
+
+    public RemoteCallbackList<IResultReceiver> detachCancelListenersLocked() {
+        RemoteCallbackList<IResultReceiver> listeners = mCancelCallbacks;
+        mCancelCallbacks = null;
+        return listeners;
+    }
+
+    public void send(int code, Intent intent, String resolvedType, IBinder whitelistToken,
+            IIntentReceiver finishedReceiver, String requiredPermission, Bundle options) {
+        sendInner(code, intent, resolvedType, whitelistToken, finishedReceiver,
+                requiredPermission, null, null, 0, 0, 0, options);
+    }
+
+    public int sendWithResult(int code, Intent intent, String resolvedType, IBinder whitelistToken,
+            IIntentReceiver finishedReceiver, String requiredPermission, Bundle options) {
+        return sendInner(code, intent, resolvedType, whitelistToken, finishedReceiver,
+                requiredPermission, null, null, 0, 0, 0, options);
+    }
+
+    int sendInner(int code, Intent intent, String resolvedType, IBinder whitelistToken,
+            IIntentReceiver finishedReceiver,
             String requiredPermission, IBinder resultTo, String resultWho, int requestCode,
-            int flagsMask, int flagsValues, Bundle options, IActivityContainer container)
-            throws TransactionTooLargeException {
-        synchronized(owner) {
-            final ActivityContainer activityContainer = (ActivityContainer)container;
-            if (activityContainer != null && activityContainer.mParentActivity != null &&
-                    activityContainer.mParentActivity.state
-                            != ActivityStack.ActivityState.RESUMED) {
-                // Cannot start a child activity if the parent is not resumed.
-                return ActivityManager.START_CANCELED;
-            }
+            int flagsMask, int flagsValues, Bundle options) {
+        if (intent != null) intent.setDefusable(true);
+        if (options != null) options.setDefusable(true);
+
+        synchronized (owner) {
             if (!canceled) {
                 sent = true;
                 if ((key.flags&PendingIntent.FLAG_ONE_SHOT) != 0) {
                     owner.cancelIntentSenderLocked(this, true);
-                    canceled = true;
                 }
 
                 Intent finalIntent = key.requestIntent != null
@@ -243,13 +275,42 @@ final class PendingIntentRecord extends IIntentSender.Stub {
                     resolvedType = key.requestResolvedType;
                 }
 
+                final int callingUid = Binder.getCallingUid();
+                final int callingPid = Binder.getCallingPid();
+
                 final long origId = Binder.clearCallingIdentity();
+
+                if (whitelistDuration != null) {
+                    Long duration = whitelistDuration.get(whitelistToken);
+                    if (duration != null) {
+                        int procState = owner.getUidState(callingUid);
+                        if (!ActivityManager.isProcStateBackground(procState)) {
+                            StringBuilder tag = new StringBuilder(64);
+                            tag.append("pendingintent:");
+                            UserHandle.formatUid(tag, callingUid);
+                            tag.append(":");
+                            if (finalIntent.getAction() != null) {
+                                tag.append(finalIntent.getAction());
+                            } else if (finalIntent.getComponent() != null) {
+                                finalIntent.getComponent().appendShortString(tag);
+                            } else if (finalIntent.getData() != null) {
+                                tag.append(finalIntent.getData());
+                            }
+                            owner.tempWhitelistForPendingIntentLocked(callingPid,
+                                    callingUid, uid, duration, tag.toString());
+                        } else {
+                            Slog.w(TAG, "Not doing whitelist " + this + ": caller state="
+                                    + procState);
+                        }
+                    }
+                }
 
                 boolean sendFinish = finishedReceiver != null;
                 int userId = key.userId;
                 if (userId == UserHandle.USER_CURRENT) {
-                    userId = owner.getCurrentUserIdLocked();
+                    userId = owner.mUserController.getCurrentOrTargetUserIdLocked();
                 }
+                int res = 0;
                 switch (key.type) {
                     case ActivityManager.INTENT_SENDER_ACTIVITY:
                         if (options == null) {
@@ -276,16 +337,17 @@ final class PendingIntentRecord extends IIntentSender.Stub {
                             } else {
                                 owner.startActivityInPackage(uid, key.packageName, finalIntent,
                                         resolvedType, resultTo, resultWho, requestCode, 0,
-                                        options, userId, container, null);
+                                        options, userId, null, "PendingIntentRecord");
                             }
                         } catch (RuntimeException e) {
                             Slog.w(TAG, "Unable to send startActivity intent", e);
                         }
                         break;
                     case ActivityManager.INTENT_SENDER_ACTIVITY_RESULT:
-                        if (key.activity.task.stack != null) {
-                            key.activity.task.stack.sendActivityResultLocked(-1, key.activity,
-                                    key.who, key.requestCode, code, finalIntent);
+                        final ActivityStack stack = key.activity.getStack();
+                        if (stack != null) {
+                            stack.sendActivityResultLocked(-1, key.activity, key.who,
+                                    key.requestCode, code, finalIntent);
                         }
                         break;
                     case ActivityManager.INTENT_SENDER_BROADCAST:
@@ -304,26 +366,30 @@ final class PendingIntentRecord extends IIntentSender.Stub {
                         }
                         break;
                     case ActivityManager.INTENT_SENDER_SERVICE:
+                    case ActivityManager.INTENT_SENDER_FOREGROUND_SERVICE:
                         try {
-                            owner.startServiceInPackage(uid, finalIntent,
-                                    resolvedType, key.packageName, userId);
+                            owner.startServiceInPackage(uid, finalIntent, resolvedType,
+                                    key.type == ActivityManager.INTENT_SENDER_FOREGROUND_SERVICE,
+                                    key.packageName, userId);
                         } catch (RuntimeException e) {
                             Slog.w(TAG, "Unable to send startService intent", e);
+                        } catch (TransactionTooLargeException e) {
+                            res = ActivityManager.START_CANCELED;
                         }
                         break;
                 }
 
-                if (sendFinish) {
+                if (sendFinish && res != ActivityManager.START_CANCELED) {
                     try {
                         finishedReceiver.performReceive(new Intent(finalIntent), 0,
                                 null, null, false, false, key.userId);
                     } catch (RemoteException e) {
                     }
                 }
-                
+
                 Binder.restoreCallingIdentity(origId);
-                
-                return 0;
+
+                return res;
             }
         }
         return ActivityManager.START_CANCELED;
@@ -350,7 +416,7 @@ final class PendingIntentRecord extends IIntentSender.Stub {
             }
         }
     }
-    
+
     void dump(PrintWriter pw, String prefix) {
         pw.print(prefix); pw.print("uid="); pw.print(uid);
                 pw.print(" packageName="); pw.print(key.packageName);
@@ -372,6 +438,26 @@ final class PendingIntentRecord extends IIntentSender.Stub {
             pw.print(prefix); pw.print("sent="); pw.print(sent);
                     pw.print(" canceled="); pw.println(canceled);
         }
+        if (whitelistDuration != null) {
+            pw.print(prefix);
+            pw.print("whitelistDuration=");
+            for (int i = 0; i < whitelistDuration.size(); i++) {
+                if (i != 0) {
+                    pw.print(", ");
+                }
+                pw.print(Integer.toHexString(System.identityHashCode(whitelistDuration.keyAt(i))));
+                pw.print(":");
+                TimeUtils.formatDuration(whitelistDuration.valueAt(i), pw);
+            }
+            pw.println();
+        }
+        if (mCancelCallbacks != null) {
+            pw.print(prefix); pw.println("mCancelCallbacks:");
+            for (int i = 0; i < mCancelCallbacks.getRegisteredCallbackCount(); i++) {
+                pw.print(prefix); pw.print("  #"); pw.print(i); pw.print(": ");
+                pw.println(mCancelCallbacks.getRegisteredCallbackItem(i));
+            }
+        }
     }
 
     public String toString() {
@@ -385,6 +471,18 @@ final class PendingIntentRecord extends IIntentSender.Stub {
         sb.append(key.packageName);
         sb.append(' ');
         sb.append(key.typeName());
+        if (whitelistDuration != null) {
+            sb.append( " (whitelist: ");
+            for (int i = 0; i < whitelistDuration.size(); i++) {
+                if (i != 0) {
+                    sb.append(",");
+                }
+                sb.append(Integer.toHexString(System.identityHashCode(whitelistDuration.keyAt(i))));
+                sb.append(":");
+                TimeUtils.formatDuration(whitelistDuration.valueAt(i), sb);
+            }
+            sb.append(")");
+        }
         sb.append('}');
         return stringName = sb.toString();
     }

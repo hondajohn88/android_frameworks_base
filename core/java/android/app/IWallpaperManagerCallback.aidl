@@ -16,6 +16,8 @@
 
 package android.app;
 
+import android.app.WallpaperColors;
+
 /**
  * Callback interface used by IWallpaperManager to send asynchronous 
  * notifications back to its clients.  Note that this is a
@@ -30,7 +32,8 @@ oneway interface IWallpaperManagerCallback {
     void onWallpaperChanged();
 
     /**
-     * Called when the keygaurd wallpaper has changed
+     * Called when wallpaper colors change
      */
-     void onKeyguardWallpaperChanged();
+    void onWallpaperColorsChanged(in WallpaperColors colors, int which, int userId);
+
 }

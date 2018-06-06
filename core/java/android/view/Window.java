@@ -16,6 +16,8 @@
 
 package android.view;
 
+import static android.view.WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
+
 import android.annotation.ColorInt;
 import android.annotation.DrawableRes;
 import android.annotation.IdRes;
@@ -25,20 +27,26 @@ import android.annotation.Nullable;
 import android.annotation.StyleRes;
 import android.annotation.SystemApi;
 import android.content.Context;
+import android.content.pm.ActivityInfo;
 import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.content.res.TypedArray;
 import android.graphics.PixelFormat;
+import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
 import android.media.session.MediaController;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.RemoteException;
 import android.os.SystemProperties;
 import android.transition.Scene;
 import android.transition.Transition;
 import android.transition.TransitionManager;
 import android.view.accessibility.AccessibilityEvent;
+
+import java.util.List;
 
 /**
  * Abstract base class for a top-level window look and behavior policy.  An
@@ -56,14 +64,28 @@ public abstract class Window {
     /** Flag for the "no title" feature, turning off the title at the top
      *  of the screen. */
     public static final int FEATURE_NO_TITLE = 1;
-    /** Flag for the progress indicator feature */
+
+    /**
+     * Flag for the progress indicator feature.
+     *
+     * @deprecated No longer supported starting in API 21.
+     */
+    @Deprecated
     public static final int FEATURE_PROGRESS = 2;
+
     /** Flag for having an icon on the left side of the title bar */
     public static final int FEATURE_LEFT_ICON = 3;
     /** Flag for having an icon on the right side of the title bar */
     public static final int FEATURE_RIGHT_ICON = 4;
-    /** Flag for indeterminate progress */
+
+    /**
+     * Flag for indeterminate progress.
+     *
+     * @deprecated No longer supported starting in API 21.
+     */
+    @Deprecated
     public static final int FEATURE_INDETERMINATE_PROGRESS = 5;
+
     /** Flag for the context menu.  This is enabled by default. */
     public static final int FEATURE_CONTEXT_MENU = 6;
     /** Flag for custom title. You cannot combine this feature with other title features. */
@@ -131,21 +153,76 @@ public abstract class Window {
      */
     public static final int FEATURE_MAX = FEATURE_ACTIVITY_TRANSITIONS;
 
-    /** Flag for setting the progress bar's visibility to VISIBLE */
+    /**
+     * Flag for setting the progress bar's visibility to VISIBLE.
+     *
+     * @deprecated {@link #FEATURE_PROGRESS} and related methods are no longer
+     *             supported starting in API 21.
+     */
+    @Deprecated
     public static final int PROGRESS_VISIBILITY_ON = -1;
-    /** Flag for setting the progress bar's visibility to GONE */
+
+    /**
+     * Flag for setting the progress bar's visibility to GONE.
+     *
+     * @deprecated {@link #FEATURE_PROGRESS} and related methods are no longer
+     *             supported starting in API 21.
+     */
+    @Deprecated
     public static final int PROGRESS_VISIBILITY_OFF = -2;
-    /** Flag for setting the progress bar's indeterminate mode on */
+
+    /**
+     * Flag for setting the progress bar's indeterminate mode on.
+     *
+     * @deprecated {@link #FEATURE_INDETERMINATE_PROGRESS} and related methods
+     *             are no longer supported starting in API 21.
+     */
+    @Deprecated
     public static final int PROGRESS_INDETERMINATE_ON = -3;
-    /** Flag for setting the progress bar's indeterminate mode off */
+
+    /**
+     * Flag for setting the progress bar's indeterminate mode off.
+     *
+     * @deprecated {@link #FEATURE_INDETERMINATE_PROGRESS} and related methods
+     *             are no longer supported starting in API 21.
+     */
+    @Deprecated
     public static final int PROGRESS_INDETERMINATE_OFF = -4;
-    /** Starting value for the (primary) progress */
+
+    /**
+     * Starting value for the (primary) progress.
+     *
+     * @deprecated {@link #FEATURE_PROGRESS} and related methods are no longer
+     *             supported starting in API 21.
+     */
+    @Deprecated
     public static final int PROGRESS_START = 0;
-    /** Ending value for the (primary) progress */
+
+    /**
+     * Ending value for the (primary) progress.
+     *
+     * @deprecated {@link #FEATURE_PROGRESS} and related methods are no longer
+     *             supported starting in API 21.
+     */
+    @Deprecated
     public static final int PROGRESS_END = 10000;
-    /** Lowest possible value for the secondary progress */
+
+    /**
+     * Lowest possible value for the secondary progress.
+     *
+     * @deprecated {@link #FEATURE_PROGRESS} and related methods are no longer
+     *             supported starting in API 21.
+     */
+    @Deprecated
     public static final int PROGRESS_SECONDARY_START = 20000;
-    /** Highest possible value for the secondary progress */
+
+    /**
+     * Highest possible value for the secondary progress.
+     *
+     * @deprecated {@link #FEATURE_PROGRESS} and related methods are no longer
+     *             supported starting in API 21.
+     */
+    @Deprecated
     public static final int PROGRESS_SECONDARY_END = 30000;
 
     /**
@@ -177,11 +254,31 @@ public abstract class Window {
 
     private static final String PROPERTY_HARDWARE_UI = "persist.sys.ui.hw";
 
+    /**
+     * Flag for letting the theme drive the color of the window caption controls. Use with
+     * {@link #setDecorCaptionShade(int)}. This is the default value.
+     */
+    public static final int DECOR_CAPTION_SHADE_AUTO = 0;
+    /**
+     * Flag for setting light-color controls on the window caption. Use with
+     * {@link #setDecorCaptionShade(int)}.
+     */
+    public static final int DECOR_CAPTION_SHADE_LIGHT = 1;
+    /**
+     * Flag for setting dark-color controls on the window caption. Use with
+     * {@link #setDecorCaptionShade(int)}.
+     */
+    public static final int DECOR_CAPTION_SHADE_DARK = 2;
+
     private final Context mContext;
 
     private TypedArray mWindowStyle;
     private Callback mCallback;
     private OnWindowDismissedCallback mOnWindowDismissedCallback;
+    private OnWindowSwipeDismissedCallback mOnWindowSwipeDismissedCallback;
+    private WindowControllerCallback mWindowControllerCallback;
+    private OnRestrictedCaptionAreaChangedListener mOnRestrictedCaptionAreaChangedListener;
+    private Rect mRestrictedCaptionAreaRect;
     private WindowManager mWindowManager;
     private IBinder mAppToken;
     private String mAppName;
@@ -204,6 +301,9 @@ public abstract class Window {
     private boolean mHasSoftInputMode = false;
 
     private boolean mDestroyed;
+
+    private boolean mOverlayWithDecorCaptionEnabled = false;
+    private boolean mCloseOnSwipeEnabled = false;
 
     // The current window attributes.
     private final WindowManager.LayoutParams mWindowAttributes =
@@ -464,6 +564,23 @@ public abstract class Window {
          * @param mode The mode that was just finished.
          */
         public void onActionModeFinished(ActionMode mode);
+
+        /**
+         * Called when Keyboard Shortcuts are requested for the current window.
+         *
+         * @param data The data list to populate with shortcuts.
+         * @param menu The current menu, which may be null.
+         * @param deviceId The id for the connected device the shortcuts should be provided for.
+         */
+        default public void onProvideKeyboardShortcuts(
+                List<KeyboardShortcutGroup> data, @Nullable Menu menu, int deviceId) { };
+
+        /**
+         * Called when pointer capture is enabled or disabled for the current window.
+         *
+         * @param hasCapture True if the window has pointer capture.
+         */
+        default public void onPointerCaptureChanged(boolean hasCapture) { };
     }
 
     /** @hide */
@@ -471,9 +588,86 @@ public abstract class Window {
         /**
          * Called when a window is dismissed. This informs the callback that the
          * window is gone, and it should finish itself.
+         * @param finishTask True if the task should also be finished.
+         * @param suppressWindowTransition True if the resulting exit and enter window transition
+         * animations should be suppressed.
          */
-        public void onWindowDismissed();
+        void onWindowDismissed(boolean finishTask, boolean suppressWindowTransition);
     }
+
+    /** @hide */
+    public interface OnWindowSwipeDismissedCallback {
+        /**
+         * Called when a window is swipe dismissed. This informs the callback that the
+         * window is gone, and it should finish itself.
+         * @param finishTask True if the task should also be finished.
+         * @param suppressWindowTransition True if the resulting exit and enter window transition
+         * animations should be suppressed.
+         */
+        void onWindowSwipeDismissed();
+    }
+
+    /** @hide */
+    public interface WindowControllerCallback {
+        /**
+         * Moves the activity from
+         * {@link android.app.ActivityManager.StackId#FREEFORM_WORKSPACE_STACK_ID} to
+         * {@link android.app.ActivityManager.StackId#FULLSCREEN_WORKSPACE_STACK_ID} stack.
+         */
+        void exitFreeformMode() throws RemoteException;
+
+        /**
+         * Puts the activity in picture-in-picture mode if the activity supports.
+         * @see android.R.attr#supportsPictureInPicture
+         */
+        void enterPictureInPictureModeIfPossible();
+
+        /** Returns the current stack Id for the window. */
+        int getWindowStackId() throws RemoteException;
+
+        /** Returns whether the window belongs to the task root. */
+        boolean isTaskRoot();
+    }
+
+    /**
+     * Callback for clients that want to be aware of where caption draws content.
+     */
+    public interface OnRestrictedCaptionAreaChangedListener {
+        /**
+         * Called when the area where caption draws content changes.
+         *
+         * @param rect The area where caption content is positioned, relative to the top view.
+         */
+        void onRestrictedCaptionAreaChanged(Rect rect);
+    }
+
+    /**
+     * Callback for clients that want frame timing information for each
+     * frame rendered by the Window.
+     */
+    public interface OnFrameMetricsAvailableListener {
+        /**
+         * Called when information is available for the previously rendered frame.
+         *
+         * Reports can be dropped if this callback takes too
+         * long to execute, as the report producer cannot wait for the consumer to
+         * complete.
+         *
+         * It is highly recommended that clients copy the passed in FrameMetrics
+         * via {@link FrameMetrics#FrameMetrics(FrameMetrics)} within this method and defer
+         * additional computation or storage to another thread to avoid unnecessarily
+         * dropping reports.
+         *
+         * @param window The {@link Window} on which the frame was displayed.
+         * @param frameMetrics the available metrics. This object is reused on every call
+         * and thus <strong>this reference is not valid outside the scope of this method</strong>.
+         * @param dropCountSinceLastInvocation the number of reports dropped since the last time
+         * this callback was invoked.
+         */
+        void onFrameMetricsAvailable(Window window, FrameMetrics frameMetrics,
+                int dropCountSinceLastInvocation);
+    }
+
 
     public Window(Context context) {
         mContext = context;
@@ -586,24 +780,24 @@ public abstract class Window {
                 }
             }
             if (curTitle == null || curTitle.length() == 0) {
-                String title;
+                final StringBuilder title = new StringBuilder(32);
                 if (wp.type == WindowManager.LayoutParams.TYPE_APPLICATION_MEDIA) {
-                    title = "Media";
+                    title.append("Media");
                 } else if (wp.type == WindowManager.LayoutParams.TYPE_APPLICATION_MEDIA_OVERLAY) {
-                    title = "MediaOvr";
+                    title.append("MediaOvr");
                 } else if (wp.type == WindowManager.LayoutParams.TYPE_APPLICATION_PANEL) {
-                    title = "Panel";
+                    title.append("Panel");
                 } else if (wp.type == WindowManager.LayoutParams.TYPE_APPLICATION_SUB_PANEL) {
-                    title = "SubPanel";
+                    title.append("SubPanel");
                 } else if (wp.type == WindowManager.LayoutParams.TYPE_APPLICATION_ABOVE_SUB_PANEL) {
-                    title = "AboveSubPanel";
+                    title.append("AboveSubPanel");
                 } else if (wp.type == WindowManager.LayoutParams.TYPE_APPLICATION_ATTACHED_DIALOG) {
-                    title = "AtchDlg";
+                    title.append("AtchDlg");
                 } else {
-                    title = Integer.toString(wp.type);
+                    title.append(wp.type);
                 }
                 if (mAppName != null) {
-                    title += ":" + mAppName;
+                    title.append(":").append(mAppName);
                 }
                 wp.setTitle(title);
             }
@@ -614,9 +808,10 @@ public abstract class Window {
             // state, the system window should not be affected (can still show and receive input
             // events).
             if (curTitle == null || curTitle.length() == 0) {
-                String title = "Sys" + Integer.toString(wp.type);
+                final StringBuilder title = new StringBuilder(32);
+                title.append("Sys").append(wp.type);
                 if (mAppName != null) {
-                    title += ":" + mAppName;
+                    title.append(":").append(mAppName);
                 }
                 wp.setTitle(title);
             }
@@ -632,8 +827,9 @@ public abstract class Window {
         if (wp.packageName == null) {
             wp.packageName = mContext.getPackageName();
         }
-        if (mHardwareAccelerated) {
-            wp.flags |= WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
+        if (mHardwareAccelerated ||
+                (mWindowAttributes.flags & FLAG_HARDWARE_ACCELERATED) != 0) {
+            wp.flags |= FLAG_HARDWARE_ACCELERATED;
         }
     }
 
@@ -664,16 +860,79 @@ public abstract class Window {
         return mCallback;
     }
 
+    /**
+     * Set an observer to collect frame stats for each frame rendererd in this window.
+     *
+     * Must be in hardware rendering mode.
+     */
+    public final void addOnFrameMetricsAvailableListener(
+            @NonNull OnFrameMetricsAvailableListener listener,
+            Handler handler) {
+        final View decorView = getDecorView();
+        if (decorView == null) {
+            throw new IllegalStateException("can't observe a Window without an attached view");
+        }
+
+        if (listener == null) {
+            throw new NullPointerException("listener cannot be null");
+        }
+
+        decorView.addFrameMetricsListener(this, listener, handler);
+    }
+
+    /**
+     * Remove observer and stop listening to frame stats for this window.
+     */
+    public final void removeOnFrameMetricsAvailableListener(OnFrameMetricsAvailableListener listener) {
+        final View decorView = getDecorView();
+        if (decorView != null) {
+            getDecorView().removeFrameMetricsListener(listener);
+        }
+    }
+
     /** @hide */
     public final void setOnWindowDismissedCallback(OnWindowDismissedCallback dcb) {
         mOnWindowDismissedCallback = dcb;
     }
 
     /** @hide */
-    public final void dispatchOnWindowDismissed() {
+    public final void dispatchOnWindowDismissed(
+            boolean finishTask, boolean suppressWindowTransition) {
         if (mOnWindowDismissedCallback != null) {
-            mOnWindowDismissedCallback.onWindowDismissed();
+            mOnWindowDismissedCallback.onWindowDismissed(finishTask, suppressWindowTransition);
         }
+    }
+
+    /** @hide */
+    public final void setOnWindowSwipeDismissedCallback(OnWindowSwipeDismissedCallback sdcb) {
+        mOnWindowSwipeDismissedCallback = sdcb;
+    }
+
+    /** @hide */
+    public final void dispatchOnWindowSwipeDismissed() {
+        if (mOnWindowSwipeDismissedCallback != null) {
+            mOnWindowSwipeDismissedCallback.onWindowSwipeDismissed();
+        }
+    }
+
+    /** @hide */
+    public final void setWindowControllerCallback(WindowControllerCallback wccb) {
+        mWindowControllerCallback = wccb;
+    }
+
+    /** @hide */
+    public final WindowControllerCallback getWindowControllerCallback() {
+        return mWindowControllerCallback;
+    }
+
+    /**
+     * Set a callback for changes of area where caption will draw its content.
+     *
+     * @param listener Callback that will be called when the area changes.
+     */
+    public final void setRestrictedCaptionAreaListener(OnRestrictedCaptionAreaChangedListener listener) {
+        mOnRestrictedCaptionAreaChangedListener = listener;
+        mRestrictedCaptionAreaRect = listener != null ? new Rect() : null;
     }
 
     /**
@@ -880,6 +1139,55 @@ public abstract class Window {
     }
 
     /**
+     * <p>Sets the requested color mode of the window. The requested the color mode might
+     * override the window's pixel {@link WindowManager.LayoutParams#format format}.</p>
+     *
+     * <p>The requested color mode must be one of {@link ActivityInfo#COLOR_MODE_DEFAULT},
+     * {@link ActivityInfo#COLOR_MODE_WIDE_COLOR_GAMUT} or {@link ActivityInfo#COLOR_MODE_HDR}.</p>
+     *
+     * <p>The requested color mode is not guaranteed to be honored. Please refer to
+     * {@link #getColorMode()} for more information.</p>
+     *
+     * @see #getColorMode()
+     * @see Display#isWideColorGamut()
+     * @see Configuration#isScreenWideColorGamut()
+     */
+    public void setColorMode(@ActivityInfo.ColorMode int colorMode) {
+        final WindowManager.LayoutParams attrs = getAttributes();
+        attrs.setColorMode(colorMode);
+        dispatchWindowAttributesChanged(attrs);
+    }
+
+    /**
+     * Returns the requested color mode of the window, one of
+     * {@link ActivityInfo#COLOR_MODE_DEFAULT}, {@link ActivityInfo#COLOR_MODE_WIDE_COLOR_GAMUT}
+     * or {@link ActivityInfo#COLOR_MODE_HDR}. If {@link ActivityInfo#COLOR_MODE_WIDE_COLOR_GAMUT}
+     * was requested it is possible the window will not be put in wide color gamut mode depending
+     * on device and display support for that mode. Use {@link #isWideColorGamut} to determine
+     * if the window is currently in wide color gamut mode.
+     *
+     * @see #setColorMode(int)
+     * @see Display#isWideColorGamut()
+     * @see Configuration#isScreenWideColorGamut()
+     */
+    @ActivityInfo.ColorMode
+    public int getColorMode() {
+        return getAttributes().getColorMode();
+    }
+
+    /**
+     * Returns true if this window's color mode is {@link ActivityInfo#COLOR_MODE_WIDE_COLOR_GAMUT},
+     * the display has a wide color gamut and this device supports wide color gamut rendering.
+     *
+     * @see Display#isWideColorGamut()
+     * @see Configuration#isScreenWideColorGamut()
+     */
+    public boolean isWideColorGamut() {
+        return getColorMode() == ActivityInfo.COLOR_MODE_WIDE_COLOR_GAMUT
+                && getContext().getResources().getConfiguration().isScreenWideColorGamut();
+    }
+
+    /**
      * Set the amount of dim behind the window when using
      * {@link WindowManager.LayoutParams#FLAG_DIM_BEHIND}.  This overrides
      * the default dim amount of that is selected by the Window based on
@@ -961,11 +1269,22 @@ public abstract class Window {
 
     /** @hide */
     public boolean shouldCloseOnTouch(Context context, MotionEvent event) {
-        if (mCloseOnTouchOutside && event.getAction() == MotionEvent.ACTION_DOWN
-                && isOutOfBounds(context, event) && peekDecorView() != null) {
+        final boolean isOutside =
+                event.getAction() == MotionEvent.ACTION_DOWN && isOutOfBounds(context, event)
+                || event.getAction() == MotionEvent.ACTION_OUTSIDE;
+        if (mCloseOnTouchOutside && peekDecorView() != null && isOutside) {
             return true;
         }
         return false;
+    }
+
+    /* Sets the Sustained Performance requirement for the calling window.
+     * @param enable disables or enables the mode.
+     */
+    public void setSustainedPerformanceMode(boolean enable) {
+        setPrivateFlags(enable
+                ? WindowManager.LayoutParams.PRIVATE_FLAG_SUSTAINED_PERFORMANCE_MODE : 0,
+                WindowManager.LayoutParams.PRIVATE_FLAG_SUSTAINED_PERFORMANCE_MODE);
     }
 
     private boolean isOutOfBounds(Context context, MotionEvent event) {
@@ -1021,15 +1340,22 @@ public abstract class Window {
     }
 
     /**
-     * Finds a view that was identified by the id attribute from the XML that
-     * was processed in {@link android.app.Activity#onCreate}.  This will
-     * implicitly call {@link #getDecorView} for you, with all of the
-     * associated side-effects.
+     * Finds a view that was identified by the {@code android:id} XML attribute
+     * that was processed in {@link android.app.Activity#onCreate}. This will
+     * implicitly call {@link #getDecorView} with all of the associated
+     * side-effects.
+     * <p>
+     * <strong>Note:</strong> In most cases -- depending on compiler support --
+     * the resulting view is automatically cast to the target class type. If
+     * the target class type is unconstrained, an explicit cast may be
+     * necessary.
      *
-     * @return The view if found or null otherwise.
+     * @param id the ID to search for
+     * @return a view with given ID if found, or {@code null} otherwise
+     * @see View#findViewById(int)
      */
     @Nullable
-    public View findViewById(@IdRes int id) {
+    public <T extends View> T findViewById(@IdRes int id) {
         return getDecorView().findViewById(id);
     }
 
@@ -1087,6 +1413,13 @@ public abstract class Window {
      * @param params Layout parameters for the view.
      */
     public abstract void addContentView(View view, ViewGroup.LayoutParams params);
+
+    /**
+     * Remove the view that was used as the screen content.
+     *
+     * @hide
+     */
+    public abstract void clearContentView();
 
     /**
      * Return the view in this Window that currently has focus, or null if
@@ -1151,6 +1484,15 @@ public abstract class Window {
      * @see android.R.styleable#Window_windowElevation
      */
     public void setElevation(float elevation) {}
+
+    /**
+     * Gets the window elevation.
+     *
+     * @hide
+     */
+    public float getElevation() {
+        return 0.0f;
+    }
 
     /**
      * Sets whether window content should be clipped to the outline of the
@@ -1621,7 +1963,7 @@ public abstract class Window {
     public Transition getEnterTransition() { return null; }
 
     /**
-     * Returns he Transition that will be used to move Views out of the scene when the Window is
+     * Returns the Transition that will be used to move Views out of the scene when the Window is
      * preparing to close, for example after a call to
      * {@link android.app.Activity#finishAfterTransition()}. The exiting
      * Views will be those that are regular Views or ViewGroups that have
@@ -1762,7 +2104,7 @@ public abstract class Window {
      * {@link #setEnterTransition(android.transition.Transition)} overlaps with the exit
      * transition of the calling Activity. When true, the transition will start as soon as possible.
      * When false, the transition will wait until the remote exiting transition completes before
-     * starting.
+     * starting. The default value is true.
      *
      * @param allow true to start the enter transition when possible or false to
      *              wait until the exiting transition completes.
@@ -1775,7 +2117,7 @@ public abstract class Window {
      * {@link #setEnterTransition(android.transition.Transition)} overlaps with the exit
      * transition of the calling Activity. When true, the transition will start as soon as possible.
      * When false, the transition will wait until the remote exiting transition completes before
-     * starting.
+     * starting. The default value is true.
      *
      * @return true when the enter transition should start as soon as possible or false to
      * when it should wait until the exiting transition completes.
@@ -1789,6 +2131,7 @@ public abstract class Window {
      * transition of the called Activity when reentering after if finishes. When true,
      * the transition will start as soon as possible. When false, the transition will wait
      * until the called Activity's exiting transition completes before starting.
+     * The default value is true.
      *
      * @param allow true to start the transition when possible or false to wait until the
      *              called Activity's exiting transition completes.
@@ -1802,6 +2145,7 @@ public abstract class Window {
      * transition of the called Activity when reentering after if finishes. When true,
      * the transition will start as soon as possible. When false, the transition will wait
      * until the called Activity's exiting transition completes before starting.
+     * The default value is true.
      *
      * @return true when the transition should start when possible or false when it should wait
      * until the called Activity's exiting transition completes.
@@ -1905,5 +2249,85 @@ public abstract class Window {
      */
     public abstract void setNavigationBarColor(@ColorInt int color);
 
+    /** @hide */
+    public void setTheme(int resId) {
+    }
 
+    /**
+     * Whether the caption should be displayed directly on the content rather than push the content
+     * down. This affects only freeform windows since they display the caption.
+     * @hide
+     */
+    public void setOverlayWithDecorCaptionEnabled(boolean enabled) {
+        mOverlayWithDecorCaptionEnabled = enabled;
+    }
+
+    /** @hide */
+    public boolean isOverlayWithDecorCaptionEnabled() {
+        return mOverlayWithDecorCaptionEnabled;
+    }
+
+    /** @hide */
+    public void notifyRestrictedCaptionAreaCallback(int left, int top, int right, int bottom) {
+        if (mOnRestrictedCaptionAreaChangedListener != null) {
+            mRestrictedCaptionAreaRect.set(left, top, right, bottom);
+            mOnRestrictedCaptionAreaChangedListener.onRestrictedCaptionAreaChanged(
+                    mRestrictedCaptionAreaRect);
+        }
+    }
+
+    /**
+     * Set what color should the caption controls be. By default the system will try to determine
+     * the color from the theme. You can overwrite this by using {@link #DECOR_CAPTION_SHADE_DARK},
+     * {@link #DECOR_CAPTION_SHADE_LIGHT}, or {@link #DECOR_CAPTION_SHADE_AUTO}.
+     * @see #DECOR_CAPTION_SHADE_DARK
+     * @see #DECOR_CAPTION_SHADE_LIGHT
+     * @see #DECOR_CAPTION_SHADE_AUTO
+     */
+    public abstract void setDecorCaptionShade(int decorCaptionShade);
+
+    /**
+     * Set the drawable that is drawn underneath the caption during the resizing.
+     *
+     * During the resizing the caption might not be drawn fast enough to match the new dimensions.
+     * There is a second caption drawn underneath it that will be fast enough. By default the
+     * caption is constructed from the theme. You can provide a drawable, that will be drawn instead
+     * to better match your application.
+     */
+    public abstract void setResizingCaptionDrawable(Drawable drawable);
+
+    /**
+     * Called when the activity changes from fullscreen mode to multi-window mode and visa-versa.
+     * @hide
+     */
+    public abstract void onMultiWindowModeChanged();
+
+    /**
+     * Called when the activity changes to/from picture-in-picture mode.
+     * @hide
+     */
+    public abstract void onPictureInPictureModeChanged(boolean isInPictureInPictureMode);
+
+    /**
+     * Called when the activity just relaunched.
+     * @hide
+     */
+    public abstract void reportActivityRelaunched();
+
+    /**
+     * Called to set flag to check if the close on swipe is enabled. This will only function if
+     * FEATURE_SWIPE_TO_DISMISS has been set.
+     * @hide
+     */
+    public void setCloseOnSwipeEnabled(boolean closeOnSwipeEnabled) {
+        mCloseOnSwipeEnabled = closeOnSwipeEnabled;
+    }
+
+    /**
+     * @return {@code true} if the close on swipe is enabled.
+     * @hide
+     */
+    public boolean isCloseOnSwipeEnabled() {
+        return mCloseOnSwipeEnabled;
+    }
 }

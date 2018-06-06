@@ -17,7 +17,7 @@
 #define LOG_TAG "SQLiteDebug"
 
 #include <jni.h>
-#include <JNIHelp.h>
+#include <nativehelper/JNIHelp.h>
 #include <android_runtime/AndroidRuntime.h>
 
 #include <stdio.h>
@@ -58,7 +58,7 @@ static void nativeGetPagerStats(JNIEnv *env, jobject clazz, jobject statsObj)
  * JNI registration.
  */
 
-static JNINativeMethod gMethods[] =
+static const JNINativeMethod gMethods[] =
 {
     { "nativeGetPagerStats", "(Landroid/database/sqlite/SQLiteDebug$PagerStats;)V",
             (void*) nativeGetPagerStats },

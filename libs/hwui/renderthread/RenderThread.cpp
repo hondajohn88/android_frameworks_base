@@ -16,21 +16,28 @@
 
 #include "RenderThread.h"
 
-#include "../renderstate/RenderState.h"
+#include "hwui/Bitmap.h"
+#include "renderstate/RenderState.h"
+#include "renderthread/OpenGLPipeline.h"
+#include "pipeline/skia/SkiaOpenGLReadback.h"
+#include "pipeline/skia/SkiaOpenGLPipeline.h"
+#include "pipeline/skia/SkiaVulkanPipeline.h"
 #include "CanvasContext.h"
 #include "EglManager.h"
+#include "OpenGLReadback.h"
 #include "RenderProxy.h"
+#include "VulkanManager.h"
+#include "utils/FatVector.h"
 
 #include <gui/DisplayEventReceiver.h>
 #include <gui/ISurfaceComposer.h>
 #include <gui/SurfaceComposerClient.h>
 #include <sys/resource.h>
+#include <utils/Condition.h>
 #include <utils/Log.h>
+#include <utils/Mutex.h>
 
 namespace android {
-using namespace uirenderer::renderthread;
-ANDROID_SINGLETON_STATIC_INSTANCE(RenderThread);
-
 namespace uirenderer {
 namespace renderthread {
 
@@ -95,6 +102,7 @@ void TaskQueue::queue(RenderTask* task) {
 }
 
 void TaskQueue::queueAtFront(RenderTask* task) {
+    LOG_ALWAYS_FATAL_IF(task->mNext || mHead == task, "Task is already in the queue!");
     if (mTail) {
         task->mNext = mHead;
         mHead = task;
@@ -129,21 +137,37 @@ class DispatchFrameCallbacks : public RenderTask {
 private:
     RenderThread* mRenderThread;
 public:
-    DispatchFrameCallbacks(RenderThread* rt) : mRenderThread(rt) {}
+    explicit DispatchFrameCallbacks(RenderThread* rt) : mRenderThread(rt) {}
 
     virtual void run() override {
         mRenderThread->dispatchFrameCallbacks();
     }
 };
 
-RenderThread::RenderThread() : Thread(true), Singleton<RenderThread>()
+static bool gHasRenderThreadInstance = false;
+
+bool RenderThread::hasInstance() {
+    return gHasRenderThreadInstance;
+}
+
+RenderThread& RenderThread::getInstance() {
+    // This is a pointer because otherwise __cxa_finalize
+    // will try to delete it like a Good Citizen but that causes us to crash
+    // because we don't want to delete the RenderThread normally.
+    static RenderThread* sInstance = new RenderThread();
+    gHasRenderThreadInstance = true;
+    return *sInstance;
+}
+
+RenderThread::RenderThread() : Thread(true)
         , mNextWakeup(LLONG_MAX)
         , mDisplayEventReceiver(nullptr)
         , mVsyncRequested(false)
         , mFrameCallbackTaskPending(false)
         , mFrameCallbackTask(nullptr)
         , mRenderState(nullptr)
-        , mEglManager(nullptr) {
+        , mEglManager(nullptr)
+        , mVkManager(nullptr) {
     Properties::load();
     mFrameCallbackTask = new DispatchFrameCallbacks(this);
     mLooper = new Looper(false);
@@ -176,7 +200,78 @@ void RenderThread::initThreadLocals() {
     initializeDisplayEventReceiver();
     mEglManager = new EglManager(*this);
     mRenderState = new RenderState(*this);
-    mJankTracker = new JankTracker(frameIntervalNanos);
+    mVkManager = new VulkanManager(*this);
+    mCacheManager = new CacheManager(mDisplayInfo);
+}
+
+void RenderThread::dumpGraphicsMemory(int fd) {
+    globalProfileData()->dump(fd);
+
+    String8 cachesOutput;
+    String8 pipeline;
+    auto renderType = Properties::getRenderPipelineType();
+    switch (renderType) {
+        case RenderPipelineType::OpenGL: {
+            if (Caches::hasInstance()) {
+                cachesOutput.appendFormat("Caches:\n");
+                Caches::getInstance().dumpMemoryUsage(cachesOutput);
+            } else {
+                cachesOutput.appendFormat("No caches instance.");
+            }
+            pipeline.appendFormat("FrameBuilder");
+            break;
+        }
+        case RenderPipelineType::SkiaGL: {
+            mCacheManager->dumpMemoryUsage(cachesOutput, mRenderState);
+            pipeline.appendFormat("Skia (OpenGL)");
+            break;
+        }
+        case RenderPipelineType::SkiaVulkan: {
+            mCacheManager->dumpMemoryUsage(cachesOutput, mRenderState);
+            pipeline.appendFormat("Skia (Vulkan)");
+            break;
+        }
+        default:
+            LOG_ALWAYS_FATAL("canvas context type %d not supported", (int32_t) renderType);
+            break;
+    }
+
+    FILE *file = fdopen(fd, "a");
+    fprintf(file, "\n%s\n", cachesOutput.string());
+    fprintf(file, "\nPipeline=%s\n", pipeline.string());
+    fflush(file);
+}
+
+Readback& RenderThread::readback() {
+
+    if (!mReadback) {
+        auto renderType = Properties::getRenderPipelineType();
+        switch (renderType) {
+            case RenderPipelineType::OpenGL:
+                mReadback = new OpenGLReadbackImpl(*this);
+                break;
+            case RenderPipelineType::SkiaGL:
+            case RenderPipelineType::SkiaVulkan:
+                // It works to use the OpenGL pipeline for Vulkan but this is not
+                // ideal as it causes us to create an OpenGL context in addition
+                // to the Vulkan one.
+                mReadback = new skiapipeline::SkiaOpenGLReadback(*this);
+                break;
+            default:
+                LOG_ALWAYS_FATAL("canvas context type %d not supported", (int32_t) renderType);
+                break;
+        }
+    }
+
+    return *mReadback;
+}
+
+void RenderThread::setGrContext(GrContext* context) {
+    mCacheManager->reset(context);
+    if (mGrContext.get()) {
+        mGrContext->releaseResourcesAndAbandonContext();
+    }
+    mGrContext.reset(context);
 }
 
 int RenderThread::displayEventReceiverCallback(int fd, int events, void* data) {
@@ -268,10 +363,18 @@ bool RenderThread::threadLoop() {
                 "RenderThread Looper POLL_ERROR!");
 
         nsecs_t nextWakeup;
-        // Process our queue, if we have anything
-        while (RenderTask* task = nextTask(&nextWakeup)) {
-            task->run();
-            // task may have deleted itself, do not reference it again
+        {
+            FatVector<RenderTask*, 10> workQueue;
+            // Process our queue, if we have anything. By first acquiring
+            // all the pending events then processing them we avoid vsync
+            // starvation if more tasks are queued while we are processing tasks.
+            while (RenderTask* task = nextTask(&nextWakeup)) {
+                workQueue.push_back(task);
+            }
+            for (auto task : workQueue) {
+                task->run();
+                // task may have deleted itself, do not reference it again
+            }
         }
         if (nextWakeup == LLONG_MAX) {
             timeoutMillis = -1;
@@ -309,6 +412,21 @@ void RenderThread::queue(RenderTask* task) {
     if (mNextWakeup && task->mRunAt < mNextWakeup) {
         mNextWakeup = 0;
         mLooper->wake();
+    }
+}
+
+void RenderThread::queueAndWait(RenderTask* task) {
+    // These need to be local to the thread to avoid the Condition
+    // signaling the wrong thread. The easiest way to achieve that is to just
+    // make this on the stack, although that has a slight cost to it
+    Mutex mutex;
+    Condition condition;
+    SignalingRenderTask syncTask(task, &mutex, &condition);
+
+    AutoMutex _lock(mutex);
+    queue(&syncTask);
+    while (!syncTask.hasRun()) {
+        condition.wait(mutex);
     }
 }
 
@@ -363,6 +481,22 @@ RenderTask* RenderThread::nextTask(nsecs_t* nextWakeup) {
         *nextWakeup = mNextWakeup;
     }
     return next;
+}
+
+sk_sp<Bitmap> RenderThread::allocateHardwareBitmap(SkBitmap& skBitmap) {
+    auto renderType = Properties::getRenderPipelineType();
+    switch (renderType) {
+        case RenderPipelineType::OpenGL:
+            return OpenGLPipeline::allocateHardwareBitmap(*this, skBitmap);
+        case RenderPipelineType::SkiaGL:
+            return skiapipeline::SkiaOpenGLPipeline::allocateHardwareBitmap(*this, skBitmap);
+        case RenderPipelineType::SkiaVulkan:
+            return skiapipeline::SkiaVulkanPipeline::allocateHardwareBitmap(*this, skBitmap);
+        default:
+            LOG_ALWAYS_FATAL("canvas context type %d not supported", (int32_t) renderType);
+            break;
+    }
+    return nullptr;
 }
 
 } /* namespace renderthread */

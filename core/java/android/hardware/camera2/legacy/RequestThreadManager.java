@@ -21,7 +21,7 @@ import android.hardware.Camera;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.impl.CameraDeviceImpl;
-import android.hardware.camera2.utils.LongParcelable;
+import android.hardware.camera2.utils.SubmitInfo;
 import android.hardware.camera2.utils.SizeAreaComparator;
 import android.hardware.camera2.impl.CameraMetadataNative;
 import android.os.ConditionVariable;
@@ -365,6 +365,14 @@ public class RequestThreadManager {
             mGLThreadManager.waitUntilIdle();
         }
         resetJpegSurfaceFormats(mCallbackOutputs);
+
+        for (Surface s : mCallbackOutputs) {
+            try {
+                LegacyCameraDevice.disconnectSurface(s);
+            } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
+                Log.w(TAG, "Surface abandoned, skipping...", e);
+            }
+        }
         mPreviewOutputs.clear();
         mCallbackOutputs.clear();
         mJpegSurfaceIds.clear();
@@ -392,6 +400,10 @@ public class RequestThreadManager {
                             mJpegSurfaceIds.add(LegacyCameraDevice.getSurfaceId(s));
                             mCallbackOutputs.add(s);
                             callbackOutputSizes.add(outSize);
+
+                            // LegacyCameraDevice is the producer of JPEG output surfaces
+                            // so LegacyCameraDevice needs to connect to the surfaces.
+                            LegacyCameraDevice.connectSurface(s);
                             break;
                         default:
                             LegacyCameraDevice.setScalingMode(s, LegacyCameraDevice.
@@ -492,6 +504,15 @@ public class RequestThreadManager {
             previews.add(new Pair<>(p, previewSizeIter.next()));
         }
         mGLThreadManager.setConfigurationAndWait(previews, mCaptureCollector);
+
+        for (Surface p : mPreviewOutputs) {
+            try {
+                LegacyCameraDevice.setSurfaceOrientation(p, facing, orientation);
+            } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
+                Log.e(TAG, "Surface abandoned, skipping setSurfaceOrientation()", e);
+            }
+        }
+
         mGLThreadManager.allowNewFrames();
         mPreviewTexture = mGLThreadManager.getCurrentSurfaceTexture();
         if (mPreviewTexture != null) {
@@ -698,9 +719,10 @@ public class RequestThreadManager {
                     break;
                 case MSG_SUBMIT_CAPTURE_REQUEST:
                     Handler handler = RequestThreadManager.this.mRequestThread.getHandler();
+                    boolean anyRequestOutputAbandoned = false;
 
                     // Get the next burst from the request queue.
-                    Pair<BurstHolder, Long> nextBurst = mRequestQueue.getNext();
+                    RequestQueue.RequestQueueEntry nextBurst = mRequestQueue.getNext();
 
                     if (nextBurst == null) {
                         // If there are no further requests queued, wait for any currently executing
@@ -735,11 +757,17 @@ public class RequestThreadManager {
                     if (nextBurst != null) {
                         // Queue another capture if we did not get the last burst.
                         handler.sendEmptyMessage(MSG_SUBMIT_CAPTURE_REQUEST);
+
+                        // Check whether capture queue becomes empty
+                        if (nextBurst.isQueueEmpty()) {
+                            mDeviceState.setRequestQueueEmpty();
+                        }
                     }
 
                     // Complete each request in the burst
+                    BurstHolder burstHolder = nextBurst.getBurstHolder();
                     List<RequestHolder> requests =
-                            nextBurst.first.produceRequestHolders(nextBurst.second);
+                            burstHolder.produceRequestHolders(nextBurst.getFrameNumber());
                     for (RequestHolder holder : requests) {
                         CaptureRequest request = holder.getRequest();
 
@@ -896,10 +924,25 @@ public class RequestThreadManager {
                         mFaceDetectMapper.mapResultFaces(result, mLastRequest);
 
                         if (!holder.requestFailed()) {
-                            mDeviceState.setCaptureResult(holder, result,
-                                    CameraDeviceState.NO_CAPTURE_ERROR);
+                            mDeviceState.setCaptureResult(holder, result);
+                        }
+
+                        if (holder.isOutputAbandoned()) {
+                            anyRequestOutputAbandoned = true;
                         }
                     }
+
+                    // Stop the repeating request if any of its output surfaces is abandoned.
+                    if (anyRequestOutputAbandoned && burstHolder.isRepeating()) {
+                        long lastFrameNumber = cancelRepeating(burstHolder.getRequestId());
+                        if (DEBUG) {
+                            Log.d(TAG, "Stopped repeating request. Last frame number is " +
+                                    lastFrameNumber);
+                        }
+                        mDeviceState.setRepeatingRequestError(lastFrameNumber,
+                                burstHolder.getRequestId());
+                    }
+
                     if (DEBUG) {
                         long totalTime = SystemClock.elapsedRealtimeNanos() - startTime;
                         Log.d(TAG, "Capture request took " + totalTime + " ns");
@@ -919,9 +962,6 @@ public class RequestThreadManager {
                         Log.e(TAG, "Interrupted while waiting for requests to complete: ", e);
                         mDeviceState.setError(
                                 CameraDeviceImpl.CameraDeviceCallbacks.ERROR_CAMERA_DEVICE);
-                    }
-                    if (mPreviewTexture != null) {
-                        mPreviewTexture.setOnFrameAvailableListener(null);
                     }
                     if (mGLThreadManager != null) {
                         mGLThreadManager.quit();
@@ -1011,21 +1051,19 @@ public class RequestThreadManager {
      *
      * @param requests the burst of requests to add to the queue.
      * @param repeating true if the burst is repeating.
-     * @param frameNumber an output argument that contains either the frame number of the last frame
-     *                    that will be returned for this request, or the frame number of the last
-     *                    frame that will be returned for the current repeating request if this
-     *                    burst is set to be repeating.
-     * @return the request id.
+     * @return the submission info, including the new request id, and the last frame number, which
+     *   contains either the frame number of the last frame that will be returned for this request,
+     *   or the frame number of the last frame that will be returned for the current repeating
+     *   request if this burst is set to be repeating.
      */
-    public int submitCaptureRequests(List<CaptureRequest> requests, boolean repeating,
-            /*out*/LongParcelable frameNumber) {
+    public SubmitInfo submitCaptureRequests(CaptureRequest[] requests, boolean repeating) {
         Handler handler = mRequestThread.waitAndGetHandler();
-        int ret;
+        SubmitInfo info;
         synchronized (mIdleLock) {
-            ret = mRequestQueue.submit(requests, repeating, frameNumber);
+            info = mRequestQueue.submit(requests, repeating);
             handler.sendEmptyMessage(MSG_SUBMIT_CAPTURE_REQUEST);
         }
-        return ret;
+        return info;
     }
 
     /**

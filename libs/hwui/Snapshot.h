@@ -14,8 +14,7 @@
  * limitations under the License.
  */
 
-#ifndef ANDROID_HWUI_SNAPSHOT_H
-#define ANDROID_HWUI_SNAPSHOT_H
+#pragma once
 
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
@@ -24,6 +23,7 @@
 #include <utils/RefBase.h>
 #include <ui/Region.h>
 
+#include <SkClipOp.h>
 #include <SkRegion.h>
 
 #include "ClipArea.h"
@@ -44,9 +44,9 @@ namespace uirenderer {
  */
 class RoundRectClipState {
 public:
-    /** static void* operator new(size_t size); PURPOSELY OMITTED, allocator only **/
+    static void* operator new(size_t size) = delete;
     static void* operator new(size_t size, LinearAllocator& allocator) {
-        return allocator.alloc(size);
+        return allocator.alloc<RoundRectClipState>(size);
     }
 
     bool areaRequiresRoundRectClip(const Rect& rect) const {
@@ -63,17 +63,6 @@ public:
     float radius;
 };
 
-class ProjectionPathMask {
-public:
-    /** static void* operator new(size_t size); PURPOSELY OMITTED, allocator only **/
-    static void* operator new(size_t size, LinearAllocator& allocator) {
-        return allocator.alloc(size);
-    }
-
-    const SkPath* projectionMask;
-    Matrix4 projectionMaskTransform;
-};
-
 /**
  * A snapshot holds information about the current state of the rendering
  * surface. A snapshot is usually created whenever the user calls save()
@@ -83,11 +72,11 @@ public:
  * Each snapshot has a link to a previous snapshot, indicating the previous
  * state of the renderer.
  */
-class Snapshot: public LightRefBase<Snapshot> {
+class Snapshot {
 public:
 
     Snapshot();
-    Snapshot(const sp<Snapshot>& s, int saveFlags);
+    Snapshot(Snapshot* s, int saveFlags);
 
     /**
      * Various flags set on ::flags.
@@ -112,11 +101,6 @@ public:
          * restored when this snapshot is restored.
          */
         kFlagIsFboLayer = 0x4,
-        /**
-         * Indicates that this snapshot or an ancestor snapshot is
-         * an FBO layer.
-         */
-        kFlagFboTarget = 0x8,
     };
 
     /**
@@ -124,26 +108,19 @@ public:
      * the specified operation. The specified rectangle is transformed
      * by this snapshot's trasnformation.
      */
-    bool clip(float left, float top, float right, float bottom,
-            SkRegion::Op op = SkRegion::kIntersect_Op);
+    void clip(const Rect& localClip, SkClipOp op);
 
     /**
      * Modifies the current clip with the new clip rectangle and
      * the specified operation. The specified rectangle is considered
      * already transformed.
      */
-    bool clipTransformed(const Rect& r, SkRegion::Op op = SkRegion::kIntersect_Op);
-
-    /**
-     * Modifies the current clip with the specified region and operation.
-     * The specified region is considered already transformed.
-     */
-    bool clipRegionTransformed(const SkRegion& region, SkRegion::Op op);
+    void clipTransformed(const Rect& r, SkClipOp op = SkClipOp::kIntersect);
 
     /**
      * Modifies the current clip with the specified path and operation.
      */
-    bool clipPath(const SkPath& path, SkRegion::Op op);
+    void clipPath(const SkPath& path, SkClipOp op);
 
     /**
      * Sets the current clip.
@@ -159,26 +136,25 @@ public:
     /**
      * Returns the current clip in render target coordinates.
      */
-    const Rect& getRenderTargetClip() { return mClipArea->getClipRect(); }
+    const Rect& getRenderTargetClip() const { return mClipArea->getClipRect(); }
 
     /*
      * Accessor functions so that the clip area can stay private
      */
     bool clipIsEmpty() const { return mClipArea->isEmpty(); }
-    const Rect& getClipRect() const { return mClipArea->getClipRect(); }
     const SkRegion& getClipRegion() const { return mClipArea->getClipRegion(); }
     bool clipIsSimple() const { return mClipArea->isSimple(); }
     const ClipArea& getClipArea() const { return *mClipArea; }
+    ClipArea& mutateClipArea() { return *mClipArea; }
+
+    WARN_UNUSED_RESULT const ClipBase* serializeIntersectedClip(LinearAllocator& allocator,
+            const ClipBase* recordedClip, const Matrix4& recordedClipTransform);
+    void applyClip(const ClipBase* clip, const Matrix4& transform);
 
     /**
      * Resets the clip to the specified rect.
      */
     void resetClip(float left, float top, float right, float bottom);
-
-    /**
-     * Resets the current transform to a pure 3D translation.
-     */
-    void resetTransform(float x, float y, float z);
 
     void initializeViewport(int width, int height) {
         mViewportData.initialize(width, height);
@@ -203,24 +179,12 @@ public:
     /**
      * Sets (and replaces) the current projection mask
      */
-    void setProjectionPathMask(LinearAllocator& allocator, const SkPath* path);
-
-    /**
-     * Indicates whether this snapshot should be ignored. A snapshot
-     * is typically ignored if its layer is invisible or empty.
-     */
-    bool isIgnored() const;
+    void setProjectionPathMask(const SkPath* path);
 
     /**
      * Indicates whether the current transform has perspective components.
      */
     bool hasPerspectiveTransform() const;
-
-    /**
-     * Fills outTransform with the current, total transform to screen space,
-     * across layer boundaries.
-     */
-    void buildScreenSpaceTransform(Matrix4* outTransform) const;
 
     /**
      * Dirty flags.
@@ -230,7 +194,7 @@ public:
     /**
      * Previous snapshot.
      */
-    sp<Snapshot> previous;
+    Snapshot* previous;
 
     /**
      * A pointer to the currently active layer.
@@ -246,19 +210,6 @@ public:
     GLuint fbo;
 
     /**
-     * Indicates that this snapshot is invisible and nothing should be drawn
-     * inside it. This flag is set only when the layer clips drawing to its
-     * bounds and is passed to subsequent snapshots.
-     */
-    bool invisible;
-
-    /**
-     * If set to true, the layer will not be composited. This is similar to
-     * invisible but this flag is not passed to subsequent snapshots.
-     */
-    bool empty;
-
-    /**
      * Local transformation. Holds the current translation, scale and
      * rotation values.
      *
@@ -266,14 +217,6 @@ public:
      *  snapshot. This pointer must not be freed. See ::mTransformRoot.
      */
     mat4* transform;
-
-    /**
-     * The ancestor layer's dirty region.
-     *
-     * This is a reference to a region owned by a layer. This pointer must
-     * not be freed.
-     */
-    Region* region;
 
     /**
      * Current alpha value. This value is 1 by default, but may be set by a DisplayList which
@@ -295,9 +238,9 @@ public:
     const RoundRectClipState* roundRectClipState;
 
     /**
-     * Current projection masking path - used exclusively to mask tessellated circles.
+     * Current projection masking path - used exclusively to mask projected, tessellated circles.
      */
-    const ProjectionPathMask* projectionPathMask;
+    const SkPath* projectionPathMask;
 
     void dump() const;
 
@@ -336,5 +279,3 @@ private:
 
 }; // namespace uirenderer
 }; // namespace android
-
-#endif // ANDROID_HWUI_SNAPSHOT_H

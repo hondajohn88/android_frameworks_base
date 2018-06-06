@@ -19,14 +19,16 @@
 #include "core_jni_helpers.h"
 #include <vector>
 
-#include "Canvas.h"
 #include "CreateJavaOutputStreamAdaptor.h"
 
+#include "SkColorSpaceXformCanvas.h"
 #include "SkDocument.h"
 #include "SkPicture.h"
 #include "SkPictureRecorder.h"
 #include "SkStream.h"
 #include "SkRect.h"
+
+#include <hwui/Canvas.h>
 
 namespace android {
 
@@ -80,23 +82,23 @@ public:
         assert(mCurrentPage != NULL);
         assert(mCurrentPage->mPictureRecorder != NULL);
         assert(mCurrentPage->mPicture == NULL);
-        mCurrentPage->mPicture = mCurrentPage->mPictureRecorder->endRecording();
+        mCurrentPage->mPicture = mCurrentPage->mPictureRecorder->finishRecordingAsPicture().release();
         delete mCurrentPage->mPictureRecorder;
         mCurrentPage->mPictureRecorder = NULL;
         mCurrentPage = NULL;
     }
 
     void write(SkWStream* stream) {
-        SkDocument* document = SkDocument::CreatePDF(stream);
+        sk_sp<SkDocument> document = SkDocument::MakePDF(stream);
         for (unsigned i = 0; i < mPages.size(); i++) {
             PageRecord* page =  mPages[i];
 
             SkCanvas* canvas = document->beginPage(page->mWidth, page->mHeight,
                     &(page->mContentRect));
+            std::unique_ptr<SkCanvas> toSRGBCanvas =
+                    SkCreateColorSpaceXformCanvas(canvas, SkColorSpace::MakeSRGB());
 
-            canvas->clipRect(page->mContentRect);
-            canvas->translate(page->mContentRect.left(), page->mContentRect.top());
-            canvas->drawPicture(page->mPicture);
+            toSRGBCanvas->drawPicture(page->mPicture);
 
             document->endPage();
         }
@@ -129,7 +131,7 @@ static jlong nativeStartPage(JNIEnv* env, jobject thiz, jlong documentPtr,
     PdfDocument* document = reinterpret_cast<PdfDocument*>(documentPtr);
     SkCanvas* canvas = document->startPage(pageWidth, pageHeight,
             contentLeft, contentTop, contentRight, contentBottom);
-    return reinterpret_cast<jlong>(Canvas::create_canvas(canvas));
+    return reinterpret_cast<jlong>(Canvas::create_canvas(canvas, Canvas::XformToSRGB::kDefer));
 }
 
 static void nativeFinishPage(JNIEnv* env, jobject thiz, jlong documentPtr) {
@@ -150,7 +152,7 @@ static void nativeClose(JNIEnv* env, jobject thiz, jlong documentPtr) {
     document->close();
 }
 
-static JNINativeMethod gPdfDocument_Methods[] = {
+static const JNINativeMethod gPdfDocument_Methods[] = {
     {"nativeCreateDocument", "()J", (void*) nativeCreateDocument},
     {"nativeStartPage", "(JIIIIII)J", (void*) nativeStartPage},
     {"nativeFinishPage", "(J)V", (void*) nativeFinishPage},

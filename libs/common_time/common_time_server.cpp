@@ -143,7 +143,7 @@ CommonTimeServer::CommonTimeServer()
 
     // Create the eventfd we will use to signal our thread to wake up when
     // needed.
-    mWakeupThreadFD = eventfd(0, EFD_NONBLOCK);
+    mWakeupThreadFD = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
 
     // seed the random number generator (used to generated timeline IDs)
     srand48(static_cast<unsigned int>(systemTime()));
@@ -615,12 +615,11 @@ bool CommonTimeServer::handlePacket() {
 
     ssize_t recvBytes = recvfrom(
             mSocket, buf, sizeof(buf), 0,
-            reinterpret_cast<const sockaddr *>(&srcAddr), &srcAddrLen);
+            reinterpret_cast<sockaddr *>(&srcAddr), &srcAddrLen);
 
     if (recvBytes < 0) {
-        mBadPktLog.log(ANDROID_LOG_ERROR, LOG_TAG,
-                       "recvfrom failed (res %d, errno %d)",
-                       recvBytes, errno);
+        mBadPktLog.log(ANDROID_LOG_ERROR, LOG_TAG, "recvfrom failed (%s)",
+                       strerror(errno));
         return false;
     }
 

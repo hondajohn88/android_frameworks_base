@@ -17,14 +17,21 @@
 
 package android.hardware.usb;
 
-import com.android.internal.util.Preconditions;
-
+import android.annotation.Nullable;
+import android.annotation.SdkConstant;
+import android.annotation.SystemService;
+import android.annotation.SdkConstant.SdkConstantType;
 import android.app.PendingIntent;
+import android.content.ComponentName;
 import android.content.Context;
+import android.content.pm.PackageManager.NameNotFoundException;
 import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
+import android.os.Process;
 import android.os.RemoteException;
 import android.util.Log;
+
+import com.android.internal.util.Preconditions;
 
 import java.util.HashMap;
 
@@ -32,18 +39,13 @@ import java.util.HashMap;
  * This class allows you to access the state of USB and communicate with USB devices.
  * Currently only host mode is supported in the public API.
  *
- * <p>You can obtain an instance of this class by calling
- * {@link android.content.Context#getSystemService(java.lang.String) Context.getSystemService()}.
- *
- * {@samplecode
- * UsbManager manager = (UsbManager) getSystemService(Context.USB_SERVICE);}
- *
  * <div class="special reference">
  * <h3>Developer Guides</h3>
  * <p>For more information about communicating with USB hardware, read the
- * <a href="{@docRoot}guide/topics/usb/index.html">USB</a> developer guide.</p>
+ * <a href="{@docRoot}guide/topics/connectivity/usb/index.html">USB developer guide</a>.</p>
  * </div>
  */
+@SystemService(Context.USB_SERVICE)
 public class UsbManager {
     private static final String TAG = "UsbManager";
 
@@ -53,6 +55,8 @@ public class UsbManager {
      * This is a sticky broadcast for clients that includes USB connected/disconnected state,
      * <ul>
      * <li> {@link #USB_CONNECTED} boolean indicating whether USB is connected or disconnected.
+     * <li> {@link #USB_HOST_CONNECTED} boolean indicating whether USB is connected or
+     *     disconnected as host.
      * <li> {@link #USB_CONFIGURED} boolean indicating whether USB is configured.
      * currently zero if not configured, one for configured.
      * <li> {@link #USB_FUNCTION_ADB} boolean extra indicating whether the
@@ -70,6 +74,8 @@ public class UsbManager {
      * <li> {@link #USB_FUNCTION_MIDI} boolean extra indicating whether the
      * MIDI function is enabled
      * </ul>
+     * If the sticky intent has not been found, that indicates USB is disconnected,
+     * USB is not configued, MTP function is enabled, and all the other functions are disabled.
      *
      * {@hide}
      */
@@ -101,6 +107,7 @@ public class UsbManager {
      * for the attached device
      * </ul>
      */
+    @SdkConstant(SdkConstantType.BROADCAST_INTENT_ACTION)
     public static final String ACTION_USB_DEVICE_ATTACHED =
             "android.hardware.usb.action.USB_DEVICE_ATTACHED";
 
@@ -113,6 +120,7 @@ public class UsbManager {
      * for the detached device
      * </ul>
      */
+    @SdkConstant(SdkConstantType.BROADCAST_INTENT_ACTION)
     public static final String ACTION_USB_DEVICE_DETACHED =
             "android.hardware.usb.action.USB_DEVICE_DETACHED";
 
@@ -125,6 +133,7 @@ public class UsbManager {
      * for the attached accessory
      * </ul>
      */
+    @SdkConstant(SdkConstantType.BROADCAST_INTENT_ACTION)
     public static final String ACTION_USB_ACCESSORY_ATTACHED =
             "android.hardware.usb.action.USB_ACCESSORY_ATTACHED";
 
@@ -137,6 +146,7 @@ public class UsbManager {
      * for the attached accessory that was detached
      * </ul>
      */
+    @SdkConstant(SdkConstantType.BROADCAST_INTENT_ACTION)
     public static final String ACTION_USB_ACCESSORY_DETACHED =
             "android.hardware.usb.action.USB_ACCESSORY_DETACHED";
 
@@ -147,6 +157,14 @@ public class UsbManager {
      * {@hide}
      */
     public static final String USB_CONNECTED = "connected";
+
+    /**
+     * Boolean extra indicating whether USB is connected or disconnected as host.
+     * Used in extras for the {@link #ACTION_USB_STATE} broadcast.
+     *
+     * {@hide}
+     */
+    public static final String USB_HOST_CONNECTED = "host_connected";
 
     /**
      * Boolean extra indicating whether USB is configured.
@@ -165,6 +183,14 @@ public class UsbManager {
      * {@hide}
      */
     public static final String USB_DATA_UNLOCKED = "unlocked";
+
+    /**
+     * Boolean extra indicating whether the intent represents a change in the usb
+     * configuration (as opposed to a state update).
+     *
+     * {@hide}
+     */
+    public static final String USB_CONFIG_CHANGED = "config_changed";
 
     /**
      * A placeholder indicating that no USB function is being specified.
@@ -290,17 +316,19 @@ public class UsbManager {
      * @return HashMap containing all connected USB devices.
      */
     public HashMap<String,UsbDevice> getDeviceList() {
+        HashMap<String,UsbDevice> result = new HashMap<String,UsbDevice>();
+        if (mService == null) {
+            return result;
+        }
         Bundle bundle = new Bundle();
         try {
             mService.getDeviceList(bundle);
-            HashMap<String,UsbDevice> result = new HashMap<String,UsbDevice>();
             for (String name : bundle.keySet()) {
                 result.put(name, (UsbDevice)bundle.get(name));
             }
             return result;
         } catch (RemoteException e) {
-            Log.e(TAG, "RemoteException in getDeviceList", e);
-            return null;
+            throw e.rethrowFromSystemServer();
         }
     }
 
@@ -317,7 +345,7 @@ public class UsbManager {
             ParcelFileDescriptor pfd = mService.openDevice(deviceName);
             if (pfd != null) {
                 UsbDeviceConnection connection = new UsbDeviceConnection(device);
-                boolean result = connection.open(deviceName, pfd);
+                boolean result = connection.open(deviceName, pfd, mContext);
                 pfd.close();
                 if (result) {
                     return connection;
@@ -336,6 +364,9 @@ public class UsbManager {
      * @return list of USB accessories, or null if none are attached.
      */
     public UsbAccessory[] getAccessoryList() {
+        if (mService == null) {
+            return null;
+        }
         try {
             UsbAccessory accessory = mService.getCurrentAccessory();
             if (accessory == null) {
@@ -344,8 +375,7 @@ public class UsbManager {
                 return new UsbAccessory[] { accessory };
             }
         } catch (RemoteException e) {
-            Log.e(TAG, "RemoteException in getAccessoryList", e);
-            return null;
+            throw e.rethrowFromSystemServer();
         }
     }
 
@@ -359,8 +389,7 @@ public class UsbManager {
         try {
             return mService.openAccessory(accessory);
         } catch (RemoteException e) {
-            Log.e(TAG, "RemoteException in openAccessory", e);
-            return null;
+            throw e.rethrowFromSystemServer();
         }
     }
 
@@ -374,11 +403,13 @@ public class UsbManager {
      * @return true if caller has permission
      */
     public boolean hasPermission(UsbDevice device) {
+        if (mService == null) {
+            return false;
+        }
         try {
             return mService.hasDevicePermission(device);
         } catch (RemoteException e) {
-            Log.e(TAG, "RemoteException in hasPermission", e);
-            return false;
+            throw e.rethrowFromSystemServer();
         }
     }
 
@@ -392,11 +423,13 @@ public class UsbManager {
      * @return true if caller has permission
      */
     public boolean hasPermission(UsbAccessory accessory) {
+        if (mService == null) {
+            return false;
+        }
         try {
             return mService.hasAccessoryPermission(accessory);
         } catch (RemoteException e) {
-            Log.e(TAG, "RemoteException in hasPermission", e);
-            return false;
+            throw e.rethrowFromSystemServer();
         }
     }
 
@@ -422,7 +455,7 @@ public class UsbManager {
         try {
             mService.requestDevicePermission(device, mContext.getPackageName(), pi);
         } catch (RemoteException e) {
-            Log.e(TAG, "RemoteException in requestPermission", e);
+            throw e.rethrowFromSystemServer();
         }
     }
 
@@ -448,7 +481,52 @@ public class UsbManager {
         try {
             mService.requestAccessoryPermission(accessory, mContext.getPackageName(), pi);
         } catch (RemoteException e) {
-            Log.e(TAG, "RemoteException in requestPermission", e);
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Grants permission for USB device without showing system dialog.
+     * Only system components can call this function.
+     * @param device to request permissions for
+     *
+     * {@hide}
+     */
+    public void grantPermission(UsbDevice device) {
+        grantPermission(device, Process.myUid());
+    }
+
+    /**
+     * Grants permission for USB device to given uid without showing system dialog.
+     * Only system components can call this function.
+     * @param device to request permissions for
+     * @uid uid to give permission
+     *
+     * {@hide}
+     */
+    public void grantPermission(UsbDevice device, int uid) {
+        try {
+            mService.grantDevicePermission(device, uid);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Grants permission to specified package for USB device without showing system dialog.
+     * Only system components can call this function, as it requires the MANAGE_USB permission.
+     * @param device to request permissions for
+     * @param packageName of package to grant permissions
+     *
+     * {@hide}
+     */
+    public void grantPermission(UsbDevice device, String packageName) {
+        try {
+            int uid = mContext.getPackageManager()
+                .getPackageUidAsUser(packageName, mContext.getUserId());
+            grantPermission(device, uid);
+        } catch (NameNotFoundException e) {
+            Log.e(TAG, "Package " + packageName + " not found.", e);
         }
     }
 
@@ -465,11 +543,13 @@ public class UsbManager {
      * {@hide}
      */
     public boolean isFunctionEnabled(String function) {
+        if (mService == null) {
+            return false;
+        }
         try {
             return mService.isFunctionEnabled(function);
         } catch (RemoteException e) {
-            Log.e(TAG, "RemoteException in setCurrentFunction", e);
-            return false;
+            throw e.rethrowFromSystemServer();
         }
     }
 
@@ -487,35 +567,25 @@ public class UsbManager {
      * {@link #USB_FUNCTION_MIDI}, {@link #USB_FUNCTION_MTP}, {@link #USB_FUNCTION_PTP},
      * or {@link #USB_FUNCTION_RNDIS}.
      * </p><p>
+     * Also sets whether USB data (for example, MTP exposed pictures) should be made available
+     * on the USB connection when in device mode. Unlocking usb data should only be done with
+     * user involvement, since exposing pictures or other data could leak sensitive
+     * user information.
+     * </p><p>
      * Note: This function is asynchronous and may fail silently without applying
      * the requested changes.
      * </p>
      *
      * @param function name of the USB function, or null to restore the default function
+     * @param usbDataUnlocked whether user data is accessible
      *
      * {@hide}
      */
-    public void setCurrentFunction(String function) {
+    public void setCurrentFunction(String function, boolean usbDataUnlocked) {
         try {
-            mService.setCurrentFunction(function);
+            mService.setCurrentFunction(function, usbDataUnlocked);
         } catch (RemoteException e) {
-            Log.e(TAG, "RemoteException in setCurrentFunction", e);
-        }
-    }
-
-    /**
-     * Sets whether USB data (for example, MTP exposed pictures) should be made available
-     * on the USB connection when in device mode. Unlocking usb data should only be done with
-     * user involvement, since exposing pictures or other data could leak sensitive
-     * user information.
-     *
-     * {@hide}
-     */
-    public void setUsbDataUnlocked(boolean unlocked) {
-        try {
-            mService.setUsbDataUnlocked(unlocked);
-        } catch (RemoteException e) {
-            Log.e(TAG, "RemoteException in setUsbDataUnlocked", e);
+            throw e.rethrowFromSystemServer();
         }
     }
 
@@ -533,12 +603,14 @@ public class UsbManager {
      * @hide
      */
     public UsbPort[] getPorts() {
+        if (mService == null) {
+            return null;
+        }
         try {
             return mService.getPorts();
         } catch (RemoteException e) {
-            Log.e(TAG, "RemoteException in getPorts", e);
+            throw e.rethrowFromSystemServer();
         }
-        return null;
     }
 
     /**
@@ -555,9 +627,8 @@ public class UsbManager {
         try {
             return mService.getPortStatus(port.getId());
         } catch (RemoteException e) {
-            Log.e(TAG, "RemoteException in getPortStatus", e);
+            throw e.rethrowFromSystemServer();
         }
-        return null;
     }
 
     /**
@@ -583,16 +654,37 @@ public class UsbManager {
         Preconditions.checkNotNull(port, "port must not be null");
         UsbPort.checkRoles(powerRole, dataRole);
 
+        Log.d(TAG, "setPortRoles Package:" + mContext.getPackageName());
         try {
             mService.setPortRoles(port.getId(), powerRole, dataRole);
         } catch (RemoteException e) {
-            Log.e(TAG, "RemoteException in setPortRole", e);
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Sets the component that will handle USB device connection.
+     * <p>
+     * Setting component allows to specify external USB host manager to handle use cases, where
+     * selection dialog for an activity that will handle USB device is undesirable.
+     * Only system components can call this function, as it requires the MANAGE_USB permission.
+     *
+     * @param usbDeviceConnectionHandler The component to handle usb connections,
+     * {@code null} to unset.
+     *
+     * {@hide}
+     */
+    public void setUsbDeviceConnectionHandler(@Nullable ComponentName usbDeviceConnectionHandler) {
+        try {
+            mService.setUsbDeviceConnectionHandler(usbDeviceConnectionHandler);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
         }
     }
 
     /** @hide */
     public static String addFunction(String functions, String function) {
-        if ("none".equals(functions)) {
+        if (USB_FUNCTION_NONE.equals(functions)) {
             return function;
         }
         if (!containsFunction(functions, function)) {
@@ -613,7 +705,7 @@ public class UsbManager {
             }
         }
         if (split.length == 1 && split[0] == null) {
-            return "none";
+            return USB_FUNCTION_NONE;
         }
         StringBuilder builder = new StringBuilder();
         for (int i = 0; i < split.length; i++) {

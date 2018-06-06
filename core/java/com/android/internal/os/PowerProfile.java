@@ -51,7 +51,7 @@ public class PowerProfile {
      * Power consumption when CPU is awake (when a wake lock is held).  This
      * should be 0 on devices that can go into full CPU power collapse even
      * when a wake lock is held.  Otherwise, this is the power consumption in
-     * addition to POWERR_CPU_IDLE due to a wake lock being held but with no
+     * addition to POWER_CPU_IDLE due to a wake lock being held but with no
      * CPU activity.
      */
     public static final String POWER_CPU_AWAKE = "cpu.awake";
@@ -85,6 +85,7 @@ public class PowerProfile {
     public static final String POWER_WIFI_CONTROLLER_IDLE = "wifi.controller.idle";
     public static final String POWER_WIFI_CONTROLLER_RX = "wifi.controller.rx";
     public static final String POWER_WIFI_CONTROLLER_TX = "wifi.controller.tx";
+    public static final String POWER_WIFI_CONTROLLER_TX_LEVELS = "wifi.controller.tx_levels";
     public static final String POWER_WIFI_CONTROLLER_OPERATING_VOLTAGE = "wifi.controller.voltage";
 
     public static final String POWER_BLUETOOTH_CONTROLLER_IDLE = "bluetooth.controller.idle";
@@ -93,6 +94,12 @@ public class PowerProfile {
     public static final String POWER_BLUETOOTH_CONTROLLER_OPERATING_VOLTAGE =
             "bluetooth.controller.voltage";
 
+    public static final String POWER_MODEM_CONTROLLER_IDLE = "modem.controller.idle";
+    public static final String POWER_MODEM_CONTROLLER_RX = "modem.controller.rx";
+    public static final String POWER_MODEM_CONTROLLER_TX = "modem.controller.tx";
+    public static final String POWER_MODEM_CONTROLLER_OPERATING_VOLTAGE =
+            "modem.controller.voltage";
+
     /**
      * Power consumption when GPS is on.
      */
@@ -100,17 +107,23 @@ public class PowerProfile {
 
     /**
      * Power consumption when Bluetooth driver is on.
+     * @deprecated
      */
+    @Deprecated
     public static final String POWER_BLUETOOTH_ON = "bluetooth.on";
 
     /**
      * Power consumption when Bluetooth driver is transmitting/receiving.
+     * @deprecated
      */
+    @Deprecated
     public static final String POWER_BLUETOOTH_ACTIVE = "bluetooth.active";
 
     /**
      * Power consumption when Bluetooth driver gets an AT command.
+     * @deprecated
      */
+    @Deprecated
     public static final String POWER_BLUETOOTH_AT_CMD = "bluetooth.at";
 
 
@@ -158,6 +171,11 @@ public class PowerProfile {
     public static final String POWER_FLASHLIGHT = "camera.flashlight";
 
     /**
+     * Power consumption when DDR is being used.
+     */
+    public static final String POWER_MEMORY = "memory.bandwidths";
+
+    /**
      * Average power consumption when the camera is on over all standard use cases.
      *
      * TODO: Add more fine-grained camera power metrics.
@@ -187,13 +205,17 @@ public class PowerProfile {
     private static final String TAG_ARRAYITEM = "value";
     private static final String ATTR_NAME = "name";
 
+    private static final Object sLock = new Object();
+
     public PowerProfile(Context context) {
         // Read the XML file for the given profile (normally only one per
         // device)
-        if (sPowerMap.size() == 0) {
-            readPowerValuesFromXml(context);
+        synchronized (sLock) {
+            if (sPowerMap.size() == 0) {
+                readPowerValuesFromXml(context);
+            }
+            initCpuClusters();
         }
-        initCpuClusters();
     }
 
     private void readPowerValuesFromXml(Context context) {
@@ -275,9 +297,15 @@ public class PowerProfile {
         };
 
         for (int i = 0; i < configResIds.length; i++) {
+            String key = configResIdKeys[i];
+            // if we already have some of these parameters in power_profile.xml, ignore the
+            // value in config.xml
+            if ((sPowerMap.containsKey(key) && (Double) sPowerMap.get(key) > 0)) {
+                continue;
+            }
             int value = resources.getInteger(configResIds[i]);
             if (value > 0) {
-                sPowerMap.put(configResIdKeys[i], (double) value);
+                sPowerMap.put(key, (double) value);
             }
         }
     }
@@ -288,7 +316,7 @@ public class PowerProfile {
     private static final String POWER_CPU_CLUSTER_SPEED_PREFIX = "cpu.speeds.cluster";
     private static final String POWER_CPU_CLUSTER_ACTIVE_PREFIX = "cpu.active.cluster";
 
-    @SuppressWarnings("deprecated")
+    @SuppressWarnings("deprecation")
     private void initCpuClusters() {
         // Figure out how many CPU clusters we're dealing with
         final Object obj = sPowerMap.get(POWER_CPU_CLUSTER_CORE_COUNT);
@@ -341,6 +369,24 @@ public class PowerProfile {
     public double getAveragePowerForCpu(int cluster, int step) {
         if (cluster >= 0 && cluster < mCpuClusters.length) {
             return getAveragePower(mCpuClusters[cluster].powerKey, step);
+        }
+        return 0;
+    }
+
+    /**
+     * Returns the number of memory bandwidth buckets defined in power_profile.xml, or a
+     * default value if the subsystem has no recorded value.
+     * @return the number of memory bandwidth buckets.
+     */
+    public int getNumElements(String key) {
+        if (sPowerMap.containsKey(key)) {
+            Object data = sPowerMap.get(key);
+            if (data instanceof Double[]) {
+                final Double[] values = (Double[]) data;
+                return values.length;
+            } else {
+                return 1;
+            }
         }
         return 0;
     }

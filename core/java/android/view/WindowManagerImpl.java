@@ -17,7 +17,15 @@
 package android.view;
 
 import android.annotation.NonNull;
+import android.content.Context;
+import android.graphics.Region;
+import android.os.Bundle;
 import android.os.IBinder;
+import android.os.RemoteException;
+
+import com.android.internal.os.IResultReceiver;
+
+import java.util.List;
 
 /**
  * Provides low-level communication with the system window manager for
@@ -30,11 +38,11 @@ import android.os.IBinder;
  * Additional window manager specific layout parameters are defined for
  * control over how windows are displayed.  It also implements the {@link WindowManager}
  * interface, allowing you to control the displays attached to the device.
- * 
+ *
  * <p>Applications will not normally use WindowManager directly, instead relying
  * on the higher-level facilities in {@link android.app.Activity} and
  * {@link android.app.Dialog}.
- * 
+ *
  * <p>Even for low-level window manager access, it is almost never correct to use
  * this class.  For example, {@link android.app.Activity#getWindowManager}
  * provides a window manager for adding windows that are associated with that
@@ -47,26 +55,26 @@ import android.os.IBinder;
  */
 public final class WindowManagerImpl implements WindowManager {
     private final WindowManagerGlobal mGlobal = WindowManagerGlobal.getInstance();
-    private final Display mDisplay;
+    private final Context mContext;
     private final Window mParentWindow;
 
     private IBinder mDefaultToken;
 
-    public WindowManagerImpl(Display display) {
-        this(display, null);
+    public WindowManagerImpl(Context context) {
+        this(context, null);
     }
 
-    private WindowManagerImpl(Display display, Window parentWindow) {
-        mDisplay = display;
+    private WindowManagerImpl(Context context, Window parentWindow) {
+        mContext = context;
         mParentWindow = parentWindow;
     }
 
     public WindowManagerImpl createLocalWindowManager(Window parentWindow) {
-        return new WindowManagerImpl(mDisplay, parentWindow);
+        return new WindowManagerImpl(mContext, parentWindow);
     }
 
-    public WindowManagerImpl createPresentationWindowManager(Display display) {
-        return new WindowManagerImpl(display, mParentWindow);
+    public WindowManagerImpl createPresentationWindowManager(Context displayContext) {
+        return new WindowManagerImpl(displayContext, mParentWindow);
     }
 
     /**
@@ -82,7 +90,7 @@ public final class WindowManagerImpl implements WindowManager {
     @Override
     public void addView(@NonNull View view, @NonNull ViewGroup.LayoutParams params) {
         applyDefaultToken(params);
-        mGlobal.addView(view, params, mDisplay, mParentWindow);
+        mGlobal.addView(view, params, mContext.getDisplay(), mParentWindow);
     }
 
     @Override
@@ -117,7 +125,34 @@ public final class WindowManagerImpl implements WindowManager {
     }
 
     @Override
+    public void requestAppKeyboardShortcuts(
+            final KeyboardShortcutsReceiver receiver, int deviceId) {
+        IResultReceiver resultReceiver = new IResultReceiver.Stub() {
+            @Override
+            public void send(int resultCode, Bundle resultData) throws RemoteException {
+                List<KeyboardShortcutGroup> result =
+                        resultData.getParcelableArrayList(PARCEL_KEY_SHORTCUTS_ARRAY);
+                receiver.onKeyboardShortcutsReceived(result);
+            }
+        };
+        try {
+            WindowManagerGlobal.getWindowManagerService()
+                .requestAppKeyboardShortcuts(resultReceiver, deviceId);
+        } catch (RemoteException e) {
+        }
+    }
+
+    @Override
     public Display getDefaultDisplay() {
-        return mDisplay;
+        return mContext.getDisplay();
+    }
+
+    @Override
+    public Region getCurrentImeTouchRegion() {
+        try {
+            return WindowManagerGlobal.getWindowManagerService().getCurrentImeTouchRegion();
+        } catch (RemoteException e) {
+        }
+        return null;
     }
 }

@@ -23,26 +23,26 @@ import android.content.IntentFilter;
 import android.net.ConnectivityManager;
 import android.provider.Settings;
 import android.provider.Settings.Global;
+import android.service.quicksettings.Tile;
+import android.widget.Switch;
 
 import com.android.internal.logging.MetricsLogger;
+import com.android.internal.logging.nano.MetricsProto.MetricsEvent;
 import com.android.systemui.R;
+import com.android.systemui.plugins.qs.QSTile.BooleanState;
 import com.android.systemui.qs.GlobalSetting;
-import com.android.systemui.qs.QSTile;
+import com.android.systemui.qs.QSHost;
+import com.android.systemui.qs.tileimpl.QSTileImpl;
 
 /** Quick settings tile: Airplane mode **/
-public class AirplaneModeTile extends QSTile<QSTile.BooleanState> {
-    private static final Intent WIRELESS_SETTINGS = new Intent(Settings.ACTION_WIRELESS_SETTINGS);
-
-    private final AnimationIcon mEnable =
-            new AnimationIcon(R.drawable.ic_signal_airplane_enable_animation);
-    private final AnimationIcon mDisable =
-            new AnimationIcon(R.drawable.ic_signal_airplane_disable_animation);
-
+public class AirplaneModeTile extends QSTileImpl<BooleanState> {
+    private final Icon mIcon =
+            ResourceIcon.get(R.drawable.ic_signal_airplane);
     private final GlobalSetting mSetting;
 
     private boolean mListening;
 
-    public AirplaneModeTile(Host host) {
+    public AirplaneModeTile(QSHost host) {
         super(host);
 
         mSetting = new GlobalSetting(mContext, mHandler, Global.AIRPLANE_MODE_ON) {
@@ -54,7 +54,7 @@ public class AirplaneModeTile extends QSTile<QSTile.BooleanState> {
     }
 
     @Override
-    protected BooleanState newTileState() {
+    public BooleanState newTileState() {
         return new BooleanState();
     }
 
@@ -62,13 +62,6 @@ public class AirplaneModeTile extends QSTile<QSTile.BooleanState> {
     public void handleClick() {
         MetricsLogger.action(mContext, getMetricsCategory(), !mState.value);
         setEnabled(!mState.value);
-        mEnable.setAllowAnimation(true);
-        mDisable.setAllowAnimation(true);
-    }
-
-    @Override
-    public void handleLongClick() {
-        mHost.startActivityDismissingKeyguard(WIRELESS_SETTINGS);
     }
 
     private void setEnabled(boolean enabled) {
@@ -78,26 +71,34 @@ public class AirplaneModeTile extends QSTile<QSTile.BooleanState> {
     }
 
     @Override
+    public Intent getLongClickIntent() {
+        return new Intent(Settings.ACTION_AIRPLANE_MODE_SETTINGS);
+    }
+
+    @Override
+    public CharSequence getTileLabel() {
+        return mContext.getString(R.string.airplane_mode);
+    }
+
+    @Override
     protected void handleUpdateState(BooleanState state, Object arg) {
         final int value = arg instanceof Integer ? (Integer)arg : mSetting.getValue();
         final boolean airplaneMode = value != 0;
         state.value = airplaneMode;
-        state.visible = true;
         state.label = mContext.getString(R.string.airplane_mode);
-        if (airplaneMode) {
-            state.icon = mEnable;
-            state.contentDescription =  mContext.getString(
-                    R.string.accessibility_quick_settings_airplane_on);
-        } else {
-            state.icon = mDisable;
-            state.contentDescription =  mContext.getString(
-                    R.string.accessibility_quick_settings_airplane_off);
+        state.icon = mIcon;
+        if (state.slash == null) {
+            state.slash = new SlashState();
         }
+        state.slash.isSlashed = !airplaneMode;
+        state.state = airplaneMode ? Tile.STATE_ACTIVE : Tile.STATE_INACTIVE;
+        state.contentDescription = state.label;
+        state.expandedAccessibilityClassName = Switch.class.getName();
     }
 
     @Override
     public int getMetricsCategory() {
-        return MetricsLogger.QS_AIRPLANEMODE;
+        return MetricsEvent.QS_AIRPLANEMODE;
     }
 
     @Override
@@ -109,7 +110,7 @@ public class AirplaneModeTile extends QSTile<QSTile.BooleanState> {
         }
     }
 
-    public void setListening(boolean listening) {
+    public void handleSetListening(boolean listening) {
         if (mListening == listening) return;
         mListening = listening;
         if (listening) {

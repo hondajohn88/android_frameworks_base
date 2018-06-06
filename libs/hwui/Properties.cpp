@@ -13,12 +13,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "Properties.h"
 
+#include "Properties.h"
 #include "Debug.h"
+#include "DeviceInfo.h"
 
 #include <algorithm>
-#include <cutils/log.h>
+#include <cstdlib>
+
+#include <cutils/compiler.h>
+#include <cutils/properties.h>
+#include <log/log.h>
 
 namespace android {
 namespace uirenderer {
@@ -29,7 +34,8 @@ bool Properties::debugLayersUpdates = false;
 bool Properties::debugOverdraw = false;
 bool Properties::showDirtyRegions = false;
 bool Properties::skipEmptyFrames = true;
-bool Properties::swapBuffersWithDamage = true;
+bool Properties::useBufferAge = true;
+bool Properties::enablePartialUpdates = true;
 
 DebugLevel Properties::debugLevel = kDebugDisabled;
 OverdrawColorSet Properties::overdrawColorSet = OverdrawColorSet::Default;
@@ -44,13 +50,28 @@ int Properties::overrideSpotShadowStrength = -1;
 
 ProfileType Properties::sProfileType = ProfileType::None;
 bool Properties::sDisableProfileBars = false;
+RenderPipelineType Properties::sRenderPipelineType = RenderPipelineType::NotInitialized;
+
+bool Properties::waitForGpuCompletion = false;
+bool Properties::forceDrawFrame = false;
+
+bool Properties::filterOutTestOverhead = false;
+bool Properties::disableVsync = false;
+
+static int property_get_int(const char* key, int defaultValue) {
+    char buf[PROPERTY_VALUE_MAX] = {'\0',};
+
+    if (property_get(key, buf, "") > 0) {
+        return atoi(buf);
+    }
+    return defaultValue;
+}
 
 bool Properties::load() {
     char property[PROPERTY_VALUE_MAX];
     bool prevDebugLayersUpdates = debugLayersUpdates;
     bool prevDebugOverdraw = debugOverdraw;
     StencilClipDebug prevDebugStencilClip = debugStencilClip;
-
 
     debugOverdraw = false;
     if (property_get(PROPERTY_DEBUG_OVERDRAW, property, nullptr) > 0) {
@@ -98,13 +119,13 @@ bool Properties::load() {
 
     showDirtyRegions = property_get_bool(PROPERTY_DEBUG_SHOW_DIRTY_REGIONS, false);
 
-    debugLevel = kDebugDisabled;
-    if (property_get(PROPERTY_DEBUG, property, nullptr) > 0) {
-        debugLevel = (DebugLevel) atoi(property);
-    }
+    debugLevel = (DebugLevel) property_get_int(PROPERTY_DEBUG, kDebugDisabled);
 
     skipEmptyFrames = property_get_bool(PROPERTY_SKIP_EMPTY_DAMAGE, true);
-    swapBuffersWithDamage = property_get_bool(PROPERTY_SWAP_WITH_DAMAGE, true);
+    useBufferAge = property_get_bool(PROPERTY_USE_BUFFER_AGE, true);
+    enablePartialUpdates = property_get_bool(PROPERTY_ENABLE_PARTIAL_UPDATES, true);
+
+    filterOutTestOverhead = property_get_bool(PROPERTY_FILTER_TEST_OVERHEAD, false);
 
     return (prevDebugLayersUpdates != debugLayersUpdates)
             || (prevDebugOverdraw != debugOverdraw)
@@ -148,6 +169,37 @@ ProfileType Properties::getProfileType() {
     if (CC_UNLIKELY(sDisableProfileBars && sProfileType == ProfileType::Bars))
         return ProfileType::None;
     return sProfileType;
+}
+
+RenderPipelineType Properties::getRenderPipelineType() {
+    if (RenderPipelineType::NotInitialized != sRenderPipelineType) {
+        return sRenderPipelineType;
+    }
+    char prop[PROPERTY_VALUE_MAX];
+    property_get(PROPERTY_RENDERER, prop, "opengl");
+    if (!strcmp(prop, "skiagl") ) {
+        ALOGD("Skia GL Pipeline");
+        sRenderPipelineType = RenderPipelineType::SkiaGL;
+    } else if (!strcmp(prop, "skiavk") ) {
+        ALOGD("Skia Vulkan Pipeline");
+        sRenderPipelineType = RenderPipelineType::SkiaVulkan;
+    } else { //"opengl"
+        ALOGD("HWUI GL Pipeline");
+        sRenderPipelineType = RenderPipelineType::OpenGL;
+    }
+    return sRenderPipelineType;
+}
+
+#ifdef HWUI_GLES_WRAP_ENABLED
+void Properties::overrideRenderPipelineType(RenderPipelineType type) {
+    sRenderPipelineType = type;
+}
+#endif
+
+bool Properties::isSkiaEnabled() {
+    auto renderType = getRenderPipelineType();
+    return RenderPipelineType::SkiaGL == renderType
+            || RenderPipelineType::SkiaVulkan == renderType;
 }
 
 }; // namespace uirenderer

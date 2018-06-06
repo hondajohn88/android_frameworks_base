@@ -111,6 +111,14 @@ public final class AudioDeviceInfo {
      * A device type connected over IP.
      */
     public static final int TYPE_IP               = 20;
+    /**
+     * A type-agnostic device used for communication with external audio systems
+     */
+    public static final int TYPE_BUS              = 21;
+    /**
+     * A device type describing a USB audio headset.
+     */
+    public static final int TYPE_USB_HEADSET       = 22;
 
     private final AudioDevicePort mPort;
 
@@ -221,8 +229,9 @@ public final class AudioDeviceInfo {
      * @return An array of audio encodings (e.g. {@link AudioFormat#ENCODING_PCM_16BIT},
      * {@link AudioFormat#ENCODING_PCM_FLOAT}) supported by the audio device.
      * <code>ENCODING_PCM_FLOAT</code> indicates the device supports more
-     * than 16 bits of integer precision.  Specifying <code>ENCODING_PCM_FLOAT</code>
-     * with {@link AudioTrack} or {@link AudioRecord} can preserve at least 24 bits of
+     * than 16 bits of integer precision.  As there is no AudioFormat constant
+     * specifically defined for 24-bit PCM, the value <code>ENCODING_PCM_FLOAT</code>
+     * indicates that {@link AudioTrack} or {@link AudioRecord} can preserve at least 24 bits of
      * integer precision to that device.
      *
      * @see AudioFormat
@@ -271,6 +280,7 @@ public final class AudioDeviceInfo {
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_DGTL_DOCK_HEADSET, TYPE_DOCK);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_USB_ACCESSORY, TYPE_USB_ACCESSORY);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_USB_DEVICE, TYPE_USB_DEVICE);
+        INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_USB_HEADSET, TYPE_USB_HEADSET);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_TELEPHONY_TX, TYPE_TELEPHONY);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_LINE, TYPE_LINE_ANALOG);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_HDMI_ARC, TYPE_HDMI_ARC);
@@ -278,6 +288,7 @@ public final class AudioDeviceInfo {
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_FM, TYPE_FM);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_AUX_LINE, TYPE_AUX_LINE);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_IP, TYPE_IP);
+        INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_OUT_BUS, TYPE_BUS);
 
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_BUILTIN_MIC, TYPE_BUILTIN_MIC);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_BLUETOOTH_SCO_HEADSET, TYPE_BLUETOOTH_SCO);
@@ -289,12 +300,14 @@ public final class AudioDeviceInfo {
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_DGTL_DOCK_HEADSET, TYPE_DOCK);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_USB_ACCESSORY, TYPE_USB_ACCESSORY);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_USB_DEVICE, TYPE_USB_DEVICE);
+        INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_USB_HEADSET, TYPE_USB_HEADSET);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_FM_TUNER, TYPE_FM_TUNER);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_TV_TUNER, TYPE_TV_TUNER);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_LINE, TYPE_LINE_ANALOG);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_SPDIF, TYPE_LINE_DIGITAL);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_BLUETOOTH_A2DP, TYPE_BLUETOOTH_A2DP);
         INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_IP, TYPE_IP);
+        INT_TO_EXT_DEVICE_MAPPING.put(AudioSystem.DEVICE_IN_BUS, TYPE_BUS);
 
         // not covered here, legacy
         //AudioSystem.DEVICE_OUT_REMOTE_SUBMIX
@@ -313,6 +326,7 @@ public final class AudioDeviceInfo {
         EXT_TO_INT_DEVICE_MAPPING.put(TYPE_HDMI, AudioSystem.DEVICE_OUT_HDMI);
         EXT_TO_INT_DEVICE_MAPPING.put(TYPE_HDMI_ARC, AudioSystem.DEVICE_OUT_HDMI_ARC);
         EXT_TO_INT_DEVICE_MAPPING.put(TYPE_USB_DEVICE, AudioSystem.DEVICE_OUT_USB_DEVICE);
+        EXT_TO_INT_DEVICE_MAPPING.put(TYPE_USB_HEADSET, AudioSystem.DEVICE_OUT_USB_HEADSET);
         EXT_TO_INT_DEVICE_MAPPING.put(TYPE_USB_ACCESSORY, AudioSystem.DEVICE_OUT_USB_ACCESSORY);
         EXT_TO_INT_DEVICE_MAPPING.put(TYPE_DOCK, AudioSystem.DEVICE_OUT_ANLG_DOCK_HEADSET);
         EXT_TO_INT_DEVICE_MAPPING.put(TYPE_FM, AudioSystem.DEVICE_OUT_FM);
@@ -322,6 +336,7 @@ public final class AudioDeviceInfo {
         EXT_TO_INT_DEVICE_MAPPING.put(TYPE_TELEPHONY, AudioSystem.DEVICE_OUT_TELEPHONY_TX);
         EXT_TO_INT_DEVICE_MAPPING.put(TYPE_AUX_LINE, AudioSystem.DEVICE_OUT_AUX_LINE);
         EXT_TO_INT_DEVICE_MAPPING.put(TYPE_IP, AudioSystem.DEVICE_OUT_IP);
+        EXT_TO_INT_DEVICE_MAPPING.put(TYPE_BUS, AudioSystem.DEVICE_OUT_BUS);
     }
 }
 

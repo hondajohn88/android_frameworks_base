@@ -16,21 +16,24 @@
 
 package com.android.server;
 
+import android.app.ActivityManagerInternal;
 import android.database.ContentObserver;
 import android.os.BatteryStats;
 
+import android.os.ResultReceiver;
+import android.os.ShellCallback;
+import android.os.ShellCommand;
 import com.android.internal.app.IBatteryStats;
+import com.android.internal.util.DumpUtils;
 import com.android.server.am.BatteryStatsService;
 import com.android.server.lights.Light;
 import com.android.server.lights.LightsManager;
 
-import android.app.ActivityManagerNative;
+import android.app.ActivityManager;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.content.res.Resources;
-import android.database.ContentObserver;
 import android.os.BatteryManager;
 import android.os.BatteryManagerInternal;
 import android.os.BatteryProperties;
@@ -47,8 +50,10 @@ import android.os.SystemClock;
 import android.os.UEventObserver;
 import android.os.UserHandle;
 import android.provider.Settings;
+import android.service.battery.BatteryServiceDumpProto;
 import android.util.EventLog;
 import android.util.Slog;
+import android.util.proto.ProtoOutputStream;
 
 import java.io.File;
 import java.io.FileDescriptor;
@@ -98,7 +103,6 @@ public final class BatteryService extends SystemService {
     // discharge stats before the device dies.
     private int mCriticalBatteryLevel;
 
-    private static final int DUMP_MAX_LENGTH = 24 * 1024;
     private static final String[] DUMPSYS_ARGS = new String[] { "--checkin", "--unplugged" };
 
     private static final String DUMPSYS_DATA_PATH = "/data/system/";
@@ -108,6 +112,7 @@ public final class BatteryService extends SystemService {
 
     private final Context mContext;
     private final IBatteryStats mBatteryStats;
+    BinderService mBinderService;
     private final Handler mHandler;
 
     private final Object mLock = new Object();
@@ -123,6 +128,10 @@ public final class BatteryService extends SystemService {
     private int mLastBatteryTemperature;
     private boolean mLastBatteryLevelCritical;
     private int mLastMaxChargingCurrent;
+    private int mLastMaxChargingVoltage;
+    private int mLastChargeCounter;
+
+    private int mSequence = 1;
 
     private int mInvalidCharger;
     private int mLastInvalidCharger;
@@ -142,15 +151,10 @@ public final class BatteryService extends SystemService {
     private boolean mUpdatesStopped;
 
     private Led mLed;
-    // Disable LED until SettingsObserver can be started
-    private boolean mLightEnabled = false;
-    private boolean mLedPulseEnabled;
-    private int mBatteryLowARGB;
-    private int mBatteryMediumARGB;
-    private int mBatteryFullARGB;
-    private boolean mMultiColorLed;
 
     private boolean mSentLowBatteryBroadcast = false;
+
+    private ActivityManagerInternal mActivityManagerInternal;
 
     public BatteryService(Context context) {
         super(context);
@@ -159,6 +163,7 @@ public final class BatteryService extends SystemService {
         mHandler = new Handler(true /*async*/);
         mLed = new Led(context, getLocalService(LightsManager.class));
         mBatteryStats = BatteryStatsService.getService();
+        mActivityManagerInternal = LocalServices.getService(ActivityManagerInternal.class);
 
         mCriticalBatteryLevel = mContext.getResources().getInteger(
                 com.android.internal.R.integer.config_criticalBatteryWarningLevel);
@@ -171,7 +176,18 @@ public final class BatteryService extends SystemService {
 
         // watch for invalid charger messages if the invalid_charger switch exists
         if (new File("/sys/devices/virtual/switch/invalid_charger/state").exists()) {
-            mInvalidChargerObserver.startObserving(
+            UEventObserver invalidChargerObserver = new UEventObserver() {
+                @Override
+                public void onUEvent(UEvent event) {
+                    final int invalidCharger = "1".equals(event.get("SWITCH_STATE")) ? 1 : 0;
+                    synchronized (mLock) {
+                        if (mInvalidCharger != invalidCharger) {
+                            mInvalidCharger = invalidCharger;
+                        }
+                    }
+                }
+            };
+            invalidChargerObserver.startObserving(
                     "DEVPATH=/devices/virtual/switch/invalid_charger");
         }
     }
@@ -187,7 +203,8 @@ public final class BatteryService extends SystemService {
             // Should never happen.
         }
 
-        publishBinderService("battery", new BinderService());
+        mBinderService = new BinderService();
+        publishBinderService("battery", mBinderService);
         publishLocalService(BatteryManagerInternal.class, new LocalService());
     }
 
@@ -210,9 +227,6 @@ public final class BatteryService extends SystemService {
                         false, obs, UserHandle.USER_ALL);
                 updateBatteryWarningLevelLocked();
             }
-        } else if (phase == PHASE_BOOT_COMPLETED) {
-            SettingsObserver observer = new SettingsObserver(new Handler());
-            observer.observe();
         }
     }
 
@@ -274,7 +288,7 @@ public final class BatteryService extends SystemService {
             mHandler.post(new Runnable() {
                 @Override
                 public void run() {
-                    if (ActivityManagerNative.isSystemReady()) {
+                    if (mActivityManagerInternal.isSystemReady()) {
                         Intent intent = new Intent(Intent.ACTION_REQUEST_SHUTDOWN);
                         intent.putExtra(Intent.EXTRA_KEY_CONFIRM, false);
                         intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -293,7 +307,7 @@ public final class BatteryService extends SystemService {
             mHandler.post(new Runnable() {
                 @Override
                 public void run() {
-                    if (ActivityManagerNative.isSystemReady()) {
+                    if (mActivityManagerInternal.isSystemReady()) {
                         Intent intent = new Intent(Intent.ACTION_REQUEST_SHUTDOWN);
                         intent.putExtra(Intent.EXTRA_KEY_CONFIRM, false);
                         intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -337,12 +351,15 @@ public final class BatteryService extends SystemService {
                     + ", chargerUsbOnline=" + mBatteryProps.chargerUsbOnline
                     + ", chargerWirelessOnline=" + mBatteryProps.chargerWirelessOnline
                     + ", maxChargingCurrent" + mBatteryProps.maxChargingCurrent
+                    + ", maxChargingVoltage" + mBatteryProps.maxChargingVoltage
                     + ", batteryStatus=" + mBatteryProps.batteryStatus
                     + ", batteryHealth=" + mBatteryProps.batteryHealth
                     + ", batteryPresent=" + mBatteryProps.batteryPresent
                     + ", batteryLevel=" + mBatteryProps.batteryLevel
                     + ", batteryTechnology=" + mBatteryProps.batteryTechnology
                     + ", batteryVoltage=" + mBatteryProps.batteryVoltage
+                    + ", batteryChargeCounter=" + mBatteryProps.batteryChargeCounter
+                    + ", batteryFullCharge=" + mBatteryProps.batteryFullCharge
                     + ", batteryTemperature=" + mBatteryProps.batteryTemperature
                     + ", mBatteryLevelCritical=" + mBatteryLevelCritical
                     + ", mPlugType=" + mPlugType);
@@ -352,7 +369,8 @@ public final class BatteryService extends SystemService {
         try {
             mBatteryStats.setBatteryState(mBatteryProps.batteryStatus, mBatteryProps.batteryHealth,
                     mPlugType, mBatteryProps.batteryLevel, mBatteryProps.batteryTemperature,
-                    mBatteryProps.batteryVoltage);
+                    mBatteryProps.batteryVoltage, mBatteryProps.batteryChargeCounter,
+                    mBatteryProps.batteryFullCharge);
         } catch (RemoteException e) {
             // Should never happen.
         }
@@ -368,6 +386,8 @@ public final class BatteryService extends SystemService {
                 mBatteryProps.batteryVoltage != mLastBatteryVoltage ||
                 mBatteryProps.batteryTemperature != mLastBatteryTemperature ||
                 mBatteryProps.maxChargingCurrent != mLastMaxChargingCurrent ||
+                mBatteryProps.maxChargingVoltage != mLastMaxChargingVoltage ||
+                mBatteryProps.batteryChargeCounter != mLastChargeCounter ||
                 mInvalidCharger != mLastInvalidCharger)) {
 
             if (mPlugType != mLastPlugType) {
@@ -431,27 +451,29 @@ public final class BatteryService extends SystemService {
                 }
             }
 
-            sendIntentLocked();
+            mSequence++;
 
             // Separate broadcast is sent for power connected / not connected
             // since the standard intent will not wake any applications and some
             // applications may want to have smart behavior based on this.
             if (mPlugType != 0 && mLastPlugType == 0) {
+                final Intent statusIntent = new Intent(Intent.ACTION_POWER_CONNECTED);
+                statusIntent.setFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY_BEFORE_BOOT);
+                statusIntent.putExtra(BatteryManager.EXTRA_SEQUENCE, mSequence);
                 mHandler.post(new Runnable() {
                     @Override
                     public void run() {
-                        Intent statusIntent = new Intent(Intent.ACTION_POWER_CONNECTED);
-                        statusIntent.setFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY_BEFORE_BOOT);
                         mContext.sendBroadcastAsUser(statusIntent, UserHandle.ALL);
                     }
                 });
             }
             else if (mPlugType == 0 && mLastPlugType != 0) {
+                final Intent statusIntent = new Intent(Intent.ACTION_POWER_DISCONNECTED);
+                statusIntent.setFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY_BEFORE_BOOT);
+                statusIntent.putExtra(BatteryManager.EXTRA_SEQUENCE, mSequence);
                 mHandler.post(new Runnable() {
                     @Override
                     public void run() {
-                        Intent statusIntent = new Intent(Intent.ACTION_POWER_DISCONNECTED);
-                        statusIntent.setFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY_BEFORE_BOOT);
                         mContext.sendBroadcastAsUser(statusIntent, UserHandle.ALL);
                     }
                 });
@@ -459,25 +481,33 @@ public final class BatteryService extends SystemService {
 
             if (shouldSendBatteryLowLocked()) {
                 mSentLowBatteryBroadcast = true;
+                final Intent statusIntent = new Intent(Intent.ACTION_BATTERY_LOW);
+                statusIntent.setFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY_BEFORE_BOOT);
+                statusIntent.putExtra(BatteryManager.EXTRA_SEQUENCE, mSequence);
                 mHandler.post(new Runnable() {
                     @Override
                     public void run() {
-                        Intent statusIntent = new Intent(Intent.ACTION_BATTERY_LOW);
-                        statusIntent.setFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY_BEFORE_BOOT);
                         mContext.sendBroadcastAsUser(statusIntent, UserHandle.ALL);
                     }
                 });
-            } else if (mSentLowBatteryBroadcast && mLastBatteryLevel >= mLowBatteryCloseWarningLevel) {
+            } else if (mSentLowBatteryBroadcast &&
+                    mBatteryProps.batteryLevel >= mLowBatteryCloseWarningLevel) {
                 mSentLowBatteryBroadcast = false;
+                final Intent statusIntent = new Intent(Intent.ACTION_BATTERY_OKAY);
+                statusIntent.setFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY_BEFORE_BOOT);
+                statusIntent.putExtra(BatteryManager.EXTRA_SEQUENCE, mSequence);
                 mHandler.post(new Runnable() {
                     @Override
                     public void run() {
-                        Intent statusIntent = new Intent(Intent.ACTION_BATTERY_OKAY);
-                        statusIntent.setFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY_BEFORE_BOOT);
                         mContext.sendBroadcastAsUser(statusIntent, UserHandle.ALL);
                     }
                 });
             }
+
+            // We are doing this after sending the above broadcasts, so anything processing
+            // them will get the new sequence number at that point.  (See for example how testing
+            // of JobScheduler's BatteryController works.)
+            sendIntentLocked();
 
             // Update the battery LED
             mLed.updateLightsLocked();
@@ -495,6 +525,8 @@ public final class BatteryService extends SystemService {
             mLastBatteryVoltage = mBatteryProps.batteryVoltage;
             mLastBatteryTemperature = mBatteryProps.batteryTemperature;
             mLastMaxChargingCurrent = mBatteryProps.maxChargingCurrent;
+            mLastMaxChargingVoltage = mBatteryProps.maxChargingVoltage;
+            mLastChargeCounter = mBatteryProps.batteryChargeCounter;
             mLastBatteryLevelCritical = mBatteryLevelCritical;
             mLastInvalidCharger = mInvalidCharger;
         }
@@ -508,6 +540,7 @@ public final class BatteryService extends SystemService {
 
         int icon = getIconLocked(mBatteryProps.batteryLevel);
 
+        intent.putExtra(BatteryManager.EXTRA_SEQUENCE, mSequence);
         intent.putExtra(BatteryManager.EXTRA_STATUS, mBatteryProps.batteryStatus);
         intent.putExtra(BatteryManager.EXTRA_HEALTH, mBatteryProps.batteryHealth);
         intent.putExtra(BatteryManager.EXTRA_PRESENT, mBatteryProps.batteryPresent);
@@ -520,7 +553,8 @@ public final class BatteryService extends SystemService {
         intent.putExtra(BatteryManager.EXTRA_TECHNOLOGY, mBatteryProps.batteryTechnology);
         intent.putExtra(BatteryManager.EXTRA_INVALID_CHARGER, mInvalidCharger);
         intent.putExtra(BatteryManager.EXTRA_MAX_CHARGING_CURRENT, mBatteryProps.maxChargingCurrent);
-
+        intent.putExtra(BatteryManager.EXTRA_MAX_CHARGING_VOLTAGE, mBatteryProps.maxChargingVoltage);
+        intent.putExtra(BatteryManager.EXTRA_CHARGE_COUNTER, mBatteryProps.batteryChargeCounter);
         if (DEBUG) {
             Slog.d(TAG, "Sending ACTION_BATTERY_CHANGED.  level:" + mBatteryProps.batteryLevel +
                     ", scale:" + BATTERY_SCALE + ", status:" + mBatteryProps.batteryStatus +
@@ -533,13 +567,15 @@ public final class BatteryService extends SystemService {
                     ", USB powered:" + mBatteryProps.chargerUsbOnline +
                     ", Wireless powered:" + mBatteryProps.chargerWirelessOnline +
                     ", icon:" + icon  + ", invalid charger:" + mInvalidCharger +
-                    ", maxChargingCurrent:" + mBatteryProps.maxChargingCurrent);
+                    ", maxChargingCurrent:" + mBatteryProps.maxChargingCurrent +
+                    ", maxChargingVoltage:" + mBatteryProps.maxChargingVoltage +
+                    ", chargeCounter:" + mBatteryProps.batteryChargeCounter);
         }
 
         mHandler.post(new Runnable() {
             @Override
             public void run() {
-                ActivityManagerNative.broadcastStickyIntent(intent, null, UserHandle.USER_ALL);
+                ActivityManager.broadcastStickyIntent(intent, UserHandle.USER_ALL);
             }
         });
     }
@@ -605,7 +641,6 @@ public final class BatteryService extends SystemService {
             } catch (NumberFormatException e) {
                 Slog.e(TAG, "Invalid DischargeThresholds GService string: " +
                         durationThresholdString + " or " + dischargeThresholdString);
-                return;
             }
         }
     }
@@ -628,7 +663,165 @@ public final class BatteryService extends SystemService {
         }
     }
 
-    private void dumpInternal(PrintWriter pw, String[] args) {
+    class Shell extends ShellCommand {
+        @Override
+        public int onCommand(String cmd) {
+            return onShellCommand(this, cmd);
+        }
+
+        @Override
+        public void onHelp() {
+            PrintWriter pw = getOutPrintWriter();
+            dumpHelp(pw);
+        }
+    }
+
+    static void dumpHelp(PrintWriter pw) {
+        pw.println("Battery service (battery) commands:");
+        pw.println("  help");
+        pw.println("    Print this help text.");
+        pw.println("  set [-f] [ac|usb|wireless|status|level|temp|present|invalid] <value>");
+        pw.println("    Force a battery property value, freezing battery state.");
+        pw.println("    -f: force a battery change broadcast be sent, prints new sequence.");
+        pw.println("  unplug [-f]");
+        pw.println("    Force battery unplugged, freezing battery state.");
+        pw.println("    -f: force a battery change broadcast be sent, prints new sequence.");
+        pw.println("  reset [-f]");
+        pw.println("    Unfreeze battery state, returning to current hardware values.");
+        pw.println("    -f: force a battery change broadcast be sent, prints new sequence.");
+    }
+
+    static final int OPTION_FORCE_UPDATE = 1<<0;
+
+    int parseOptions(Shell shell) {
+        String opt;
+        int opts = 0;
+        while ((opt = shell.getNextOption()) != null) {
+            if ("-f".equals(opt)) {
+                opts |= OPTION_FORCE_UPDATE;
+            }
+        }
+        return opts;
+    }
+
+    int onShellCommand(Shell shell, String cmd) {
+        if (cmd == null) {
+            return shell.handleDefaultCommands(cmd);
+        }
+        PrintWriter pw = shell.getOutPrintWriter();
+        switch (cmd) {
+            case "unplug": {
+                int opts = parseOptions(shell);
+                getContext().enforceCallingOrSelfPermission(
+                        android.Manifest.permission.DEVICE_POWER, null);
+                if (!mUpdatesStopped) {
+                    mLastBatteryProps.set(mBatteryProps);
+                }
+                mBatteryProps.chargerAcOnline = false;
+                mBatteryProps.chargerUsbOnline = false;
+                mBatteryProps.chargerWirelessOnline = false;
+                long ident = Binder.clearCallingIdentity();
+                try {
+                    mUpdatesStopped = true;
+                    processValuesFromShellLocked(pw, opts);
+                } finally {
+                    Binder.restoreCallingIdentity(ident);
+                }
+            } break;
+            case "set": {
+                int opts = parseOptions(shell);
+                getContext().enforceCallingOrSelfPermission(
+                        android.Manifest.permission.DEVICE_POWER, null);
+                final String key = shell.getNextArg();
+                if (key == null) {
+                    pw.println("No property specified");
+                    return -1;
+
+                }
+                final String value = shell.getNextArg();
+                if (value == null) {
+                    pw.println("No value specified");
+                    return -1;
+
+                }
+                try {
+                    if (!mUpdatesStopped) {
+                        mLastBatteryProps.set(mBatteryProps);
+                    }
+                    boolean update = true;
+                    switch (key) {
+                        case "present":
+                            mBatteryProps.batteryPresent = Integer.parseInt(value) != 0;
+                            break;
+                        case "ac":
+                            mBatteryProps.chargerAcOnline = Integer.parseInt(value) != 0;
+                            break;
+                        case "usb":
+                            mBatteryProps.chargerUsbOnline = Integer.parseInt(value) != 0;
+                            break;
+                        case "wireless":
+                            mBatteryProps.chargerWirelessOnline = Integer.parseInt(value) != 0;
+                            break;
+                        case "status":
+                            mBatteryProps.batteryStatus = Integer.parseInt(value);
+                            break;
+                        case "level":
+                            mBatteryProps.batteryLevel = Integer.parseInt(value);
+                            break;
+                        case "temp":
+                            mBatteryProps.batteryTemperature = Integer.parseInt(value);
+                            break;
+                        case "invalid":
+                            mInvalidCharger = Integer.parseInt(value);
+                            break;
+                        default:
+                            pw.println("Unknown set option: " + key);
+                            update = false;
+                            break;
+                    }
+                    if (update) {
+                        long ident = Binder.clearCallingIdentity();
+                        try {
+                            mUpdatesStopped = true;
+                            processValuesFromShellLocked(pw, opts);
+                        } finally {
+                            Binder.restoreCallingIdentity(ident);
+                        }
+                    }
+                } catch (NumberFormatException ex) {
+                    pw.println("Bad value: " + value);
+                    return -1;
+                }
+            } break;
+            case "reset": {
+                int opts = parseOptions(shell);
+                getContext().enforceCallingOrSelfPermission(
+                        android.Manifest.permission.DEVICE_POWER, null);
+                long ident = Binder.clearCallingIdentity();
+                try {
+                    if (mUpdatesStopped) {
+                        mUpdatesStopped = false;
+                        mBatteryProps.set(mLastBatteryProps);
+                        processValuesFromShellLocked(pw, opts);
+                    }
+                } finally {
+                    Binder.restoreCallingIdentity(ident);
+                }
+            } break;
+            default:
+                return shell.handleDefaultCommands(cmd);
+        }
+        return 0;
+    }
+
+    private void processValuesFromShellLocked(PrintWriter pw, int opts) {
+        processValuesLocked((opts & OPTION_FORCE_UPDATE) != 0);
+        if ((opts & OPTION_FORCE_UPDATE) != 0) {
+            pw.println(mSequence);
+        }
+    }
+
+    private void dumpInternal(FileDescriptor fd, PrintWriter pw, String[] args) {
         synchronized (mLock) {
             if (args == null || args.length == 0 || "-a".equals(args[0])) {
                 pw.println("Current Battery Service state:");
@@ -639,6 +832,8 @@ public final class BatteryService extends SystemService {
                 pw.println("  USB powered: " + mBatteryProps.chargerUsbOnline);
                 pw.println("  Wireless powered: " + mBatteryProps.chargerWirelessOnline);
                 pw.println("  Max charging current: " + mBatteryProps.maxChargingCurrent);
+                pw.println("  Max charging voltage: " + mBatteryProps.maxChargingVoltage);
+                pw.println("  Charge counter: " + mBatteryProps.batteryChargeCounter);
                 pw.println("  status: " + mBatteryProps.batteryStatus);
                 pw.println("  health: " + mBatteryProps.batteryHealth);
                 pw.println("  present: " + mBatteryProps.batteryPresent);
@@ -647,108 +842,60 @@ public final class BatteryService extends SystemService {
                 pw.println("  voltage: " + mBatteryProps.batteryVoltage);
                 pw.println("  temperature: " + mBatteryProps.batteryTemperature);
                 pw.println("  technology: " + mBatteryProps.batteryTechnology);
-
-            } else if ("unplug".equals(args[0])) {
-                if (!mUpdatesStopped) {
-                    mLastBatteryProps.set(mBatteryProps);
-                }
-                mBatteryProps.chargerAcOnline = false;
-                mBatteryProps.chargerUsbOnline = false;
-                mBatteryProps.chargerWirelessOnline = false;
-                long ident = Binder.clearCallingIdentity();
-                try {
-                    mUpdatesStopped = true;
-                    processValuesLocked(false);
-                } finally {
-                    Binder.restoreCallingIdentity(ident);
-                }
-
-            } else if (args.length == 3 && "set".equals(args[0])) {
-                String key = args[1];
-                String value = args[2];
-                try {
-                    if (!mUpdatesStopped) {
-                        mLastBatteryProps.set(mBatteryProps);
-                    }
-                    boolean update = true;
-                    if ("ac".equals(key)) {
-                        mBatteryProps.chargerAcOnline = Integer.parseInt(value) != 0;
-                    } else if ("usb".equals(key)) {
-                        mBatteryProps.chargerUsbOnline = Integer.parseInt(value) != 0;
-                    } else if ("wireless".equals(key)) {
-                        mBatteryProps.chargerWirelessOnline = Integer.parseInt(value) != 0;
-                    } else if ("status".equals(key)) {
-                        mBatteryProps.batteryStatus = Integer.parseInt(value);
-                    } else if ("level".equals(key)) {
-                        mBatteryProps.batteryLevel = Integer.parseInt(value);
-                    } else if ("invalid".equals(key)) {
-                        mInvalidCharger = Integer.parseInt(value);
-                    } else {
-                        pw.println("Unknown set option: " + key);
-                        update = false;
-                    }
-                    if (update) {
-                        long ident = Binder.clearCallingIdentity();
-                        try {
-                            mUpdatesStopped = true;
-                            processValuesLocked(false);
-                        } finally {
-                            Binder.restoreCallingIdentity(ident);
-                        }
-                    }
-                } catch (NumberFormatException ex) {
-                    pw.println("Bad value: " + value);
-                }
-
-            } else if (args.length == 1 && "reset".equals(args[0])) {
-                long ident = Binder.clearCallingIdentity();
-                try {
-                    if (mUpdatesStopped) {
-                        mUpdatesStopped = false;
-                        mBatteryProps.set(mLastBatteryProps);
-                        processValuesLocked(false);
-                    }
-                } finally {
-                    Binder.restoreCallingIdentity(ident);
-                }
             } else {
-                pw.println("Dump current battery state, or:");
-                pw.println("  set [ac|usb|wireless|status|level|invalid] <value>");
-                pw.println("  unplug");
-                pw.println("  reset");
+                Shell shell = new Shell();
+                shell.exec(mBinderService, null, fd, null, args, null, new ResultReceiver(null));
             }
         }
     }
 
-    private final UEventObserver mInvalidChargerObserver = new UEventObserver() {
-        @Override
-        public void onUEvent(UEventObserver.UEvent event) {
-            final int invalidCharger = "1".equals(event.get("SWITCH_STATE")) ? 1 : 0;
-            synchronized (mLock) {
-                if (mInvalidCharger != invalidCharger) {
-                    mInvalidCharger = invalidCharger;
-                }
-            }
-        }
-    };
+    private void dumpProto(FileDescriptor fd) {
+        final ProtoOutputStream proto = new ProtoOutputStream(fd);
 
-    private synchronized void updateLedPulse() {
-        mLed.updateLightsLocked();
+        synchronized (mLock) {
+            proto.write(BatteryServiceDumpProto.ARE_UPDATES_STOPPED, mUpdatesStopped);
+            int batteryPluggedValue = BatteryServiceDumpProto.BATTERY_PLUGGED_NONE;
+            if (mBatteryProps.chargerAcOnline) {
+                batteryPluggedValue = BatteryServiceDumpProto.BATTERY_PLUGGED_AC;
+            } else if (mBatteryProps.chargerUsbOnline) {
+                batteryPluggedValue = BatteryServiceDumpProto.BATTERY_PLUGGED_USB;
+            } else if (mBatteryProps.chargerWirelessOnline) {
+                batteryPluggedValue = BatteryServiceDumpProto.BATTERY_PLUGGED_WIRELESS;
+            }
+            proto.write(BatteryServiceDumpProto.PLUGGED, batteryPluggedValue);
+            proto.write(BatteryServiceDumpProto.MAX_CHARGING_CURRENT, mBatteryProps.maxChargingCurrent);
+            proto.write(BatteryServiceDumpProto.MAX_CHARGING_VOLTAGE, mBatteryProps.maxChargingVoltage);
+            proto.write(BatteryServiceDumpProto.CHARGE_COUNTER, mBatteryProps.batteryChargeCounter);
+            proto.write(BatteryServiceDumpProto.STATUS, mBatteryProps.batteryStatus);
+            proto.write(BatteryServiceDumpProto.HEALTH, mBatteryProps.batteryHealth);
+            proto.write(BatteryServiceDumpProto.IS_PRESENT, mBatteryProps.batteryPresent);
+            proto.write(BatteryServiceDumpProto.LEVEL, mBatteryProps.batteryLevel);
+            proto.write(BatteryServiceDumpProto.SCALE, BATTERY_SCALE);
+            proto.write(BatteryServiceDumpProto.VOLTAGE, mBatteryProps.batteryVoltage);
+            proto.write(BatteryServiceDumpProto.TEMPERATURE, mBatteryProps.batteryTemperature);
+            proto.write(BatteryServiceDumpProto.TECHNOLOGY, mBatteryProps.batteryTechnology);
+        }
+        proto.flush();
     }
 
     private final class Led {
         private final Light mBatteryLight;
 
+        private final int mBatteryLowARGB;
+        private final int mBatteryMediumARGB;
+        private final int mBatteryFullARGB;
         private final int mBatteryLedOn;
         private final int mBatteryLedOff;
 
         public Led(Context context, LightsManager lights) {
             mBatteryLight = lights.getLight(LightsManager.LIGHT_ID_BATTERY);
 
-            // Does the Device support changing battery LED colors?
-            mMultiColorLed = context.getResources().getBoolean(
-                    com.android.internal.R.bool.config_multiColorBatteryLed);
-
+            mBatteryLowARGB = context.getResources().getInteger(
+                    com.android.internal.R.integer.config_notificationsBatteryLowARGB);
+            mBatteryMediumARGB = context.getResources().getInteger(
+                    com.android.internal.R.integer.config_notificationsBatteryMediumARGB);
+            mBatteryFullARGB = context.getResources().getInteger(
+                    com.android.internal.R.integer.config_notificationsBatteryFullARGB);
             mBatteryLedOn = context.getResources().getInteger(
                     com.android.internal.R.integer.config_notificationsBatteryLedOn);
             mBatteryLedOff = context.getResources().getInteger(
@@ -759,36 +906,24 @@ public final class BatteryService extends SystemService {
          * Synchronize on BatteryService.
          */
         public void updateLightsLocked() {
-            // mBatteryProps could be null on startup (called by SettingsObserver)
-            if (mBatteryProps == null) {
-                Slog.w(TAG, "updateLightsLocked: mBatteryProps is null; skipping");
-                return;
-            }
-
             final int level = mBatteryProps.batteryLevel;
             final int status = mBatteryProps.batteryStatus;
-            if (!mLightEnabled) {
-                // No lights if explicitly disabled
-                mBatteryLight.turnOff();
-            } else if (level < mLowBatteryWarningLevel) {
+            if (level < mLowBatteryWarningLevel) {
                 if (status == BatteryManager.BATTERY_STATUS_CHARGING) {
-                    // Battery is charging and low
+                    // Solid red when battery is charging
                     mBatteryLight.setColor(mBatteryLowARGB);
-                } else if (mLedPulseEnabled) {
-                    // Battery is low and not charging
+                } else {
+                    // Flash red when battery is low and not charging
                     mBatteryLight.setFlashing(mBatteryLowARGB, Light.LIGHT_FLASH_TIMED,
                             mBatteryLedOn, mBatteryLedOff);
-                } else {
-                    // "Pulse low battery light" is disabled, no lights.
-                    mBatteryLight.turnOff();
                 }
             } else if (status == BatteryManager.BATTERY_STATUS_CHARGING
                     || status == BatteryManager.BATTERY_STATUS_FULL) {
                 if (status == BatteryManager.BATTERY_STATUS_FULL || level >= 90) {
-                    // Battery is full or charging and nearly full
+                    // Solid green when full or charging and nearly full
                     mBatteryLight.setColor(mBatteryFullARGB);
                 } else {
-                    // Battery is charging and halfway full
+                    // Solid orange when charging and halfway full
                     mBatteryLight.setColor(mBatteryMediumARGB);
                 }
             } else {
@@ -799,8 +934,7 @@ public final class BatteryService extends SystemService {
     }
 
     private final class BatteryListener extends IBatteryPropertiesListener.Stub {
-        @Override
-        public void batteryPropertiesChanged(BatteryProperties props) {
+        @Override public void batteryPropertiesChanged(BatteryProperties props) {
             final long identity = Binder.clearCallingIdentity();
             try {
                 BatteryService.this.update(props);
@@ -811,18 +945,20 @@ public final class BatteryService extends SystemService {
     }
 
     private final class BinderService extends Binder {
-        @Override
-        protected void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
-            if (mContext.checkCallingOrSelfPermission(android.Manifest.permission.DUMP)
-                    != PackageManager.PERMISSION_GRANTED) {
+        @Override protected void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
+            if (!DumpUtils.checkDumpPermission(mContext, TAG, pw)) return;
 
-                pw.println("Permission Denial: can't dump Battery service from from pid="
-                        + Binder.getCallingPid()
-                        + ", uid=" + Binder.getCallingUid());
-                return;
+            if (args.length > 0 && "--proto".equals(args[0])) {
+                dumpProto(fd);
+            } else {
+                dumpInternal(fd, pw, args);
             }
+        }
 
-            dumpInternal(pw, args);
+        @Override public void onShellCommand(FileDescriptor in, FileDescriptor out,
+                FileDescriptor err, String[] args, ShellCallback callback,
+                ResultReceiver resultReceiver) {
+            (new Shell()).exec(this, in, out, err, args, callback, resultReceiver);
         }
     }
 
@@ -860,69 +996,6 @@ public final class BatteryService extends SystemService {
             synchronized (mLock) {
                 return mInvalidCharger;
             }
-        }
-    }
-    class SettingsObserver extends ContentObserver {
-        SettingsObserver(Handler handler) {
-            super(handler);
-        }
-
-        void observe() {
-            ContentResolver resolver = mContext.getContentResolver();
-
-            // Battery light enabled
-            resolver.registerContentObserver(Settings.System.getUriFor(
-                    Settings.System.BATTERY_LIGHT_ENABLED), false, this, UserHandle.USER_ALL);
-
-            // Low battery pulse
-            resolver.registerContentObserver(Settings.System.getUriFor(
-                    Settings.System.BATTERY_LIGHT_PULSE), false, this, UserHandle.USER_ALL);
-
-            // Light colors
-            if (mMultiColorLed) {
-                // Register observer if we have a multi color led
-                resolver.registerContentObserver(
-                        Settings.System.getUriFor(Settings.System.BATTERY_LIGHT_LOW_COLOR),
-                        false, this, UserHandle.USER_ALL);
-                resolver.registerContentObserver(
-                        Settings.System.getUriFor(Settings.System.BATTERY_LIGHT_MEDIUM_COLOR),
-                        false, this, UserHandle.USER_ALL);
-                resolver.registerContentObserver(
-                        Settings.System.getUriFor(Settings.System.BATTERY_LIGHT_FULL_COLOR),
-                        false, this, UserHandle.USER_ALL);
-            }
-
-            update();
-        }
-
-        @Override public void onChange(boolean selfChange) {
-            update();
-        }
-
-        public void update() {
-            ContentResolver resolver = mContext.getContentResolver();
-            Resources res = mContext.getResources();
-
-            // Battery light enabled
-            mLightEnabled = Settings.System.getInt(resolver,
-                    Settings.System.BATTERY_LIGHT_ENABLED, 1) != 0;
-
-            // Low battery pulse
-            mLedPulseEnabled = Settings.System.getInt(resolver,
-                        Settings.System.BATTERY_LIGHT_PULSE, 1) != 0;
-
-            // Light colors
-            mBatteryLowARGB = Settings.System.getInt(resolver,
-                    Settings.System.BATTERY_LIGHT_LOW_COLOR, res.getInteger(
-                    com.android.internal.R.integer.config_notificationsBatteryLowARGB));
-            mBatteryMediumARGB = Settings.System.getInt(resolver,
-                    Settings.System.BATTERY_LIGHT_MEDIUM_COLOR, res.getInteger(
-                    com.android.internal.R.integer.config_notificationsBatteryMediumARGB));
-            mBatteryFullARGB = Settings.System.getInt(resolver,
-                    Settings.System.BATTERY_LIGHT_FULL_COLOR, res.getInteger(
-                    com.android.internal.R.integer.config_notificationsBatteryFullARGB));
-
-            updateLedPulse();
         }
     }
 }

@@ -1,5 +1,4 @@
-/* //device/java/android/android/app/INotificationManager.aidl
-**
+/*
 ** Copyright 2009, The Android Open Source Project
 **
 ** Licensed under the Apache License, Version 2.0 (the "License");
@@ -29,34 +28,47 @@ import android.view.IWindow;
 
 /**
  * Interface implemented by the AccessibilityManagerService called by
- * the AccessibilityMasngers.
+ * the AccessibilityManagers.
  *
  * @hide
  */
 interface IAccessibilityManager {
 
-    int addClient(IAccessibilityManagerClient client, int userId);
+    oneway void interrupt(int userId);
 
-    boolean sendAccessibilityEvent(in AccessibilityEvent uiEvent, int userId);
+    oneway void sendAccessibilityEvent(in AccessibilityEvent uiEvent, int userId);
+
+    long addClient(IAccessibilityManagerClient client, int userId);
 
     List<AccessibilityServiceInfo> getInstalledAccessibilityServiceList(int userId);
 
     List<AccessibilityServiceInfo> getEnabledAccessibilityServiceList(int feedbackType, int userId);
 
-    void interrupt(int userId);
-
     int addAccessibilityInteractionConnection(IWindow windowToken,
-        in IAccessibilityInteractionConnection connection, int userId);
+            in IAccessibilityInteractionConnection connection, int userId);
 
     void removeAccessibilityInteractionConnection(IWindow windowToken);
 
+    void setPictureInPictureActionReplacingConnection(
+            in IAccessibilityInteractionConnection connection);
+
     void registerUiTestAutomationService(IBinder owner, IAccessibilityServiceClient client,
-        in AccessibilityServiceInfo info);
+        in AccessibilityServiceInfo info, int flags);
 
     void unregisterUiTestAutomationService(IAccessibilityServiceClient client);
 
     void temporaryEnableAccessibilityStateUntilKeyguardRemoved(in ComponentName service,
             boolean touchExplorationEnabled);
 
-    IBinder getWindowToken(int windowId);
+    IBinder getWindowToken(int windowId, int userId);
+
+    void notifyAccessibilityButtonClicked();
+
+    void notifyAccessibilityButtonVisibilityChanged(boolean available);
+
+    // Requires WRITE_SECURE_SETTINGS
+    void performAccessibilityShortcut();
+
+    // System process only
+    boolean sendFingerprintGesture(int gestureKeyCode);
 }

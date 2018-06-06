@@ -16,8 +16,10 @@
 
 package android.app.usage;
 
+import android.os.Bundle;
 import android.os.Parcel;
 import android.os.Parcelable;
+import android.util.ArrayMap;
 
 /**
  * Contains usage statistics for an app package for a specific
@@ -47,20 +49,6 @@ public final class UsageStats implements Parcelable {
     public long mLastTimeUsed;
 
     /**
-     * The last time the package was used via implicit, non-user initiated actions (service
-     * was bound, etc).
-     * {@hide}
-     */
-    public long mLastTimeSystemUsed;
-
-    /**
-     * Last time the package was used and the beginning of the idle countdown.
-     * This uses a different timebase that is about how much the device has been in use in general.
-     * {@hide}
-     */
-    public long mBeginIdleTime;
-
-    /**
      * {@hide}
      */
     public long mTotalTimeInForeground;
@@ -78,6 +66,11 @@ public final class UsageStats implements Parcelable {
     /**
      * {@hide}
      */
+    public ArrayMap<String, ArrayMap<String, Integer>> mChooserCounts;
+
+    /**
+     * {@hide}
+     */
     public UsageStats() {
     }
 
@@ -89,8 +82,18 @@ public final class UsageStats implements Parcelable {
         mTotalTimeInForeground = stats.mTotalTimeInForeground;
         mLaunchCount = stats.mLaunchCount;
         mLastEvent = stats.mLastEvent;
-        mBeginIdleTime = stats.mBeginIdleTime;
-        mLastTimeSystemUsed = stats.mLastTimeSystemUsed;
+        mChooserCounts = stats.mChooserCounts;
+    }
+
+    /**
+     * {@hide}
+     */
+    public UsageStats getObfuscatedForInstantApp() {
+        final UsageStats ret = new UsageStats(this);
+
+        ret.mPackageName = UsageEvents.INSTANT_APP_PACKAGE_NAME;
+
+        return ret;
     }
 
     public String getPackageName() {
@@ -127,25 +130,6 @@ public final class UsageStats implements Parcelable {
     }
 
     /**
-     * @hide
-     * Get the last time this package was used by the system (not the user). This can be different
-     * from {@link #getLastTimeUsed()} when the system binds to one of this package's services.
-     * See {@link System#currentTimeMillis()}.
-     */
-    public long getLastTimeSystemUsed() {
-        return mLastTimeSystemUsed;
-    }
-
-    /**
-     * @hide
-     * Get the last time this package was active, measured in milliseconds. This timestamp
-     * uses a timebase that represents how much the device was used and not wallclock time.
-     */
-    public long getBeginIdleTime() {
-        return mBeginIdleTime;
-    }
-
-    /**
      * Get the total time this package spent in the foreground, measured in milliseconds.
      */
     public long getTotalTimeInForeground() {
@@ -165,16 +149,38 @@ public final class UsageStats implements Parcelable {
                     mPackageName + "' with UsageStats for package '" + right.mPackageName + "'.");
         }
 
-        if (right.mEndTimeStamp > mEndTimeStamp) {
-            mLastEvent = right.mLastEvent;
-            mEndTimeStamp = right.mEndTimeStamp;
-            mLastTimeUsed = right.mLastTimeUsed;
-            mBeginIdleTime = right.mBeginIdleTime;
-            mLastTimeSystemUsed = right.mLastTimeSystemUsed;
+        // We use the mBeginTimeStamp due to a bug where UsageStats files can overlap with
+        // regards to their mEndTimeStamp.
+        if (right.mBeginTimeStamp > mBeginTimeStamp) {
+            // Even though incoming UsageStat begins after this one, its last time used fields
+            // may somehow be empty or chronologically preceding the older UsageStat.
+            mLastEvent = Math.max(mLastEvent, right.mLastEvent);
+            mLastTimeUsed = Math.max(mLastTimeUsed, right.mLastTimeUsed);
         }
         mBeginTimeStamp = Math.min(mBeginTimeStamp, right.mBeginTimeStamp);
+        mEndTimeStamp = Math.max(mEndTimeStamp, right.mEndTimeStamp);
         mTotalTimeInForeground += right.mTotalTimeInForeground;
         mLaunchCount += right.mLaunchCount;
+        if (mChooserCounts == null) {
+            mChooserCounts = right.mChooserCounts;
+        } else if (right.mChooserCounts != null) {
+            final int chooserCountsSize = right.mChooserCounts.size();
+            for (int i = 0; i < chooserCountsSize; i++) {
+                String action = right.mChooserCounts.keyAt(i);
+                ArrayMap<String, Integer> counts = right.mChooserCounts.valueAt(i);
+                if (!mChooserCounts.containsKey(action) || mChooserCounts.get(action) == null) {
+                    mChooserCounts.put(action, counts);
+                    continue;
+                }
+                final int annotationSize = counts.size();
+                for (int j = 0; j < annotationSize; j++) {
+                    String key = counts.keyAt(j);
+                    int rightValue = counts.valueAt(j);
+                    int leftValue = mChooserCounts.get(action).getOrDefault(key, 0);
+                    mChooserCounts.get(action).put(key, leftValue + rightValue);
+                }
+            }
+        }
     }
 
     @Override
@@ -191,8 +197,21 @@ public final class UsageStats implements Parcelable {
         dest.writeLong(mTotalTimeInForeground);
         dest.writeInt(mLaunchCount);
         dest.writeInt(mLastEvent);
-        dest.writeLong(mBeginIdleTime);
-        dest.writeLong(mLastTimeSystemUsed);
+        Bundle allCounts = new Bundle();
+        if (mChooserCounts != null) {
+            final int chooserCountSize = mChooserCounts.size();
+            for (int i = 0; i < chooserCountSize; i++) {
+                String action = mChooserCounts.keyAt(i);
+                ArrayMap<String, Integer> counts = mChooserCounts.valueAt(i);
+                Bundle currentCounts = new Bundle();
+                final int annotationSize = counts.size();
+                for (int j = 0; j < annotationSize; j++) {
+                    currentCounts.putInt(counts.keyAt(j), counts.valueAt(j));
+                }
+                allCounts.putBundle(action, currentCounts);
+            }
+        }
+        dest.writeBundle(allCounts);
     }
 
     public static final Creator<UsageStats> CREATOR = new Creator<UsageStats>() {
@@ -206,8 +225,25 @@ public final class UsageStats implements Parcelable {
             stats.mTotalTimeInForeground = in.readLong();
             stats.mLaunchCount = in.readInt();
             stats.mLastEvent = in.readInt();
-            stats.mBeginIdleTime = in.readLong();
-            stats.mLastTimeSystemUsed = in.readLong();
+            Bundle allCounts = in.readBundle();
+            if (allCounts != null) {
+                stats.mChooserCounts = new ArrayMap<>();
+                for (String action : allCounts.keySet()) {
+                    if (!stats.mChooserCounts.containsKey(action)) {
+                        ArrayMap<String, Integer> newCounts = new ArrayMap<>();
+                        stats.mChooserCounts.put(action, newCounts);
+                    }
+                    Bundle currentCounts = allCounts.getBundle(action);
+                    if (currentCounts != null) {
+                        for (String key : currentCounts.keySet()) {
+                            int value = currentCounts.getInt(key);
+                            if (value > 0) {
+                                stats.mChooserCounts.get(action).put(key, value);
+                            }
+                        }
+                    }
+                }
+            }
             return stats;
         }
 

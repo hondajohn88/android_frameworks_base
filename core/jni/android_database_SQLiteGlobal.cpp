@@ -17,7 +17,7 @@
 #define LOG_TAG "SQLiteGlobal"
 
 #include <jni.h>
-#include <JNIHelp.h>
+#include <nativehelper/JNIHelp.h>
 #include "core_jni_helpers.h"
 
 #include <sqlite3.h>
@@ -75,7 +75,7 @@ static jint nativeReleaseMemory(JNIEnv* env, jclass clazz) {
     return sqlite3_release_memory(SOFT_HEAP_LIMIT);
 }
 
-static JNINativeMethod sMethods[] =
+static const JNINativeMethod sMethods[] =
 {
     /* name, signature, funcPtr */
     { "nativeReleaseMemory", "()I", (void*)nativeReleaseMemory },

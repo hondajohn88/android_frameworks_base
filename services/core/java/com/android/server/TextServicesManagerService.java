@@ -20,16 +20,20 @@ import com.android.internal.annotations.GuardedBy;
 import com.android.internal.content.PackageMonitor;
 import com.android.internal.inputmethod.InputMethodUtils;
 import com.android.internal.textservice.ISpellCheckerService;
+import com.android.internal.textservice.ISpellCheckerServiceCallback;
 import com.android.internal.textservice.ISpellCheckerSession;
 import com.android.internal.textservice.ISpellCheckerSessionListener;
 import com.android.internal.textservice.ITextServicesManager;
 import com.android.internal.textservice.ITextServicesSessionListener;
+import com.android.internal.util.DumpUtils;
 
 import org.xmlpull.v1.XmlPullParserException;
 
-import android.app.ActivityManagerNative;
+import android.annotation.NonNull;
+import android.annotation.Nullable;
+import android.annotation.UserIdInt;
+import android.app.ActivityManager;
 import android.app.AppGlobals;
-import android.app.IUserSwitchObserver;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.ContentResolver;
@@ -41,12 +45,11 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.content.pm.ServiceInfo;
-import android.content.pm.UserInfo;
 import android.os.Binder;
 import android.os.Bundle;
 import android.os.IBinder;
-import android.os.IRemoteCallback;
 import android.os.Process;
+import android.os.RemoteCallbackList;
 import android.os.RemoteException;
 import android.os.UserHandle;
 import android.os.UserManager;
@@ -68,7 +71,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 public class TextServicesManagerService extends ITextServicesManager.Stub {
     private static final String TAG = TextServicesManagerService.class.getSimpleName();
@@ -77,16 +79,73 @@ public class TextServicesManagerService extends ITextServicesManager.Stub {
     private final Context mContext;
     private boolean mSystemReady;
     private final TextServicesMonitor mMonitor;
-    private final HashMap<String, SpellCheckerInfo> mSpellCheckerMap =
-            new HashMap<String, SpellCheckerInfo>();
-    private final ArrayList<SpellCheckerInfo> mSpellCheckerList = new ArrayList<SpellCheckerInfo>();
-    private final HashMap<String, SpellCheckerBindGroup> mSpellCheckerBindGroups =
-            new HashMap<String, SpellCheckerBindGroup>();
+    private final HashMap<String, SpellCheckerInfo> mSpellCheckerMap = new HashMap<>();
+    private final ArrayList<SpellCheckerInfo> mSpellCheckerList = new ArrayList<>();
+    private final HashMap<String, SpellCheckerBindGroup> mSpellCheckerBindGroups = new HashMap<>();
     private final TextServicesSettings mSettings;
+    @NonNull
+    private final UserManager mUserManager;
+    private final Object mLock = new Object();
 
-    public void systemRunning() {
-        if (!mSystemReady) {
-            mSystemReady = true;
+    public static final class Lifecycle extends SystemService {
+        private TextServicesManagerService mService;
+
+        public Lifecycle(Context context) {
+            super(context);
+            mService = new TextServicesManagerService(context);
+        }
+
+        @Override
+        public void onStart() {
+            publishBinderService(Context.TEXT_SERVICES_MANAGER_SERVICE, mService);
+        }
+
+        @Override
+        public void onSwitchUser(@UserIdInt int userHandle) {
+            // Called on the system server's main looper thread.
+            // TODO: Dispatch this to a worker thread as needed.
+            mService.onSwitchUser(userHandle);
+        }
+
+        @Override
+        public void onBootPhase(int phase) {
+            // Called on the system server's main looper thread.
+            // TODO: Dispatch this to a worker thread as needed.
+            if (phase == SystemService.PHASE_ACTIVITY_MANAGER_READY) {
+                mService.systemRunning();
+            }
+        }
+
+        @Override
+        public void onUnlockUser(@UserIdInt int userHandle) {
+            // Called on the system server's main looper thread.
+            // TODO: Dispatch this to a worker thread as needed.
+            mService.onUnlockUser(userHandle);
+        }
+    }
+
+    void systemRunning() {
+        synchronized (mLock) {
+            if (!mSystemReady) {
+                mSystemReady = true;
+                resetInternalState(mSettings.getCurrentUserId());
+            }
+        }
+    }
+
+    void onSwitchUser(@UserIdInt int userId) {
+        synchronized (mLock) {
+            resetInternalState(userId);
+        }
+    }
+
+    void onUnlockUser(@UserIdInt int userId) {
+        synchronized (mLock) {
+            final int currentUserId = mSettings.getCurrentUserId();
+            if (userId != currentUserId) {
+                return;
+            }
+            resetInternalState(currentUserId);
         }
     }
 
@@ -94,77 +153,53 @@ public class TextServicesManagerService extends ITextServicesManager.Stub {
         mSystemReady = false;
         mContext = context;
 
+        mUserManager = mContext.getSystemService(UserManager.class);
+
         final IntentFilter broadcastFilter = new IntentFilter();
         broadcastFilter.addAction(Intent.ACTION_USER_ADDED);
         broadcastFilter.addAction(Intent.ACTION_USER_REMOVED);
         mContext.registerReceiver(new TextServicesBroadcastReceiver(), broadcastFilter);
 
-        int userId = UserHandle.USER_OWNER;
+        int userId = UserHandle.USER_SYSTEM;
         try {
-            ActivityManagerNative.getDefault().registerUserSwitchObserver(
-                    new IUserSwitchObserver.Stub() {
-                        @Override
-                        public void onUserSwitching(int newUserId, IRemoteCallback reply) {
-                            synchronized(mSpellCheckerMap) {
-                                switchUserLocked(newUserId);
-                            }
-                            if (reply != null) {
-                                try {
-                                    reply.sendResult(null);
-                                } catch (RemoteException e) {
-                                }
-                            }
-                        }
-
-                        @Override
-                        public void onUserSwitchComplete(int newUserId) throws RemoteException {
-                        }
-
-                        @Override
-                        public void onForegroundProfileSwitch(int newProfileId) {
-                            // Ignore.
-                        }
-                    });
-            userId = ActivityManagerNative.getDefault().getCurrentUser().id;
+            userId = ActivityManager.getService().getCurrentUser().id;
         } catch (RemoteException e) {
             Slog.w(TAG, "Couldn't get current user ID; guessing it's 0", e);
         }
         mMonitor = new TextServicesMonitor();
         mMonitor.register(context, null, true);
-        mSettings = new TextServicesSettings(context.getContentResolver(), userId);
+        final boolean useCopyOnWriteSettings =
+                !mSystemReady || !mUserManager.isUserUnlockingOrUnlocked(userId);
+        mSettings = new TextServicesSettings(context.getContentResolver(), userId,
+                useCopyOnWriteSettings);
 
-        // "switchUserLocked" initializes the states for the foreground user
-        switchUserLocked(userId);
+        // "resetInternalState" initializes the states for the foreground user
+        resetInternalState(userId);
     }
 
-    private void switchUserLocked(int userId) {
-        mSettings.setCurrentUserId(userId);
+    private void resetInternalState(@UserIdInt int userId) {
+        final boolean useCopyOnWriteSettings =
+                !mSystemReady || !mUserManager.isUserUnlockingOrUnlocked(userId);
+        mSettings.switchCurrentUser(userId, useCopyOnWriteSettings);
         updateCurrentProfileIds();
         unbindServiceLocked();
         buildSpellCheckerMapLocked(mContext, mSpellCheckerList, mSpellCheckerMap, mSettings);
         SpellCheckerInfo sci = getCurrentSpellChecker(null);
         if (sci == null) {
-            sci = findAvailSpellCheckerLocked(null);
-            if (sci != null) {
-                // Set the current spell checker if there is one or more spell checkers
-                // available. In this case, "sci" is the first one in the available spell
-                // checkers.
-                setCurrentSpellCheckerLocked(sci.getId());
-            }
+            sci = findAvailSystemSpellCheckerLocked(null);
+            // Set the current spell checker if there is one or more system spell checkers
+            // available. In this case, "sci" is the first one in the available spell
+            // checkers.
+            setCurrentSpellCheckerLocked(sci);
         }
     }
 
     void updateCurrentProfileIds() {
-        List<UserInfo> profiles =
-                UserManager.get(mContext).getProfiles(mSettings.getCurrentUserId());
-        int[] currentProfileIds = new int[profiles.size()]; // profiles will not be null
-        for (int i = 0; i < currentProfileIds.length; i++) {
-            currentProfileIds[i] = profiles.get(i).id;
-        }
-        mSettings.setCurrentProfileIds(currentProfileIds);
+        mSettings.setCurrentProfileIds(
+                mUserManager.getProfileIdsWithDisabled(mSettings.getCurrentUserId()));
     }
 
-    private class TextServicesMonitor extends PackageMonitor {
+    private final class TextServicesMonitor extends PackageMonitor {
         private boolean isChangingPackagesOfCurrentUser() {
             final int userId = getChangingUserId();
             final boolean retval = userId == mSettings.getCurrentUserId();
@@ -179,30 +214,40 @@ public class TextServicesManagerService extends ITextServicesManager.Stub {
             if (!isChangingPackagesOfCurrentUser()) {
                 return;
             }
-            synchronized (mSpellCheckerMap) {
-                buildSpellCheckerMapLocked(
-                        mContext, mSpellCheckerList, mSpellCheckerMap, mSettings);
+            synchronized (mLock) {
                 // TODO: Update for each locale
                 SpellCheckerInfo sci = getCurrentSpellChecker(null);
-                // If no spell checker is enabled, just return. The user should explicitly
+                buildSpellCheckerMapLocked(
+                        mContext, mSpellCheckerList, mSpellCheckerMap, mSettings);
+                // If spell checker is disabled, just return. The user should explicitly
                 // enable the spell checker.
-                if (sci == null) return;
-                final String packageName = sci.getPackageName();
-                final int change = isPackageDisappearing(packageName);
-                if (// Package disappearing
-                        change == PACKAGE_PERMANENT_CHANGE || change == PACKAGE_TEMPORARY_CHANGE
-                        // Package modified
-                        || isPackageModified(packageName)) {
-                    sci = findAvailSpellCheckerLocked(packageName);
-                    if (sci != null) {
-                        setCurrentSpellCheckerLocked(sci.getId());
+                if (!isSpellCheckerEnabledLocked()) return;
+
+                if (sci == null) {
+                    sci = findAvailSystemSpellCheckerLocked(null);
+                    // Set the current spell checker if there is one or more system spell checkers
+                    // available. In this case, "sci" is the first one in the available spell
+                    // checkers.
+                    setCurrentSpellCheckerLocked(sci);
+                } else {
+                    final String packageName = sci.getPackageName();
+                    final int change = isPackageDisappearing(packageName);
+                    if (// Package disappearing
+                            change == PACKAGE_PERMANENT_CHANGE || change == PACKAGE_TEMPORARY_CHANGE
+                                    // Package modified
+                                    || isPackageModified(packageName)) {
+                        SpellCheckerInfo availSci = findAvailSystemSpellCheckerLocked(packageName);
+                        // Set the spell checker settings if different than before
+                        if (availSci != null && !availSci.getId().equals(sci.getId())) {
+                            setCurrentSpellCheckerLocked(availSci);
+                        }
                     }
                 }
             }
         }
     }
 
-    class TextServicesBroadcastReceiver extends BroadcastReceiver {
+    private final class TextServicesBroadcastReceiver extends BroadcastReceiver {
         @Override
         public void onReceive(Context context, Intent intent) {
             final String action = intent.getAction();
@@ -221,6 +266,9 @@ public class TextServicesManagerService extends ITextServicesManager.Stub {
         list.clear();
         map.clear();
         final PackageManager pm = context.getPackageManager();
+        // Note: We do not specify PackageManager.MATCH_ENCRYPTION_* flags here because the default
+        // behavior of PackageManager is exactly what we want.  It by default picks up appropriate
+        // services depending on the unlock state for the specified user.
         final List<ResolveInfo> services = pm.queryIntentServicesAsUser(
                 new Intent(SpellCheckerService.SERVICE_INTERFACE), PackageManager.GET_META_DATA,
                 settings.getCurrentUserId());
@@ -329,23 +377,31 @@ public class TextServicesManagerService extends ITextServicesManager.Stub {
 
     private void unbindServiceLocked() {
         for (SpellCheckerBindGroup scbg : mSpellCheckerBindGroups.values()) {
-            scbg.removeAll();
+            scbg.removeAllLocked();
         }
         mSpellCheckerBindGroups.clear();
     }
 
-    private SpellCheckerInfo findAvailSpellCheckerLocked(String prefPackage) {
-        final int spellCheckersCount = mSpellCheckerList.size();
+    private SpellCheckerInfo findAvailSystemSpellCheckerLocked(String prefPackage) {
+        // Filter the spell checker list to remove spell checker services that are not pre-installed
+        ArrayList<SpellCheckerInfo> spellCheckerList = new ArrayList<>();
+        for (SpellCheckerInfo sci : mSpellCheckerList) {
+            if ((sci.getServiceInfo().applicationInfo.flags & ApplicationInfo.FLAG_SYSTEM) != 0) {
+                spellCheckerList.add(sci);
+            }
+        }
+
+        final int spellCheckersCount = spellCheckerList.size();
         if (spellCheckersCount == 0) {
             Slog.w(TAG, "no available spell checker services found");
             return null;
         }
         if (prefPackage != null) {
             for (int i = 0; i < spellCheckersCount; ++i) {
-                final SpellCheckerInfo sci = mSpellCheckerList.get(i);
+                final SpellCheckerInfo sci = spellCheckerList.get(i);
                 if (prefPackage.equals(sci.getPackageName())) {
                     if (DBG) {
-                        Slog.d(TAG, "findAvailSpellCheckerLocked: " + sci.getPackageName());
+                        Slog.d(TAG, "findAvailSystemSpellCheckerLocked: " + sci.getPackageName());
                     }
                     return sci;
                 }
@@ -359,7 +415,7 @@ public class TextServicesManagerService extends ITextServicesManager.Stub {
         final ArrayList<Locale> suitableLocales =
                 InputMethodUtils.getSuitableLocalesForSpellChecker(systemLocal);
         if (DBG) {
-            Slog.w(TAG, "findAvailSpellCheckerLocked suitableLocales="
+            Slog.w(TAG, "findAvailSystemSpellCheckerLocked suitableLocales="
                     + Arrays.toString(suitableLocales.toArray(new Locale[suitableLocales.size()])));
         }
         final int localeCount = suitableLocales.size();
@@ -367,7 +423,7 @@ public class TextServicesManagerService extends ITextServicesManager.Stub {
             final Locale locale = suitableLocales.get(localeIndex);
             for (int spellCheckersIndex = 0; spellCheckersIndex < spellCheckersCount;
                     ++spellCheckersIndex) {
-                final SpellCheckerInfo info = mSpellCheckerList.get(spellCheckersIndex);
+                final SpellCheckerInfo info = spellCheckerList.get(spellCheckersIndex);
                 final int subtypeCount = info.getSubtypeCount();
                 for (int subtypeIndex = 0; subtypeIndex < subtypeCount; ++subtypeIndex) {
                     final SpellCheckerSubtype subtype = info.getSubtypeAt(subtypeIndex);
@@ -386,7 +442,7 @@ public class TextServicesManagerService extends ITextServicesManager.Stub {
         if (spellCheckersCount > 1) {
             Slog.w(TAG, "more than one spell checker service found, picking first");
         }
-        return mSpellCheckerList.get(0);
+        return spellCheckerList.get(0);
     }
 
     // TODO: Save SpellCheckerService by supported languages. Currently only one spell
@@ -401,7 +457,7 @@ public class TextServicesManagerService extends ITextServicesManager.Stub {
     }
 
     private SpellCheckerInfo getCurrentSpellCheckerWithoutVerification() {
-        synchronized (mSpellCheckerMap) {
+        synchronized (mLock) {
             final String curSpellCheckerId = mSettings.getSelectedSpellChecker();
             if (DBG) {
                 Slog.w(TAG, "getCurrentSpellChecker: " + curSpellCheckerId);
@@ -422,76 +478,75 @@ public class TextServicesManagerService extends ITextServicesManager.Stub {
         if (!calledFromValidUser()) {
             return null;
         }
-        synchronized (mSpellCheckerMap) {
-            final String subtypeHashCodeStr = mSettings.getSelectedSpellCheckerSubtype();
+        final int subtypeHashCode;
+        final SpellCheckerInfo sci;
+        final Locale systemLocale;
+        synchronized (mLock) {
+            subtypeHashCode =
+                    mSettings.getSelectedSpellCheckerSubtype(SpellCheckerSubtype.SUBTYPE_ID_NONE);
             if (DBG) {
-                Slog.w(TAG, "getCurrentSpellCheckerSubtype: " + subtypeHashCodeStr);
+                Slog.w(TAG, "getCurrentSpellCheckerSubtype: " + subtypeHashCode);
             }
-            final SpellCheckerInfo sci = getCurrentSpellChecker(null);
-            if (sci == null || sci.getSubtypeCount() == 0) {
-                if (DBG) {
-                    Slog.w(TAG, "Subtype not found.");
-                }
-                return null;
-            }
-            final int hashCode;
-            if (!TextUtils.isEmpty(subtypeHashCodeStr)) {
-                hashCode = Integer.valueOf(subtypeHashCodeStr);
-            } else {
-                hashCode = 0;
-            }
-            if (hashCode == 0 && !allowImplicitlySelectedSubtype) {
-                return null;
-            }
-            String candidateLocale = null;
-            if (hashCode == 0) {
-                // Spell checker language settings == "auto"
-                final InputMethodManager imm =
-                        (InputMethodManager)mContext.getSystemService(Context.INPUT_METHOD_SERVICE);
-                if (imm != null) {
-                    final InputMethodSubtype currentInputMethodSubtype =
-                            imm.getCurrentInputMethodSubtype();
-                    if (currentInputMethodSubtype != null) {
-                        final String localeString = currentInputMethodSubtype.getLocale();
-                        if (!TextUtils.isEmpty(localeString)) {
-                            // 1. Use keyboard locale if available in the spell checker
-                            candidateLocale = localeString;
-                        }
-                    }
-                }
-                if (candidateLocale == null) {
-                    // 2. Use System locale if available in the spell checker
-                    candidateLocale = mContext.getResources().getConfiguration().locale.toString();
-                }
-            }
-            SpellCheckerSubtype candidate = null;
-            for (int i = 0; i < sci.getSubtypeCount(); ++i) {
-                final SpellCheckerSubtype scs = sci.getSubtypeAt(i);
-                if (hashCode == 0) {
-                    final String scsLocale = scs.getLocale();
-                    if (candidateLocale.equals(scsLocale)) {
-                        return scs;
-                    } else if (candidate == null) {
-                        if (candidateLocale.length() >= 2 && scsLocale.length() >= 2
-                                && candidateLocale.startsWith(scsLocale)) {
-                            // Fall back to the applicable language
-                            candidate = scs;
-                        }
-                    }
-                } else if (scs.hashCode() == hashCode) {
-                    if (DBG) {
-                        Slog.w(TAG, "Return subtype " + scs.hashCode() + ", input= " + locale
-                                + ", " + scs.getLocale());
-                    }
-                    // 3. Use the user specified spell check language
-                    return scs;
-                }
-            }
-            // 4. Fall back to the applicable language and return it if not null
-            // 5. Simply just return it even if it's null which means we could find no suitable
-            // spell check languages
-            return candidate;
+            sci = getCurrentSpellChecker(null);
+            systemLocale = mContext.getResources().getConfiguration().locale;
         }
+        if (sci == null || sci.getSubtypeCount() == 0) {
+            if (DBG) {
+                Slog.w(TAG, "Subtype not found.");
+            }
+            return null;
+        }
+        if (subtypeHashCode == SpellCheckerSubtype.SUBTYPE_ID_NONE
+                && !allowImplicitlySelectedSubtype) {
+            return null;
+        }
+        String candidateLocale = null;
+        if (subtypeHashCode == 0) {
+            // Spell checker language settings == "auto"
+            final InputMethodManager imm = mContext.getSystemService(InputMethodManager.class);
+            if (imm != null) {
+                final InputMethodSubtype currentInputMethodSubtype =
+                        imm.getCurrentInputMethodSubtype();
+                if (currentInputMethodSubtype != null) {
+                    final String localeString = currentInputMethodSubtype.getLocale();
+                    if (!TextUtils.isEmpty(localeString)) {
+                        // 1. Use keyboard locale if available in the spell checker
+                        candidateLocale = localeString;
+                    }
+                }
+            }
+            if (candidateLocale == null) {
+                // 2. Use System locale if available in the spell checker
+                candidateLocale = systemLocale.toString();
+            }
+        }
+        SpellCheckerSubtype candidate = null;
+        for (int i = 0; i < sci.getSubtypeCount(); ++i) {
+            final SpellCheckerSubtype scs = sci.getSubtypeAt(i);
+            if (subtypeHashCode == 0) {
+                final String scsLocale = scs.getLocale();
+                if (candidateLocale.equals(scsLocale)) {
+                    return scs;
+                } else if (candidate == null) {
+                    if (candidateLocale.length() >= 2 && scsLocale.length() >= 2
+                            && candidateLocale.startsWith(scsLocale)) {
+                        // Fall back to the applicable language
+                        candidate = scs;
+                    }
+                }
+            } else if (scs.hashCode() == subtypeHashCode) {
+                if (DBG) {
+                    Slog.w(TAG, "Return subtype " + scs.hashCode() + ", input= " + locale
+                            + ", " + scs.getLocale());
+                }
+                // 3. Use the user specified spell check language
+                return scs;
+            }
+        }
+        // 4. Fall back to the applicable language and return it if not null
+        // 5. Simply just return it even if it's null which means we could find no suitable
+        // spell check languages
+        return candidate;
     }
 
     @Override
@@ -508,61 +563,31 @@ public class TextServicesManagerService extends ITextServicesManager.Stub {
             Slog.e(TAG, "getSpellCheckerService: Invalid input.");
             return;
         }
-        synchronized(mSpellCheckerMap) {
+        synchronized (mLock) {
             if (!mSpellCheckerMap.containsKey(sciId)) {
                 return;
             }
             final SpellCheckerInfo sci = mSpellCheckerMap.get(sciId);
+            SpellCheckerBindGroup bindGroup = mSpellCheckerBindGroups.get(sciId);
             final int uid = Binder.getCallingUid();
-            if (mSpellCheckerBindGroups.containsKey(sciId)) {
-                final SpellCheckerBindGroup bindGroup = mSpellCheckerBindGroups.get(sciId);
-                if (bindGroup != null) {
-                    final InternalDeathRecipient recipient =
-                            mSpellCheckerBindGroups.get(sciId).addListener(
-                                    tsListener, locale, scListener, uid, bundle);
-                    if (recipient == null) {
-                        if (DBG) {
-                            Slog.w(TAG, "Didn't create a death recipient.");
-                        }
-                        return;
-                    }
-                    if (bindGroup.mSpellChecker == null & bindGroup.mConnected) {
-                        Slog.e(TAG, "The state of the spell checker bind group is illegal.");
-                        bindGroup.removeAll();
-                    } else if (bindGroup.mSpellChecker != null) {
-                        if (DBG) {
-                            Slog.w(TAG, "Existing bind found. Return a spell checker session now. "
-                                    + "Listeners count = " + bindGroup.mListeners.size());
-                        }
-                        try {
-                            final ISpellCheckerSession session =
-                                    bindGroup.mSpellChecker.getISpellCheckerSession(
-                                            recipient.mScLocale, recipient.mScListener, bundle);
-                            if (session != null) {
-                                tsListener.onServiceConnected(session);
-                                return;
-                            } else {
-                                if (DBG) {
-                                    Slog.w(TAG, "Existing bind already expired. ");
-                                }
-                                bindGroup.removeAll();
-                            }
-                        } catch (RemoteException e) {
-                            Slog.e(TAG, "Exception in getting spell checker session: " + e);
-                            bindGroup.removeAll();
-                        }
-                    }
+            if (bindGroup == null) {
+                final long ident = Binder.clearCallingIdentity();
+                try {
+                    bindGroup = startSpellCheckerServiceInnerLocked(sci);
+                } finally {
+                    Binder.restoreCallingIdentity(ident);
+                }
+                if (bindGroup == null) {
+                    // startSpellCheckerServiceInnerLocked failed.
+                    return;
                 }
             }
-            final long ident = Binder.clearCallingIdentity();
-            try {
-                startSpellCheckerServiceInnerLocked(
-                        sci, locale, tsListener, scListener, uid, bundle);
-            } finally {
-                Binder.restoreCallingIdentity(ident);
-            }
+
+            // Start getISpellCheckerSession async IPC, or just queue the request until the spell
+            // checker service is bound.
+            bindGroup.getISpellCheckerSessionOrQueueLocked(
+                     new SessionRequest(uid, locale, tsListener, scListener, bundle));
         }
-        return;
     }
 
     @Override
@@ -570,33 +595,31 @@ public class TextServicesManagerService extends ITextServicesManager.Stub {
         if (!calledFromValidUser()) {
             return false;
         }
-        synchronized(mSpellCheckerMap) {
+        synchronized (mLock) {
             return isSpellCheckerEnabledLocked();
         }
     }
 
-    private void startSpellCheckerServiceInnerLocked(SpellCheckerInfo info, String locale,
-            ITextServicesSessionListener tsListener, ISpellCheckerSessionListener scListener,
-            int uid, Bundle bundle) {
+    @Nullable
+    private SpellCheckerBindGroup startSpellCheckerServiceInnerLocked(SpellCheckerInfo info) {
         if (DBG) {
             Slog.w(TAG, "Start spell checker session inner locked.");
         }
         final String sciId = info.getId();
-        final InternalServiceConnection connection = new InternalServiceConnection(
-                sciId, locale, bundle);
+        final InternalServiceConnection connection = new InternalServiceConnection(sciId);
         final Intent serviceIntent = new Intent(SpellCheckerService.SERVICE_INTERFACE);
         serviceIntent.setComponent(info.getComponent());
         if (DBG) {
             Slog.w(TAG, "bind service: " + info.getId());
         }
         if (!bindCurrentSpellCheckerService(serviceIntent, connection,
-                Context.BIND_AUTO_CREATE | Context.BIND_FOREGROUND_SERVICE_WHILE_AWAKE)) {
+                Context.BIND_AUTO_CREATE | Context.BIND_IMPORTANT_BACKGROUND)) {
             Slog.e(TAG, "Failed to get a spell checker service.");
-            return;
+            return null;
         }
-        final SpellCheckerBindGroup group = new SpellCheckerBindGroup(
-                connection, tsListener, locale, scListener, uid, bundle);
+        final SpellCheckerBindGroup group = new SpellCheckerBindGroup(connection);
         mSpellCheckerBindGroups.put(sciId, group);
+        return group;
     }
 
     @Override
@@ -622,9 +645,8 @@ public class TextServicesManagerService extends ITextServicesManager.Stub {
         if (DBG) {
             Slog.d(TAG, "FinishSpellCheckerService");
         }
-        synchronized(mSpellCheckerMap) {
-            final ArrayList<SpellCheckerBindGroup> removeList =
-                    new ArrayList<SpellCheckerBindGroup>();
+        synchronized (mLock) {
+            final ArrayList<SpellCheckerBindGroup> removeList = new ArrayList<>();
             for (SpellCheckerBindGroup group : mSpellCheckerBindGroups.values()) {
                 if (group == null) continue;
                 // Use removeList to avoid modifying mSpellCheckerBindGroups in this loop.
@@ -637,71 +659,14 @@ public class TextServicesManagerService extends ITextServicesManager.Stub {
         }
     }
 
-    @Override
-    public void setCurrentSpellChecker(String locale, String sciId) {
-        if (!calledFromValidUser()) {
-            return;
-        }
-        synchronized(mSpellCheckerMap) {
-            if (mContext.checkCallingOrSelfPermission(
-                    android.Manifest.permission.WRITE_SECURE_SETTINGS)
-                    != PackageManager.PERMISSION_GRANTED) {
-                throw new SecurityException(
-                        "Requires permission "
-                        + android.Manifest.permission.WRITE_SECURE_SETTINGS);
-            }
-            setCurrentSpellCheckerLocked(sciId);
-        }
-    }
-
-    @Override
-    public void setCurrentSpellCheckerSubtype(String locale, int hashCode) {
-        if (!calledFromValidUser()) {
-            return;
-        }
-        synchronized(mSpellCheckerMap) {
-            if (mContext.checkCallingOrSelfPermission(
-                    android.Manifest.permission.WRITE_SECURE_SETTINGS)
-                    != PackageManager.PERMISSION_GRANTED) {
-                throw new SecurityException(
-                        "Requires permission "
-                        + android.Manifest.permission.WRITE_SECURE_SETTINGS);
-            }
-            setCurrentSpellCheckerSubtypeLocked(hashCode);
-        }
-    }
-
-    @Override
-    public void setSpellCheckerEnabled(boolean enabled) {
-        if (!calledFromValidUser()) {
-            return;
-        }
-        synchronized(mSpellCheckerMap) {
-            if (mContext.checkCallingOrSelfPermission(
-                    android.Manifest.permission.WRITE_SECURE_SETTINGS)
-                    != PackageManager.PERMISSION_GRANTED) {
-                throw new SecurityException(
-                        "Requires permission "
-                        + android.Manifest.permission.WRITE_SECURE_SETTINGS);
-            }
-            setSpellCheckerEnabledLocked(enabled);
-        }
-    }
-
-    private void setCurrentSpellCheckerLocked(String sciId) {
+    private void setCurrentSpellCheckerLocked(@Nullable SpellCheckerInfo sci) {
+        final String sciId = (sci != null) ? sci.getId() : "";
         if (DBG) {
             Slog.w(TAG, "setCurrentSpellChecker: " + sciId);
-        }
-        if (TextUtils.isEmpty(sciId) || !mSpellCheckerMap.containsKey(sciId)) return;
-        final SpellCheckerInfo currentSci = getCurrentSpellChecker(null);
-        if (currentSci != null && currentSci.getId().equals(sciId)) {
-            // Do nothing if the current spell checker is same as new spell checker.
-            return;
         }
         final long ident = Binder.clearCallingIdentity();
         try {
             mSettings.putSelectedSpellChecker(sciId);
-            setCurrentSpellCheckerSubtypeLocked(0);
         } finally {
             Binder.restoreCallingIdentity(ident);
         }
@@ -727,18 +692,6 @@ public class TextServicesManagerService extends ITextServicesManager.Stub {
         }
     }
 
-    private void setSpellCheckerEnabledLocked(boolean enabled) {
-        if (DBG) {
-            Slog.w(TAG, "setSpellCheckerEnabled: " + enabled);
-        }
-        final long ident = Binder.clearCallingIdentity();
-        try {
-            mSettings.setSpellCheckerEnabled(enabled);
-        } finally {
-            Binder.restoreCallingIdentity(ident);
-        }
-    }
-
     private boolean isSpellCheckerEnabledLocked() {
         final long ident = Binder.clearCallingIdentity();
         try {
@@ -754,165 +707,144 @@ public class TextServicesManagerService extends ITextServicesManager.Stub {
 
     @Override
     protected void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
-        if (mContext.checkCallingOrSelfPermission(android.Manifest.permission.DUMP)
-                != PackageManager.PERMISSION_GRANTED) {
+        if (!DumpUtils.checkDumpPermission(mContext, TAG, pw)) return;
 
-            pw.println("Permission Denial: can't dump TextServicesManagerService from from pid="
-                    + Binder.getCallingPid()
-                    + ", uid=" + Binder.getCallingUid());
-            return;
-        }
-
-        synchronized(mSpellCheckerMap) {
+        synchronized (mLock) {
             pw.println("Current Text Services Manager state:");
-            pw.println("  Spell Checker Map:");
-            for (Map.Entry<String, SpellCheckerInfo> ent : mSpellCheckerMap.entrySet()) {
-                pw.print("    "); pw.print(ent.getKey()); pw.println(":");
-                SpellCheckerInfo info = ent.getValue();
-                pw.print("      "); pw.print("id="); pw.println(info.getId());
-                pw.print("      "); pw.print("comp=");
-                        pw.println(info.getComponent().toShortString());
-                int NS = info.getSubtypeCount();
-                for (int i=0; i<NS; i++) {
-                    SpellCheckerSubtype st = info.getSubtypeAt(i);
-                    pw.print("      "); pw.print("Subtype #"); pw.print(i); pw.println(":");
-                    pw.print("        "); pw.print("locale="); pw.println(st.getLocale());
-                    pw.print("        "); pw.print("extraValue=");
-                            pw.println(st.getExtraValue());
-                }
+            pw.println("  Spell Checkers:");
+            int spellCheckerIndex = 0;
+            for (final SpellCheckerInfo info : mSpellCheckerMap.values()) {
+                pw.println("  Spell Checker #" + spellCheckerIndex);
+                info.dump(pw, "    ");
+                ++spellCheckerIndex;
             }
             pw.println("");
             pw.println("  Spell Checker Bind Groups:");
-            for (Map.Entry<String, SpellCheckerBindGroup> ent
+            for (final Map.Entry<String, SpellCheckerBindGroup> ent
                     : mSpellCheckerBindGroups.entrySet()) {
-                SpellCheckerBindGroup grp = ent.getValue();
-                pw.print("    "); pw.print(ent.getKey()); pw.print(" ");
-                        pw.print(grp); pw.println(":");
-                pw.print("      "); pw.print("mInternalConnection=");
-                        pw.println(grp.mInternalConnection);
-                pw.print("      "); pw.print("mSpellChecker=");
-                        pw.println(grp.mSpellChecker);
-                pw.print("      "); pw.print("mBound="); pw.print(grp.mBound);
-                        pw.print(" mConnected="); pw.println(grp.mConnected);
-                int NL = grp.mListeners.size();
-                for (int i=0; i<NL; i++) {
-                    InternalDeathRecipient listener = grp.mListeners.get(i);
-                    pw.print("      "); pw.print("Listener #"); pw.print(i); pw.println(":");
-                    pw.print("        "); pw.print("mTsListener=");
-                            pw.println(listener.mTsListener);
-                    pw.print("        "); pw.print("mScListener=");
-                            pw.println(listener.mScListener);
-                    pw.print("        "); pw.print("mGroup=");
-                            pw.println(listener.mGroup);
-                    pw.print("        "); pw.print("mScLocale=");
-                            pw.print(listener.mScLocale);
-                            pw.print(" mUid="); pw.println(listener.mUid);
+                final SpellCheckerBindGroup grp = ent.getValue();
+                pw.println("    " + ent.getKey() + " " + grp + ":");
+                pw.println("      " + "mInternalConnection=" + grp.mInternalConnection);
+                pw.println("      " + "mSpellChecker=" + grp.mSpellChecker);
+                pw.println("      " + "mUnbindCalled=" + grp.mUnbindCalled);
+                pw.println("      " + "mConnected=" + grp.mConnected);
+                final int numPendingSessionRequests = grp.mPendingSessionRequests.size();
+                for (int i = 0; i < numPendingSessionRequests; i++) {
+                    final SessionRequest req = grp.mPendingSessionRequests.get(i);
+                    pw.println("      " + "Pending Request #" + i + ":");
+                    pw.println("        " + "mTsListener=" + req.mTsListener);
+                    pw.println("        " + "mScListener=" + req.mScListener);
+                    pw.println("        " + "mScLocale=" + req.mLocale + " mUid=" + req.mUserId);
+                }
+                final int numOnGoingSessionRequests = grp.mOnGoingSessionRequests.size();
+                for (int i = 0; i < numOnGoingSessionRequests; i++) {
+                    final SessionRequest req = grp.mOnGoingSessionRequests.get(i);
+                    pw.println("      " + "On going Request #" + i + ":");
+                    ++i;
+                    pw.println("        " + "mTsListener=" + req.mTsListener);
+                    pw.println("        " + "mScListener=" + req.mScListener);
+                    pw.println(
+                            "        " + "mScLocale=" + req.mLocale + " mUid=" + req.mUserId);
+                }
+                final int N = grp.mListeners.getRegisteredCallbackCount();
+                for (int i = 0; i < N; i++) {
+                    final ISpellCheckerSessionListener mScListener =
+                            grp.mListeners.getRegisteredCallbackItem(i);
+                    pw.println("      " + "Listener #" + i + ":");
+                    pw.println("        " + "mScListener=" + mScListener);
+                    pw.println("        " + "mGroup=" + grp);
                 }
             }
+            pw.println("");
+            pw.println("  mSettings:");
+            mSettings.dumpLocked(pw, "    ");
+        }
+    }
+
+    private static final class SessionRequest {
+        @UserIdInt
+        public final int mUserId;
+        @Nullable
+        public final String mLocale;
+        @NonNull
+        public final ITextServicesSessionListener mTsListener;
+        @NonNull
+        public final ISpellCheckerSessionListener mScListener;
+        @Nullable
+        public final Bundle mBundle;
+
+        SessionRequest(@UserIdInt final int userId, @Nullable String locale,
+                @NonNull ITextServicesSessionListener tsListener,
+                @NonNull ISpellCheckerSessionListener scListener, @Nullable Bundle bundle) {
+            mUserId = userId;
+            mLocale = locale;
+            mTsListener = tsListener;
+            mScListener = scListener;
+            mBundle = bundle;
         }
     }
 
     // SpellCheckerBindGroup contains active text service session listeners.
     // If there are no listeners anymore, the SpellCheckerBindGroup instance will be removed from
     // mSpellCheckerBindGroups
-    private class SpellCheckerBindGroup {
+    private final class SpellCheckerBindGroup {
         private final String TAG = SpellCheckerBindGroup.class.getSimpleName();
         private final InternalServiceConnection mInternalConnection;
-        private final CopyOnWriteArrayList<InternalDeathRecipient> mListeners =
-                new CopyOnWriteArrayList<InternalDeathRecipient>();
-        public boolean mBound;
-        public ISpellCheckerService mSpellChecker;
-        public boolean mConnected;
+        private final InternalDeathRecipients mListeners;
+        private boolean mUnbindCalled;
+        private ISpellCheckerService mSpellChecker;
+        private boolean mConnected;
+        private final ArrayList<SessionRequest> mPendingSessionRequests = new ArrayList<>();
+        private final ArrayList<SessionRequest> mOnGoingSessionRequests = new ArrayList<>();
 
-        public SpellCheckerBindGroup(InternalServiceConnection connection,
-                ITextServicesSessionListener listener, String locale,
-                ISpellCheckerSessionListener scListener, int uid, Bundle bundle) {
+        public SpellCheckerBindGroup(InternalServiceConnection connection) {
             mInternalConnection = connection;
-            mBound = true;
+            mListeners = new InternalDeathRecipients(this);
+        }
+
+        public void onServiceConnectedLocked(ISpellCheckerService spellChecker) {
+            if (DBG) {
+                Slog.d(TAG, "onServiceConnectedLocked");
+            }
+
+            if (mUnbindCalled) {
+                return;
+            }
+            mSpellChecker = spellChecker;
+            mConnected = true;
+            // Dispatch pending getISpellCheckerSession requests.
+            try {
+                final int size = mPendingSessionRequests.size();
+                for (int i = 0; i < size; ++i) {
+                    final SessionRequest request = mPendingSessionRequests.get(i);
+                    mSpellChecker.getISpellCheckerSession(
+                            request.mLocale, request.mScListener, request.mBundle,
+                            new ISpellCheckerServiceCallbackBinder(this, request));
+                    mOnGoingSessionRequests.add(request);
+                }
+                mPendingSessionRequests.clear();
+            } catch(RemoteException e) {
+                // The target spell checker service is not available.  Better to reset the state.
+                removeAllLocked();
+            }
+            cleanLocked();
+        }
+
+        public void onServiceDisconnectedLocked() {
+            if (DBG) {
+                Slog.d(TAG, "onServiceDisconnectedLocked");
+            }
+
+            mSpellChecker = null;
             mConnected = false;
-            addListener(listener, locale, scListener, uid, bundle);
-        }
-
-        public void onServiceConnected(ISpellCheckerService spellChecker) {
-            if (DBG) {
-                Slog.d(TAG, "onServiceConnected");
-            }
-
-            for (InternalDeathRecipient listener : mListeners) {
-                try {
-                    final ISpellCheckerSession session = spellChecker.getISpellCheckerSession(
-                            listener.mScLocale, listener.mScListener, listener.mBundle);
-                    synchronized(mSpellCheckerMap) {
-                        if (mListeners.contains(listener)) {
-                            listener.mTsListener.onServiceConnected(session);
-                        }
-                    }
-                } catch (RemoteException e) {
-                    Slog.e(TAG, "Exception in getting the spell checker session."
-                            + "Reconnect to the spellchecker. ", e);
-                    removeAll();
-                    return;
-                }
-            }
-            synchronized(mSpellCheckerMap) {
-                mSpellChecker = spellChecker;
-                mConnected = true;
-            }
-        }
-
-        public InternalDeathRecipient addListener(ITextServicesSessionListener tsListener,
-                String locale, ISpellCheckerSessionListener scListener, int uid, Bundle bundle) {
-            if (DBG) {
-                Slog.d(TAG, "addListener: " + locale);
-            }
-            InternalDeathRecipient recipient = null;
-            synchronized(mSpellCheckerMap) {
-                try {
-                    final int size = mListeners.size();
-                    for (int i = 0; i < size; ++i) {
-                        if (mListeners.get(i).hasSpellCheckerListener(scListener)) {
-                            // do not add the lister if the group already contains this.
-                            return null;
-                        }
-                    }
-                    recipient = new InternalDeathRecipient(
-                            this, tsListener, locale, scListener, uid, bundle);
-                    scListener.asBinder().linkToDeath(recipient, 0);
-                    mListeners.add(recipient);
-                } catch(RemoteException e) {
-                    // do nothing
-                }
-                cleanLocked();
-            }
-            return recipient;
         }
 
         public void removeListener(ISpellCheckerSessionListener listener) {
             if (DBG) {
                 Slog.w(TAG, "remove listener: " + listener.hashCode());
             }
-            synchronized(mSpellCheckerMap) {
-                final int size = mListeners.size();
-                final ArrayList<InternalDeathRecipient> removeList =
-                        new ArrayList<InternalDeathRecipient>();
-                for (int i = 0; i < size; ++i) {
-                    final InternalDeathRecipient tempRecipient = mListeners.get(i);
-                    if(tempRecipient.hasSpellCheckerListener(listener)) {
-                        if (DBG) {
-                            Slog.w(TAG, "found existing listener.");
-                        }
-                        removeList.add(tempRecipient);
-                    }
-                }
-                final int removeSize = removeList.size();
-                for (int i = 0; i < removeSize; ++i) {
-                    if (DBG) {
-                        Slog.w(TAG, "Remove " + removeList.get(i));
-                    }
-                    final InternalDeathRecipient idr = removeList.get(i);
-                    idr.mScListener.asBinder().unlinkToDeath(idr, 0);
-                    mListeners.remove(idr);
-                }
+            synchronized (mLock) {
+                mListeners.unregister(listener);
                 cleanLocked();
             }
         }
@@ -922,124 +854,240 @@ public class TextServicesManagerService extends ITextServicesManager.Stub {
             if (DBG) {
                 Slog.d(TAG, "cleanLocked");
             }
-            // If there are no more active listeners, clean up.  Only do this
-            // once.
-            if (mBound && mListeners.isEmpty()) {
-                mBound = false;
-                final String sciId = mInternalConnection.mSciId;
-                SpellCheckerBindGroup cur = mSpellCheckerBindGroups.get(sciId);
-                if (cur == this) {
-                    if (DBG) {
-                        Slog.d(TAG, "Remove bind group.");
-                    }
-                    mSpellCheckerBindGroups.remove(sciId);
-                }
-                mContext.unbindService(mInternalConnection);
+            if (mUnbindCalled) {
+                return;
             }
+            // If there are no more active listeners, clean up.  Only do this once.
+            if (mListeners.getRegisteredCallbackCount() > 0) {
+                return;
+            }
+            if (!mPendingSessionRequests.isEmpty()) {
+                return;
+            }
+            if (!mOnGoingSessionRequests.isEmpty()) {
+                return;
+            }
+            final String sciId = mInternalConnection.mSciId;
+            final SpellCheckerBindGroup cur = mSpellCheckerBindGroups.get(sciId);
+            if (cur == this) {
+                if (DBG) {
+                    Slog.d(TAG, "Remove bind group.");
+                }
+                mSpellCheckerBindGroups.remove(sciId);
+            }
+            mContext.unbindService(mInternalConnection);
+            mUnbindCalled = true;
         }
 
-        public void removeAll() {
+        public void removeAllLocked() {
             Slog.e(TAG, "Remove the spell checker bind unexpectedly.");
-            synchronized(mSpellCheckerMap) {
-                final int size = mListeners.size();
-                for (int i = 0; i < size; ++i) {
-                    final InternalDeathRecipient idr = mListeners.get(i);
-                    idr.mScListener.asBinder().unlinkToDeath(idr, 0);
+            final int size = mListeners.getRegisteredCallbackCount();
+            for (int i = size - 1; i >= 0; --i) {
+                mListeners.unregister(mListeners.getRegisteredCallbackItem(i));
+            }
+            mPendingSessionRequests.clear();
+            mOnGoingSessionRequests.clear();
+            cleanLocked();
+        }
+
+        public void getISpellCheckerSessionOrQueueLocked(@NonNull SessionRequest request) {
+            if (mUnbindCalled) {
+                return;
+            }
+            if (!mConnected) {
+                mPendingSessionRequests.add(request);
+                return;
+            }
+            try {
+                mSpellChecker.getISpellCheckerSession(
+                        request.mLocale, request.mScListener, request.mBundle,
+                        new ISpellCheckerServiceCallbackBinder(this, request));
+                mOnGoingSessionRequests.add(request);
+            } catch(RemoteException e) {
+                // The target spell checker service is not available.  Better to reset the state.
+                removeAllLocked();
+            }
+            cleanLocked();
+        }
+
+        void onSessionCreated(@Nullable final ISpellCheckerSession newSession,
+                @NonNull final SessionRequest request) {
+            synchronized (mLock) {
+                if (mUnbindCalled) {
+                    return;
                 }
-                mListeners.clear();
+                if (mOnGoingSessionRequests.remove(request)) {
+                    try {
+                        request.mTsListener.onServiceConnected(newSession);
+                        mListeners.register(request.mScListener);
+                    } catch (RemoteException e) {
+                        // Technically this can happen if the spell checker client app is already
+                        // dead.  We can just forget about this request; the request is already
+                        // removed from mOnGoingSessionRequests and the death recipient listener is
+                        // not yet added to mListeners. There is nothing to release further.
+                    }
+                }
                 cleanLocked();
             }
         }
     }
 
-    private class InternalServiceConnection implements ServiceConnection {
+    private final class InternalServiceConnection implements ServiceConnection {
         private final String mSciId;
-        private final String mLocale;
-        private final Bundle mBundle;
-        public InternalServiceConnection(
-                String id, String locale, Bundle bundle) {
+        public InternalServiceConnection(String id) {
             mSciId = id;
-            mLocale = locale;
-            mBundle = bundle;
         }
 
         @Override
         public void onServiceConnected(ComponentName name, IBinder service) {
-            synchronized(mSpellCheckerMap) {
+            synchronized (mLock) {
                 onServiceConnectedInnerLocked(name, service);
             }
         }
 
         private void onServiceConnectedInnerLocked(ComponentName name, IBinder service) {
             if (DBG) {
-                Slog.w(TAG, "onServiceConnected: " + name);
+                Slog.w(TAG, "onServiceConnectedInnerLocked: " + name);
             }
             final ISpellCheckerService spellChecker =
                     ISpellCheckerService.Stub.asInterface(service);
             final SpellCheckerBindGroup group = mSpellCheckerBindGroups.get(mSciId);
             if (group != null && this == group.mInternalConnection) {
-                group.onServiceConnected(spellChecker);
+                group.onServiceConnectedLocked(spellChecker);
             }
         }
 
         @Override
         public void onServiceDisconnected(ComponentName name) {
-            synchronized(mSpellCheckerMap) {
-                final SpellCheckerBindGroup group = mSpellCheckerBindGroups.get(mSciId);
-                if (group != null && this == group.mInternalConnection) {
-                    mSpellCheckerBindGroups.remove(mSciId);
-                }
+            synchronized (mLock) {
+                onServiceDisconnectedInnerLocked(name);
+            }
+        }
+
+        private void onServiceDisconnectedInnerLocked(ComponentName name) {
+            if (DBG) {
+                Slog.w(TAG, "onServiceDisconnectedInnerLocked: " + name);
+            }
+            final SpellCheckerBindGroup group = mSpellCheckerBindGroups.get(mSciId);
+            if (group != null && this == group.mInternalConnection) {
+                group.onServiceDisconnectedLocked();
             }
         }
     }
 
-    private class InternalDeathRecipient implements IBinder.DeathRecipient {
-        public final ITextServicesSessionListener mTsListener;
-        public final ISpellCheckerSessionListener mScListener;
-        public final String mScLocale;
+    private static final class InternalDeathRecipients extends
+            RemoteCallbackList<ISpellCheckerSessionListener> {
         private final SpellCheckerBindGroup mGroup;
-        public final int mUid;
-        public final Bundle mBundle;
-        public InternalDeathRecipient(SpellCheckerBindGroup group,
-                ITextServicesSessionListener tsListener, String scLocale,
-                ISpellCheckerSessionListener scListener, int uid, Bundle bundle) {
-            mTsListener = tsListener;
-            mScListener = scListener;
-            mScLocale = scLocale;
-            mGroup = group;
-            mUid = uid;
-            mBundle = bundle;
-        }
 
-        public boolean hasSpellCheckerListener(ISpellCheckerSessionListener listener) {
-            return listener.asBinder().equals(mScListener.asBinder());
+        public InternalDeathRecipients(SpellCheckerBindGroup group) {
+            mGroup = group;
         }
 
         @Override
-        public void binderDied() {
-            mGroup.removeListener(mScListener);
+        public void onCallbackDied(ISpellCheckerSessionListener listener) {
+            mGroup.removeListener(listener);
         }
     }
 
-    private static class TextServicesSettings {
+    private static final class ISpellCheckerServiceCallbackBinder
+            extends ISpellCheckerServiceCallback.Stub {
+        @NonNull
+        private final SpellCheckerBindGroup mBindGroup;
+        @NonNull
+        private final SessionRequest mRequest;
+
+        ISpellCheckerServiceCallbackBinder(@NonNull final SpellCheckerBindGroup bindGroup,
+                @NonNull final SessionRequest request) {
+            mBindGroup = bindGroup;
+            mRequest = request;
+        }
+
+        @Override
+        public void onSessionCreated(@Nullable ISpellCheckerSession newSession) {
+            mBindGroup.onSessionCreated(newSession, mRequest);
+        }
+    }
+
+    private static final class TextServicesSettings {
         private final ContentResolver mResolver;
+        @UserIdInt
         private int mCurrentUserId;
         @GuardedBy("mLock")
         private int[] mCurrentProfileIds = new int[0];
         private Object mLock = new Object();
 
-        public TextServicesSettings(ContentResolver resolver, int userId) {
+        /**
+         * On-memory data store to emulate when {@link #mCopyOnWrite} is {@code true}.
+         */
+        private final HashMap<String, String> mCopyOnWriteDataStore = new HashMap<>();
+        private boolean mCopyOnWrite = false;
+
+        public TextServicesSettings(ContentResolver resolver, @UserIdInt int userId,
+                boolean copyOnWrite) {
             mResolver = resolver;
-            mCurrentUserId = userId;
+            switchCurrentUser(userId, copyOnWrite);
         }
 
-        public void setCurrentUserId(int userId) {
+        /**
+         * Must be called when the current user is changed.
+         *
+         * @param userId The user ID.
+         * @param copyOnWrite If {@code true}, for each settings key
+         * (e.g. {@link Settings.Secure#SELECTED_SPELL_CHECKER}) we use the actual settings on the
+         * {@link Settings.Secure} until we do the first write operation.
+         */
+        public void switchCurrentUser(@UserIdInt int userId, boolean copyOnWrite) {
             if (DBG) {
                 Slog.d(TAG, "--- Swtich the current user from " + mCurrentUserId + " to "
                         + userId + ", new ime = " + getSelectedSpellChecker());
             }
+            if (mCurrentUserId != userId || mCopyOnWrite != copyOnWrite) {
+                mCopyOnWriteDataStore.clear();
+                // TODO: mCurrentProfileIds should be cleared here.
+            }
             // TSMS settings are kept per user, so keep track of current user
             mCurrentUserId = userId;
+            mCopyOnWrite = copyOnWrite;
+            // TODO: mCurrentProfileIds should be updated here.
+        }
+
+        private void putString(final String key, final String str) {
+            if (mCopyOnWrite) {
+                mCopyOnWriteDataStore.put(key, str);
+            } else {
+                Settings.Secure.putStringForUser(mResolver, key, str, mCurrentUserId);
+            }
+        }
+
+        @Nullable
+        private String getString(@NonNull final String key, @Nullable final String defaultValue) {
+            final String result;
+            if (mCopyOnWrite && mCopyOnWriteDataStore.containsKey(key)) {
+                result = mCopyOnWriteDataStore.get(key);
+            } else {
+                result = Settings.Secure.getStringForUser(mResolver, key, mCurrentUserId);
+            }
+            return result != null ? result : defaultValue;
+        }
+
+        private void putInt(final String key, final int value) {
+            if (mCopyOnWrite) {
+                mCopyOnWriteDataStore.put(key, String.valueOf(value));
+            } else {
+                Settings.Secure.putIntForUser(mResolver, key, value, mCurrentUserId);
+            }
+        }
+
+        private int getInt(final String key, final int defaultValue) {
+            if (mCopyOnWrite && mCopyOnWriteDataStore.containsKey(key)) {
+                final String result = mCopyOnWriteDataStore.get(key);
+                return result != null ? Integer.parseInt(result) : 0;
+            }
+            return Settings.Secure.getIntForUser(mResolver, key, defaultValue, mCurrentUserId);
+        }
+
+        private boolean getBoolean(final String key, final boolean defaultValue) {
+            return getInt(key, defaultValue ? 1 : 0) == 1;
         }
 
         public void setCurrentProfileIds(int[] currentProfileIds) {
@@ -1048,7 +1096,7 @@ public class TextServicesManagerService extends ITextServicesManager.Stub {
             }
         }
 
-        public boolean isCurrentProfile(int userId) {
+        public boolean isCurrentProfile(@UserIdInt int userId) {
             synchronized (mLock) {
                 if (userId == mCurrentUserId) return true;
                 for (int i = 0; i < mCurrentProfileIds.length; i++) {
@@ -1058,39 +1106,36 @@ public class TextServicesManagerService extends ITextServicesManager.Stub {
             }
         }
 
+        @UserIdInt
         public int getCurrentUserId() {
             return mCurrentUserId;
         }
 
-        public void putSelectedSpellChecker(String sciId) {
-            Settings.Secure.putStringForUser(mResolver,
-                    Settings.Secure.SELECTED_SPELL_CHECKER, sciId, mCurrentUserId);
+        public void putSelectedSpellChecker(@Nullable String sciId) {
+            putString(Settings.Secure.SELECTED_SPELL_CHECKER, sciId);
         }
 
         public void putSelectedSpellCheckerSubtype(int hashCode) {
-            Settings.Secure.putStringForUser(mResolver,
-                    Settings.Secure.SELECTED_SPELL_CHECKER_SUBTYPE, String.valueOf(hashCode),
-                    mCurrentUserId);
+            putInt(Settings.Secure.SELECTED_SPELL_CHECKER_SUBTYPE, hashCode);
         }
 
-        public void setSpellCheckerEnabled(boolean enabled) {
-            Settings.Secure.putIntForUser(mResolver,
-                    Settings.Secure.SPELL_CHECKER_ENABLED, enabled ? 1 : 0, mCurrentUserId);
-        }
-
+        @NonNull
         public String getSelectedSpellChecker() {
-            return Settings.Secure.getStringForUser(mResolver,
-                    Settings.Secure.SELECTED_SPELL_CHECKER, mCurrentUserId);
+            return getString(Settings.Secure.SELECTED_SPELL_CHECKER, "");
         }
 
-        public String getSelectedSpellCheckerSubtype() {
-            return Settings.Secure.getStringForUser(mResolver,
-                    Settings.Secure.SELECTED_SPELL_CHECKER_SUBTYPE, mCurrentUserId);
+        public int getSelectedSpellCheckerSubtype(final int defaultValue) {
+            return getInt(Settings.Secure.SELECTED_SPELL_CHECKER_SUBTYPE, defaultValue);
         }
 
         public boolean isSpellCheckerEnabled() {
-            return Settings.Secure.getIntForUser(mResolver,
-                    Settings.Secure.SPELL_CHECKER_ENABLED, 1, mCurrentUserId) == 1;
+            return getBoolean(Settings.Secure.SPELL_CHECKER_ENABLED, true);
+        }
+
+        public void dumpLocked(final PrintWriter pw, final String prefix) {
+            pw.println(prefix + "mCurrentUserId=" + mCurrentUserId);
+            pw.println(prefix + "mCurrentProfileIds=" + Arrays.toString(mCurrentProfileIds));
+            pw.println(prefix + "mCopyOnWrite=" + mCopyOnWrite);
         }
     }
 

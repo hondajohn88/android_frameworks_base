@@ -30,12 +30,18 @@ import android.text.TextUtils;
 import android.util.Log;
 
 import com.android.internal.logging.MetricsLogger;
-import com.android.systemui.qs.QSTile;
+import com.android.internal.logging.nano.MetricsProto.MetricsEvent;
+import com.android.systemui.Dependency;
+import com.android.systemui.plugins.ActivityStarter;
+import com.android.systemui.qs.QSHost;
+import com.android.systemui.plugins.qs.QSTile;
+import com.android.systemui.plugins.qs.QSTile.State;
+import com.android.systemui.qs.tileimpl.QSTileImpl;
 
 import java.util.Arrays;
 import java.util.Objects;
 
-public class IntentTile extends QSTile<QSTile.State> {
+public class IntentTile extends QSTileImpl<State> {
     public static final String PREFIX = "intent(";
 
     private PendingIntent mOnClick;
@@ -47,7 +53,7 @@ public class IntentTile extends QSTile<QSTile.State> {
 
     private Intent mLastIntent;
 
-    private IntentTile(Host host, String action) {
+    private IntentTile(QSHost host, String action) {
         super(host);
         mContext.registerReceiver(mReceiver, new IntentFilter(action));
     }
@@ -58,7 +64,7 @@ public class IntentTile extends QSTile<QSTile.State> {
         mContext.unregisterReceiver(mReceiver);
     }
 
-    public static QSTile<?> create(Host host, String spec) {
+    public static QSTile create(QSHost host, String spec) {
         if (spec == null || !spec.startsWith(PREFIX) || !spec.endsWith(")")) {
             throw new IllegalArgumentException("Bad intent tile spec: " + spec);
         }
@@ -70,11 +76,11 @@ public class IntentTile extends QSTile<QSTile.State> {
     }
 
     @Override
-    public void setListening(boolean listening) {
+    public void handleSetListening(boolean listening) {
     }
 
     @Override
-    protected State newTileState() {
+    public State newTileState() {
         return new State();
     }
 
@@ -86,8 +92,12 @@ public class IntentTile extends QSTile<QSTile.State> {
 
     @Override
     protected void handleClick() {
-        MetricsLogger.action(mContext, getMetricsCategory(), mIntentPackage);
         sendIntent("click", mOnClick, mOnClickUri);
+    }
+
+    @Override
+    public Intent getLongClickIntent() {
+        return null;
     }
 
     @Override
@@ -99,7 +109,7 @@ public class IntentTile extends QSTile<QSTile.State> {
         try {
             if (pi != null) {
                 if (pi.isActivity()) {
-                    getHost().startActivityDismissingKeyguard(pi);
+                    Dependency.get(ActivityStarter.class).postStartActivityDismissingKeyguard(pi);
                 } else {
                     pi.send();
                 }
@@ -110,6 +120,11 @@ public class IntentTile extends QSTile<QSTile.State> {
         } catch (Throwable t) {
             Log.w(TAG, "Error sending " + type + " intent", t);
         }
+    }
+
+    @Override
+    public CharSequence getTileLabel() {
+        return getState().label;
     }
 
     @Override
@@ -124,7 +139,6 @@ public class IntentTile extends QSTile<QSTile.State> {
         }
         // Save the last one in case we need it later.
         mLastIntent = intent;
-        state.visible = intent.getBooleanExtra("visible", true);
         state.contentDescription = intent.getStringExtra("contentDescription");
         state.label = intent.getStringExtra("label");
         state.icon = null;
@@ -156,7 +170,7 @@ public class IntentTile extends QSTile<QSTile.State> {
 
     @Override
     public int getMetricsCategory() {
-        return MetricsLogger.QS_INTENT;
+        return MetricsEvent.QS_INTENT;
     }
 
     private final BroadcastReceiver mReceiver = new BroadcastReceiver() {

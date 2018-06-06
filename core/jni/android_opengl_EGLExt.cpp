@@ -21,7 +21,7 @@
 #pragma GCC diagnostic ignored "-Wunused-function"
 
 #include "jni.h"
-#include "JNIHelp.h"
+#include <nativehelper/JNIHelp.h>
 #include <android_runtime/AndroidRuntime.h>
 #include <android_runtime/android_view_Surface.h>
 #include <android_runtime/android_graphics_SurfaceTexture.h>
@@ -149,7 +149,7 @@ android_eglPresentationTimeANDROID
 
 static const char *classPathName = "android/opengl/EGLExt";
 
-static JNINativeMethod methods[] = {
+static const JNINativeMethod methods[] = {
 {"_nativeClassInit", "()V", (void*)nativeClassInit },
 {"eglPresentationTimeANDROID", "(Landroid/opengl/EGLDisplay;Landroid/opengl/EGLSurface;J)Z", (void *) android_eglPresentationTimeANDROID },
 };

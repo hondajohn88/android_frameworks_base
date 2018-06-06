@@ -21,6 +21,7 @@ import android.net.NetworkPolicy;
 import android.net.NetworkQuotaInfo;
 import android.net.NetworkState;
 import android.net.NetworkTemplate;
+import android.telephony.SubscriptionPlan;
 
 /**
  * Interface that creates and modifies network policy rules.
@@ -52,10 +53,25 @@ interface INetworkPolicyManager {
     void setRestrictBackground(boolean restrictBackground);
     boolean getRestrictBackground();
 
+    /** Callback used to change internal state on tethering */
+    void onTetheringChanged(String iface, boolean tethering);
+
+    /** Gets the restrict background status based on the caller's UID:
+        1 - disabled
+        2 - whitelisted
+        3 - enabled
+    */
+    int getRestrictBackgroundByCaller();
+
     void setDeviceIdleMode(boolean enabled);
+    void setWifiMeteredOverride(String networkId, int meteredOverride);
 
     NetworkQuotaInfo getNetworkQuotaInfo(in NetworkState state);
-    boolean isNetworkMetered(in NetworkState state);
+
+    SubscriptionPlan[] getSubscriptionPlans(int subId, String callingPackage);
+    void setSubscriptionPlans(int subId, in SubscriptionPlan[] plans, String callingPackage);
 
     void factoryReset(String subscriber);
+
+    boolean isUidNetworkingBlocked(int uid, boolean meteredNetwork);
 }

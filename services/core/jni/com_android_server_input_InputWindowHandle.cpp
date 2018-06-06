@@ -16,7 +16,7 @@
 
 #define LOG_TAG "InputWindowHandle"
 
-#include "JNIHelp.h"
+#include <nativehelper/JNIHelp.h>
 #include "jni.h"
 #include <android_runtime/AndroidRuntime.h>
 #include <utils/threads.h>
@@ -210,7 +210,7 @@ static void android_server_InputWindowHandle_nativeDispose(JNIEnv* env, jobject 
 }
 
 
-static JNINativeMethod gInputWindowHandleMethods[] = {
+static const JNINativeMethod gInputWindowHandleMethods[] = {
     /* name, signature, funcPtr */
     { "nativeDispose", "()V",
             (void*) android_server_InputWindowHandle_nativeDispose },
@@ -218,11 +218,11 @@ static JNINativeMethod gInputWindowHandleMethods[] = {
 
 #define FIND_CLASS(var, className) \
         var = env->FindClass(className); \
-        LOG_FATAL_IF(! var, "Unable to find class " className);
+        LOG_FATAL_IF(! (var), "Unable to find class " className);
 
 #define GET_FIELD_ID(var, clazz, fieldName, fieldDescriptor) \
         var = env->GetFieldID(clazz, fieldName, fieldDescriptor); \
-        LOG_FATAL_IF(! var, "Unable to find field " fieldName);
+        LOG_FATAL_IF(! (var), "Unable to find field " fieldName);
 
 int register_android_server_InputWindowHandle(JNIEnv* env) {
     int res = jniRegisterNativeMethods(env, "com/android/server/input/InputWindowHandle",

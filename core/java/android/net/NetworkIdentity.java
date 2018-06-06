@@ -24,8 +24,10 @@ import android.content.Context;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.os.Build;
+import android.service.NetworkIdentityProto;
 import android.telephony.TelephonyManager;
 import android.util.Slog;
+import android.util.proto.ProtoOutputStream;
 
 import java.util.Objects;
 
@@ -55,19 +57,22 @@ public class NetworkIdentity implements Comparable<NetworkIdentity> {
     final String mSubscriberId;
     final String mNetworkId;
     final boolean mRoaming;
+    final boolean mMetered;
 
     public NetworkIdentity(
-            int type, int subType, String subscriberId, String networkId, boolean roaming) {
+            int type, int subType, String subscriberId, String networkId, boolean roaming,
+            boolean metered) {
         mType = type;
         mSubType = COMBINE_SUBTYPE_ENABLED ? SUBTYPE_COMBINED : subType;
         mSubscriberId = subscriberId;
         mNetworkId = networkId;
         mRoaming = roaming;
+        mMetered = metered;
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(mType, mSubType, mSubscriberId, mNetworkId, mRoaming);
+        return Objects.hash(mType, mSubType, mSubscriberId, mNetworkId, mRoaming, mMetered);
     }
 
     @Override
@@ -76,7 +81,8 @@ public class NetworkIdentity implements Comparable<NetworkIdentity> {
             final NetworkIdentity ident = (NetworkIdentity) obj;
             return mType == ident.mType && mSubType == ident.mSubType && mRoaming == ident.mRoaming
                     && Objects.equals(mSubscriberId, ident.mSubscriberId)
-                    && Objects.equals(mNetworkId, ident.mNetworkId);
+                    && Objects.equals(mNetworkId, ident.mNetworkId)
+                    && mMetered == ident.mMetered;
         }
         return false;
     }
@@ -102,7 +108,25 @@ public class NetworkIdentity implements Comparable<NetworkIdentity> {
         if (mRoaming) {
             builder.append(", ROAMING");
         }
+        builder.append(", metered=").append(mMetered);
         return builder.append("}").toString();
+    }
+
+    public void writeToProto(ProtoOutputStream proto, long tag) {
+        final long start = proto.start(tag);
+
+        proto.write(NetworkIdentityProto.TYPE, mType);
+
+        // Not dumping mSubType, subtypes are no longer supported.
+
+        if (mSubscriberId != null) {
+            proto.write(NetworkIdentityProto.SUBSCRIBER_ID, scrubSubscriberId(mSubscriberId));
+        }
+        proto.write(NetworkIdentityProto.NETWORK_ID, mNetworkId);
+        proto.write(NetworkIdentityProto.ROAMING, mRoaming);
+        proto.write(NetworkIdentityProto.METERED, mMetered);
+
+        proto.end(start);
     }
 
     public int getType() {
@@ -125,11 +149,15 @@ public class NetworkIdentity implements Comparable<NetworkIdentity> {
         return mRoaming;
     }
 
+    public boolean getMetered() {
+        return mMetered;
+    }
+
     /**
      * Scrub given IMSI on production builds.
      */
     public static String scrubSubscriberId(String subscriberId) {
-        if ("eng".equals(Build.TYPE)) {
+        if (Build.IS_ENG) {
             return subscriberId;
         } else if (subscriberId != null) {
             // TODO: parse this as MCC+MNC instead of hard-coding
@@ -162,10 +190,16 @@ public class NetworkIdentity implements Comparable<NetworkIdentity> {
         String subscriberId = null;
         String networkId = null;
         boolean roaming = false;
+        boolean metered = !state.networkCapabilities.hasCapability(
+                NetworkCapabilities.NET_CAPABILITY_NOT_METERED);
 
         if (isNetworkTypeMobile(type)) {
             if (state.subscriberId == null) {
-                Slog.w(TAG, "Active mobile network without subscriber!");
+                if (state.networkInfo.getState() != NetworkInfo.State.DISCONNECTED &&
+                        state.networkInfo.getState() != NetworkInfo.State.UNKNOWN) {
+                    Slog.w(TAG, "Active mobile network without subscriber! ni = "
+                            + state.networkInfo);
+                }
             }
 
             subscriberId = state.subscriberId;
@@ -182,7 +216,7 @@ public class NetworkIdentity implements Comparable<NetworkIdentity> {
             }
         }
 
-        return new NetworkIdentity(type, subType, subscriberId, networkId, roaming);
+        return new NetworkIdentity(type, subType, subscriberId, networkId, roaming, metered);
     }
 
     @Override
@@ -199,6 +233,9 @@ public class NetworkIdentity implements Comparable<NetworkIdentity> {
         }
         if (res == 0) {
             res = Boolean.compare(mRoaming, another.mRoaming);
+        }
+        if (res == 0) {
+            res = Boolean.compare(mMetered, another.mMetered);
         }
         return res;
     }

@@ -16,8 +16,14 @@
 
 package android.webkit;
 
+import android.annotation.IntDef;
 import android.annotation.SystemApi;
 import android.content.Context;
+
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
 
 /**
  * Manages settings state for a WebView. When a WebView is first created, it
@@ -75,6 +81,7 @@ public abstract class WebSettings {
      *
      * @deprecated Use {@link WebSettings#setTextZoom(int)} and {@link WebSettings#getTextZoom()} instead.
      */
+    @Deprecated
     public enum TextSize {
         SMALLEST(50),
         SMALLER(75),
@@ -112,6 +119,11 @@ public abstract class WebSettings {
 
         int value;
     }
+
+    /** @hide */
+    @IntDef({LOAD_DEFAULT, LOAD_NORMAL, LOAD_CACHE_ELSE_NETWORK, LOAD_NO_CACHE, LOAD_CACHE_ONLY})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface CacheMode {}
 
     /**
      * Default cache usage mode. If the navigation type doesn't impose any
@@ -399,8 +411,16 @@ public abstract class WebSettings {
     public abstract  boolean getUseWebViewBackgroundForOverscrollBackground();
 
     /**
-     * Sets whether the WebView should save form data. The default is true.
+     * Sets whether the WebView should save form data. In Android O, the
+     * platform has implemented a fully functional Autofill feature to store
+     * form data. Therefore, the Webview form data save feature is disabled.
+     *
+     * Note that the feature will continue to be supported on older versions of
+     * Android as before.
+     *
+     * This function does not have any effect.
      */
+    @Deprecated
     public abstract  void setSaveFormData(boolean save);
 
     /**
@@ -409,6 +429,7 @@ public abstract class WebSettings {
      * @return whether the WebView saves form data
      * @see #setSaveFormData
      */
+    @Deprecated
     public abstract boolean getSaveFormData();
 
     /**
@@ -465,6 +486,7 @@ public abstract class WebSettings {
      * @param t the text size as a {@link TextSize} value
      * @deprecated Use {@link #setTextZoom} instead.
      */
+    @Deprecated
     public synchronized void setTextSize(TextSize t) {
         setTextZoom(t.value);
     }
@@ -478,6 +500,7 @@ public abstract class WebSettings {
      * @see #setTextSize
      * @deprecated Use {@link #getTextZoom} instead.
      */
+    @Deprecated
     public synchronized TextSize getTextSize() {
         TextSize closestSize = null;
         int smallestDelta = Integer.MAX_VALUE;
@@ -522,6 +545,7 @@ public abstract class WebSettings {
      * @see #setDefaultZoom
      * @deprecated Will only return the default value.
      */
+    @Deprecated
     public abstract ZoomDensity getDefaultZoom();
 
     /**
@@ -870,8 +894,7 @@ public abstract class WebSettings {
      * {@link android.Manifest.permission#INTERNET} permission, otherwise it is
      * true.
      *
-     * @param flag whether the WebView should not load any resources from the
-     *             network
+     * @param flag true means block network loads by the WebView
      * @see android.webkit.WebView#reload
      */
     public abstract void setBlockNetworkLoads(boolean flag);
@@ -987,9 +1010,6 @@ public abstract class WebSettings {
      * @deprecated Database paths are managed by the implementation and calling this method
      *             will have no effect.
      */
-    // This will update WebCore when the Sync runs in the C++ side.
-    // Note that the WebCore Database Tracker only allows the path to be set
-    // once.
     @Deprecated
     public abstract void setDatabasePath(String databasePath);
 
@@ -1000,8 +1020,10 @@ public abstract class WebSettings {
      *
      * @param databasePath a path to the directory where databases should be
      *                     saved.
+     * @deprecated Geolocation database are managed by the implementation and calling this method
+     *             will have no effect.
      */
-    // This will update WebCore when the Sync runs in the C++ side.
+    @Deprecated
     public abstract void setGeolocationDatabasePath(String databasePath);
 
     /**
@@ -1102,8 +1124,6 @@ public abstract class WebSettings {
      *   via the JavaScript Geolocation API.
      * </ul>
      * <p>
-     * As an option, it is possible to store previous locations and web origin
-     * permissions in a database. See {@link #setGeolocationDatabasePath}.
      *
      * @param flag whether Geolocation should be enabled
      */
@@ -1272,7 +1292,7 @@ public abstract class WebSettings {
      *
      * @param mode the mode to use
      */
-    public abstract void setCacheMode(int mode);
+    public abstract void setCacheMode(@CacheMode int mode);
 
     /**
      * Gets the current setting for overriding the cache mode.
@@ -1280,6 +1300,7 @@ public abstract class WebSettings {
      * @return the current setting for overriding the cache mode
      * @see #setCacheMode
      */
+    @CacheMode
     public abstract int getCacheMode();
 
     /**
@@ -1363,4 +1384,92 @@ public abstract class WebSettings {
      * offscreen but attached to a window.
      */
     public abstract boolean getOffscreenPreRaster();
+
+
+    /**
+     * Sets whether Safe Browsing is enabled. Safe browsing allows WebView to
+     * protect against malware and phishing attacks by verifying the links.
+     *
+     * <p>
+     * Safe browsing is disabled by default. The recommended way to enable Safe browsing is using a
+     * manifest tag to change the default value to enabled for all WebViews (read <a
+     * href="{@docRoot}reference/android/webkit/WebView.html">general Safe Browsing info</a>).
+     * </p>
+     *
+     * <p>
+     * This API overrides the manifest tag value for this WebView.
+     * </p>
+     *
+     * @param enabled Whether Safe browsing is enabled.
+     */
+    public abstract void setSafeBrowsingEnabled(boolean enabled);
+
+    /**
+     * Gets whether Safe browsing is enabled.
+     * See {@link #setSafeBrowsingEnabled}.
+     *
+     * @return true if Safe browsing is enabled and false otherwise.
+     */
+    public abstract boolean getSafeBrowsingEnabled();
+
+
+    /**
+     * @hide
+     */
+    @IntDef(flag = true,
+            value = {
+                    MENU_ITEM_NONE,
+                    MENU_ITEM_SHARE,
+                    MENU_ITEM_WEB_SEARCH,
+                    MENU_ITEM_PROCESS_TEXT
+            })
+    @Retention(RetentionPolicy.SOURCE)
+    @Target({ElementType.PARAMETER, ElementType.METHOD})
+    private @interface MenuItemFlags {}
+
+    /**
+     * Disables the action mode menu items according to {@code menuItems} flag.
+     * @param menuItems an integer field flag for the menu items to be disabled.
+     */
+    public abstract void setDisabledActionModeMenuItems(@MenuItemFlags int menuItems);
+
+    /**
+     * Gets the action mode menu items that are disabled, expressed in an integer field flag.
+     * The default value is {@link #MENU_ITEM_NONE}
+     *
+     * @return all the disabled menu item flags combined with bitwise OR.
+     */
+    public abstract @MenuItemFlags int getDisabledActionModeMenuItems();
+
+    /**
+     * Used with {@link #setDisabledActionModeMenuItems}.
+     *
+     * No menu items should be disabled.
+     */
+    public static final int MENU_ITEM_NONE = 0;
+
+    /**
+     * Used with {@link #setDisabledActionModeMenuItems}.
+     *
+     * Disable menu item "Share".
+     */
+    public static final int MENU_ITEM_SHARE = 1 << 0;
+
+    /**
+     * Used with {@link #setDisabledActionModeMenuItems}.
+     *
+     * Disable menu item "Web Search".
+     */
+    public static final int MENU_ITEM_WEB_SEARCH = 1 << 1;
+
+    /**
+     * Used with {@link #setDisabledActionModeMenuItems}.
+     *
+     * Disable all the action mode menu items for text processing.
+     * By default WebView searches for activities that are able to handle
+     * {@link android.content.Intent#ACTION_PROCESS_TEXT} and show them in the
+     * action mode menu. If this flag is set via {@link
+     * #setDisabledActionModeMenuItems}, these menu items will be disabled.
+     */
+    public static final int MENU_ITEM_PROCESS_TEXT = 1 << 2;
 }

@@ -16,6 +16,7 @@
 
 package android.net;
 
+import android.annotation.SystemService;
 import android.content.Context;
 import android.net.IEthernetManager;
 import android.net.IEthernetServiceListener;
@@ -31,6 +32,7 @@ import java.util.ArrayList;
  *
  * @hide
  */
+@SystemService(Context.ETHERNET_SERVICE)
 public class EthernetManager {
     private static final String TAG = "EthernetManager";
     private static final int MSG_AVAILABILITY_CHANGED = 1000;
@@ -87,8 +89,8 @@ public class EthernetManager {
     public IpConfiguration getConfiguration() {
         try {
             return mService.getConfiguration();
-        } catch (NullPointerException | RemoteException e) {
-            return new IpConfiguration();
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
         }
     }
 
@@ -98,7 +100,8 @@ public class EthernetManager {
     public void setConfiguration(IpConfiguration config) {
         try {
             mService.setConfiguration(config);
-        } catch (NullPointerException | RemoteException e) {
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
         }
     }
 
@@ -109,8 +112,8 @@ public class EthernetManager {
     public boolean isAvailable() {
         try {
             return mService.isAvailable();
-        } catch (NullPointerException | RemoteException e) {
-            return false;
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
         }
     }
 
@@ -127,7 +130,8 @@ public class EthernetManager {
         if (mListeners.size() == 1) {
             try {
                 mService.addListener(mServiceListener);
-            } catch (NullPointerException | RemoteException e) {
+            } catch (RemoteException e) {
+                throw e.rethrowFromSystemServer();
             }
         }
     }
@@ -145,7 +149,8 @@ public class EthernetManager {
         if (mListeners.isEmpty()) {
             try {
                 mService.removeListener(mServiceListener);
-            } catch (NullPointerException | RemoteException e) {
+            } catch (RemoteException e) {
+                throw e.rethrowFromSystemServer();
             }
         }
     }

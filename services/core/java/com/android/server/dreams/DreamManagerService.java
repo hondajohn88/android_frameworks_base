@@ -18,9 +18,10 @@ package com.android.server.dreams;
 
 import static android.Manifest.permission.BIND_DREAM_SERVICE;
 
-import android.view.WindowManagerPolicy;
+import com.android.internal.hardware.AmbientDisplayConfiguration;
 import com.android.internal.util.DumpUtils;
 import com.android.server.FgThread;
+import com.android.server.LocalServices;
 import com.android.server.SystemService;
 
 import android.Manifest;
@@ -33,6 +34,8 @@ import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageManager.NameNotFoundException;
 import android.content.pm.ServiceInfo;
+import android.database.ContentObserver;
+import android.hardware.input.InputManagerInternal;
 import android.os.Binder;
 import android.os.Build;
 import android.os.Handler;
@@ -85,7 +88,8 @@ public final class DreamManagerService extends SystemService {
     private boolean mCurrentDreamIsWaking;
     private int mCurrentDreamDozeScreenState = Display.STATE_UNKNOWN;
     private int mCurrentDreamDozeScreenBrightness = PowerManager.BRIGHTNESS_DEFAULT;
-    private int mLidState = WindowManagerPolicy.WindowManagerFuncs.LID_ABSENT;
+
+    private AmbientDisplayConfiguration mDozeConfig;
 
     public DreamManagerService(Context context) {
         super(context);
@@ -96,6 +100,7 @@ public final class DreamManagerService extends SystemService {
         mPowerManager = (PowerManager)context.getSystemService(Context.POWER_SERVICE);
         mPowerManagerInternal = getLocalService(PowerManagerInternal.class);
         mDozeWakeLock = mPowerManager.newWakeLock(PowerManager.DOZE_WAKE_LOCK, TAG);
+        mDozeConfig = new AmbientDisplayConfiguration(mContext);
     }
 
     @Override
@@ -113,11 +118,16 @@ public final class DreamManagerService extends SystemService {
             mContext.registerReceiver(new BroadcastReceiver() {
                 @Override
                 public void onReceive(Context context, Intent intent) {
+                    writePulseGestureEnabled();
                     synchronized (mLock) {
                         stopDreamLocked(false /*immediate*/);
                     }
                 }
             }, new IntentFilter(Intent.ACTION_USER_SWITCHED), null, mHandler);
+            mContext.getContentResolver().registerContentObserver(
+                    Settings.Secure.getUriFor(Settings.Secure.DOZE_PULSE_ON_DOUBLE_TAP), false,
+                    mDozeEnabledObserver, UserHandle.USER_ALL);
+            writePulseGestureEnabled();
         }
     }
 
@@ -221,8 +231,7 @@ public final class DreamManagerService extends SystemService {
         }
 
         synchronized (mLock) {
-            if (mCurrentDreamToken == token && mCurrentDreamCanDoze
-                    && mLidState != WindowManagerPolicy.WindowManagerFuncs.LID_CLOSED) {
+            if (mCurrentDreamToken == token && mCurrentDreamCanDoze) {
                 mCurrentDreamDozeScreenState = screenState;
                 mCurrentDreamDozeScreenBrightness = screenBrightness;
                 mPowerManagerInternal.setDozeOverrideFromDreamManager(
@@ -232,40 +241,6 @@ public final class DreamManagerService extends SystemService {
                     mDozeWakeLock.acquire();
                 }
             }
-        }
-    }
-
-    private int getLidStateInternal() {
-        return mLidState;
-    }
-
-    private void setLidStateInternal(int state) {
-        synchronized (mLock) {
-            mLidState = state;
-        }
-        switch (state) {
-            case WindowManagerPolicy.WindowManagerFuncs.LID_ABSENT:
-                // do nothing
-                break;
-            case WindowManagerPolicy.WindowManagerFuncs.LID_OPEN:
-                synchronized (mLock) {
-                    mPowerManagerInternal.setDozeOverrideFromDreamManager(
-                            Display.STATE_UNKNOWN, PowerManager.BRIGHTNESS_DEFAULT);
-                }
-                break;
-            case WindowManagerPolicy.WindowManagerFuncs.LID_CLOSED:
-                // mimicing logic from stopDozingInternal(), stop any thing when the lid is closed.
-                synchronized (mLock) {
-                    if (mCurrentDreamIsDozing) {
-                        mCurrentDreamIsDozing = false;
-                        if (mDozeWakeLock.isHeld()) {
-                            mDozeWakeLock.release();
-                        }
-                        mPowerManagerInternal.setDozeOverrideFromDreamManager(
-                                Display.STATE_OFF, PowerManager.BRIGHTNESS_OFF);
-                    }
-                }
-                break;
         }
     }
 
@@ -355,27 +330,18 @@ public final class DreamManagerService extends SystemService {
     }
 
     private ComponentName getDozeComponent(int userId) {
-        // Read the component from a system property to facilitate debugging.
-        // Note that for production devices, the dream should actually be declared in
-        // a config.xml resource.
-        String name = Build.IS_DEBUGGABLE ? SystemProperties.get("debug.doze.component") : null;
-        if (TextUtils.isEmpty(name)) {
-            // Read the component from a config.xml resource.
-            // The value should be specified in a resource overlay for the product.
-            name = mContext.getResources().getString(
-                    com.android.internal.R.string.config_dozeComponent);
+        if (mDozeConfig.enabled(userId)) {
+            return ComponentName.unflattenFromString(mDozeConfig.ambientDisplayComponent());
+        } else {
+            return null;
         }
-        boolean enabled = Settings.Secure.getIntForUser(mContext.getContentResolver(),
-                Settings.Secure.DOZE_ENABLED,
-                        mContext.getResources().getBoolean(
-                        com.android.internal.R.bool.config_doze_enabled_by_default) ? 1 : 0,
-                        userId) != 0;
-        return TextUtils.isEmpty(name) || !enabled ? null : ComponentName.unflattenFromString(name);
+
     }
 
     private ServiceInfo getServiceInfo(ComponentName name) {
         try {
-            return name != null ? mContext.getPackageManager().getServiceInfo(name, 0) : null;
+            return name != null ? mContext.getPackageManager().getServiceInfo(name,
+                    PackageManager.MATCH_DEBUG_TRIAGED_MISSING) : null;
         } catch (NameNotFoundException e) {
             return null;
         }
@@ -387,6 +353,7 @@ public final class DreamManagerService extends SystemService {
                 && mCurrentDreamIsTest == isTest
                 && mCurrentDreamCanDoze == canDoze
                 && mCurrentDreamUserId == userId) {
+            Slog.i(TAG, "Already in target dream.");
             return;
         }
 
@@ -401,12 +368,10 @@ public final class DreamManagerService extends SystemService {
         mCurrentDreamCanDoze = canDoze;
         mCurrentDreamUserId = userId;
 
-        mHandler.post(new Runnable() {
-            @Override
-            public void run() {
-                mController.startDream(newToken, name, isTest, canDoze, userId);
-            }
-        });
+        PowerManager.WakeLock wakeLock = mPowerManager
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "startDream");
+        mHandler.post(wakeLock.wrap(
+                () -> mController.startDream(newToken, name, isTest, canDoze, userId, wakeLock)));
     }
 
     private void stopDreamLocked(final boolean immediate) {
@@ -424,6 +389,7 @@ public final class DreamManagerService extends SystemService {
             mHandler.post(new Runnable() {
                 @Override
                 public void run() {
+                    Slog.i(TAG, "Performing gentle wake from dream.");
                     mController.stopDream(immediate);
                 }
             });
@@ -451,6 +417,12 @@ public final class DreamManagerService extends SystemService {
             throw new SecurityException("Access denied to process: " + Binder.getCallingPid()
                     + ", must have permission " + permission);
         }
+    }
+
+    private void writePulseGestureEnabled() {
+        ComponentName name = getDozeComponent();
+        boolean dozeEnabled = validateDream(name);
+        LocalServices.getService(InputManagerInternal.class).setPulseGestureEnabled(dozeEnabled);
     }
 
     private static String componentsToString(ComponentName[] componentNames) {
@@ -489,6 +461,13 @@ public final class DreamManagerService extends SystemService {
         }
     };
 
+    private final ContentObserver mDozeEnabledObserver = new ContentObserver(null) {
+        @Override
+        public void onChange(boolean selfChange) {
+            writePulseGestureEnabled();
+        }
+    };
+
     /**
      * Handler for asynchronous operations performed by the dream manager.
      * Ensures operations to {@link DreamController} are single-threaded.
@@ -502,14 +481,7 @@ public final class DreamManagerService extends SystemService {
     private final class BinderService extends IDreamManager.Stub {
         @Override // Binder call
         protected void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
-            if (mContext.checkCallingOrSelfPermission(Manifest.permission.DUMP)
-                    != PackageManager.PERMISSION_GRANTED) {
-                pw.println("Permission Denial: can't dump DreamManager from from pid="
-                        + Binder.getCallingPid()
-                        + ", uid=" + Binder.getCallingUid());
-                return;
-            }
-
+            if (!DumpUtils.checkDumpPermission(mContext, TAG, pw)) return;
             final long ident = Binder.clearCallingIdentity();
             try {
                 dumpInternal(pw);
@@ -657,30 +629,6 @@ public final class DreamManagerService extends SystemService {
             final long ident = Binder.clearCallingIdentity();
             try {
                 stopDozingInternal(token);
-            } finally {
-                Binder.restoreCallingIdentity(ident);
-            }
-        }
-
-        @Override
-        public void setLidState(int lidState) {
-            checkPermission(android.Manifest.permission.WRITE_DREAM_STATE);
-
-            final long ident = Binder.clearCallingIdentity();
-            try {
-                setLidStateInternal(lidState);
-            } finally {
-                Binder.restoreCallingIdentity(ident);
-            }
-        }
-
-        @Override
-        public int getLidState() {
-            checkPermission(Manifest.permission.READ_DREAM_STATE);
-
-            final long ident = Binder.clearCallingIdentity();
-            try {
-                return getLidStateInternal();
             } finally {
                 Binder.restoreCallingIdentity(ident);
             }

@@ -16,23 +16,25 @@
 
 package com.android.systemui.qs.tiles;
 
-import com.android.internal.logging.MetricsLogger;
-import com.android.systemui.R;
-import com.android.systemui.qs.PseudoGridView;
-import com.android.systemui.statusbar.policy.UserSwitcherController;
-
 import android.content.Context;
+import android.content.Intent;
 import android.util.AttributeSet;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 
+import com.android.internal.logging.MetricsLogger;
+import com.android.internal.logging.nano.MetricsProto.MetricsEvent;
+import com.android.settingslib.RestrictedLockUtils;
+import com.android.systemui.R;
+import com.android.systemui.qs.PseudoGridView;
+import com.android.systemui.statusbar.policy.UserSwitcherController;
 /**
  * Quick settings detail view for user switching.
  */
 public class UserDetailView extends PseudoGridView {
 
-    private Adapter mAdapter;
+    protected Adapter mAdapter;
 
     public UserDetailView(Context context, AttributeSet attrs) {
         super(context, attrs);
@@ -55,16 +57,23 @@ public class UserDetailView extends PseudoGridView {
     public static class Adapter extends UserSwitcherController.BaseUserAdapter
             implements OnClickListener {
 
-        private Context mContext;
+        private final Context mContext;
+        protected UserSwitcherController mController;
 
         public Adapter(Context context, UserSwitcherController controller) {
             super(controller);
             mContext = context;
+            mController = controller;
         }
 
         @Override
         public View getView(int position, View convertView, ViewGroup parent) {
             UserSwitcherController.UserRecord item = getItem(position);
+            return createUserDetailItemView(convertView, parent, item);
+        }
+
+        public UserDetailItemView createUserDetailItemView(View convertView, ViewGroup parent,
+                UserSwitcherController.UserRecord item) {
             UserDetailItemView v = UserDetailItemView.convertOrInflate(
                     mContext, convertView, parent);
             if (v != convertView) {
@@ -72,11 +81,15 @@ public class UserDetailView extends PseudoGridView {
             }
             String name = getName(mContext, item);
             if (item.picture == null) {
-                v.bind(name, getDrawable(mContext, item));
+                v.bind(name, getDrawable(mContext, item), item.resolveId());
             } else {
-                v.bind(name, item.picture);
+                v.bind(name, item.picture, item.info.id);
             }
             v.setActivated(item.isCurrent);
+            v.setDisabledByAdmin(item.isDisabledByAdmin);
+            if (!item.isSwitchToEnabled) {
+                v.setEnabled(false);
+            }
             v.setTag(item);
             return v;
         }
@@ -85,8 +98,14 @@ public class UserDetailView extends PseudoGridView {
         public void onClick(View view) {
             UserSwitcherController.UserRecord tag =
                     (UserSwitcherController.UserRecord) view.getTag();
-            MetricsLogger.action(mContext, MetricsLogger.QS_SWITCH_USER);
-            switchTo(tag);
+            if (tag.isDisabledByAdmin) {
+                final Intent intent = RestrictedLockUtils.getShowAdminSupportDetailsIntent(
+                        mContext, tag.enforcedAdmin);
+                mController.startActivity(intent);
+            } else if (tag.isSwitchToEnabled) {
+                MetricsLogger.action(mContext, MetricsEvent.QS_SWITCH_USER);
+                switchTo(tag);
+            }
         }
     }
 }

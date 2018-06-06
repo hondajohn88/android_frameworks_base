@@ -20,7 +20,7 @@ import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.SystemProperties;
 import android.os.storage.DiskInfo;
-import android.os.storage.IMountService;
+import android.os.storage.IStorageManager;
 import android.os.storage.StorageManager;
 import android.os.storage.VolumeInfo;
 import android.util.Log;
@@ -28,7 +28,7 @@ import android.util.Log;
 public final class Sm {
     private static final String TAG = "Sm";
 
-    IMountService mSm;
+    IStorageManager mSm;
 
     private String[] mArgs;
     private int mNextArg;
@@ -42,6 +42,7 @@ public final class Sm {
         } catch (Exception e) {
             if (e instanceof IllegalArgumentException) {
                 showUsage();
+                System.exit(1);
             }
             Log.e(TAG, "Error", e);
             System.err.println("Error: " + e);
@@ -54,7 +55,7 @@ public final class Sm {
             throw new IllegalArgumentException();
         }
 
-        mSm = IMountService.Stub.asInterface(ServiceManager.getService("mount"));
+        mSm = IStorageManager.Stub.asInterface(ServiceManager.getService("mount"));
         if (mSm == null) {
             throw new RemoteException("Failed to find running mount service");
         }
@@ -73,6 +74,8 @@ public final class Sm {
             runGetPrimaryStorageUuid();
         } else if ("set-force-adoptable".equals(op)) {
             runSetForceAdoptable();
+        } else if ("set-sdcardfs".equals(op)) {
+            runSetSdcardfs();
         } else if ("partition".equals(op)) {
             runPartition();
         } else if ("mount".equals(op)) {
@@ -85,6 +88,14 @@ public final class Sm {
             runBenchmark();
         } else if ("forget".equals(op)) {
             runForget();
+        } else if ("set-emulate-fbe".equals(op)) {
+            runSetEmulateFbe();
+        } else if ("get-fbe-mode".equals(op)) {
+            runGetFbeMode();
+        } else if ("fstrim".equals(op)) {
+            runFstrim();
+        } else if ("set-virtual-disk".equals(op)) {
+            runSetVirtualDisk();
         } else {
             throw new IllegalArgumentException();
         }
@@ -136,6 +147,38 @@ public final class Sm {
                 StorageManager.DEBUG_FORCE_ADOPTABLE);
     }
 
+    public void runSetSdcardfs() throws RemoteException {
+        final int mask = StorageManager.DEBUG_SDCARDFS_FORCE_ON
+                | StorageManager.DEBUG_SDCARDFS_FORCE_OFF;
+        switch (nextArg()) {
+            case "on":
+                mSm.setDebugFlags(StorageManager.DEBUG_SDCARDFS_FORCE_ON, mask);
+                break;
+            case "off":
+                mSm.setDebugFlags(StorageManager.DEBUG_SDCARDFS_FORCE_OFF, mask);
+                break;
+            case "default":
+                mSm.setDebugFlags(0, mask);
+                break;
+        }
+    }
+
+    public void runSetEmulateFbe() throws RemoteException {
+        final boolean emulateFbe = Boolean.parseBoolean(nextArg());
+        mSm.setDebugFlags(emulateFbe ? StorageManager.DEBUG_EMULATE_FBE : 0,
+                StorageManager.DEBUG_EMULATE_FBE);
+    }
+
+    public void runGetFbeMode() {
+        if (StorageManager.isFileEncryptedNativeOnly()) {
+            System.out.println("native");
+        } else if (StorageManager.isFileEncryptedEmulatedOnly()) {
+            System.out.println("emulated");
+        } else {
+            System.out.println("none");
+        }
+    }
+
     public void runPartition() throws RemoteException {
         final String diskId = nextArg();
         final String type = nextArg();
@@ -171,13 +214,23 @@ public final class Sm {
         mSm.benchmark(volId);
     }
 
-    public void runForget() throws RemoteException{
+    public void runForget() throws RemoteException {
         final String fsUuid = nextArg();
         if ("all".equals(fsUuid)) {
             mSm.forgetAllVolumes();
         } else {
             mSm.forgetVolume(fsUuid);
         }
+    }
+
+    public void runFstrim() throws RemoteException {
+        mSm.fstrim(0);
+    }
+
+    public void runSetVirtualDisk() throws RemoteException {
+        final boolean virtualDisk = Boolean.parseBoolean(nextArg());
+        mSm.setDebugFlags(virtualDisk ? StorageManager.DEBUG_VIRTUAL_DISK : 0,
+                StorageManager.DEBUG_VIRTUAL_DISK);
     }
 
     private String nextArg() {
@@ -195,14 +248,18 @@ public final class Sm {
         System.err.println("       sm has-adoptable");
         System.err.println("       sm get-primary-storage-uuid");
         System.err.println("       sm set-force-adoptable [true|false]");
+        System.err.println("       sm set-virtual-disk [true|false]");
         System.err.println("");
         System.err.println("       sm partition DISK [public|private|mixed] [ratio]");
         System.err.println("       sm mount VOLUME");
         System.err.println("       sm unmount VOLUME");
         System.err.println("       sm format VOLUME");
         System.err.println("       sm benchmark VOLUME");
+        System.err.println("       sm fstrim");
         System.err.println("");
         System.err.println("       sm forget [UUID|all]");
+        System.err.println("");
+        System.err.println("       sm set-emulate-fbe [true|false]");
         System.err.println("");
         return 1;
     }

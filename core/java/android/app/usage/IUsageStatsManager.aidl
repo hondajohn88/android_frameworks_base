@@ -33,4 +33,7 @@ interface IUsageStatsManager {
     void setAppInactive(String packageName, boolean inactive, int userId);
     boolean isAppInactive(String packageName, int userId);
     void whitelistAppTemporarily(String packageName, long duration, int userId);
+    void onCarrierPrivilegedAppsChanged();
+    void reportChooserSelection(String packageName, int userId, String contentType,
+            in String[] annotations, String action);
 }

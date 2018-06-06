@@ -16,9 +16,12 @@
 
 package android.accessibilityservice;
 
-import android.os.Bundle;
 import android.accessibilityservice.AccessibilityServiceInfo;
+import android.content.pm.ParceledListSlice;
+import android.graphics.Region;
+import android.os.Bundle;
 import android.view.MagnificationSpec;
+import android.view.MotionEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.IAccessibilityInteractionConnectionCallback;
 import android.view.accessibility.AccessibilityWindowInfo;
@@ -34,7 +37,8 @@ interface IAccessibilityServiceConnection {
 
     boolean findAccessibilityNodeInfoByAccessibilityId(int accessibilityWindowId,
         long accessibilityNodeId, int interactionId,
-        IAccessibilityInteractionConnectionCallback callback, int flags, long threadId);
+        IAccessibilityInteractionConnectionCallback callback, int flags, long threadId,
+        in Bundle arguments);
 
     boolean findAccessibilityNodeInfosByText(int accessibilityWindowId, long accessibilityNodeId,
         String text, int interactionId, IAccessibilityInteractionConnectionCallback callback,
@@ -62,5 +66,32 @@ interface IAccessibilityServiceConnection {
 
     boolean performGlobalAction(int action);
 
+    void disableSelf();
+
     oneway void setOnKeyEventResult(boolean handled, int sequence);
+
+    float getMagnificationScale();
+
+    float getMagnificationCenterX();
+
+    float getMagnificationCenterY();
+
+    Region getMagnificationRegion();
+
+    boolean resetMagnification(boolean animate);
+
+    boolean setMagnificationScaleAndCenter(float scale, float centerX, float centerY,
+        boolean animate);
+
+    void setMagnificationCallbackEnabled(boolean enabled);
+
+    boolean setSoftKeyboardShowMode(int showMode);
+
+    void setSoftKeyboardCallbackEnabled(boolean enabled);
+
+    boolean isAccessibilityButtonAvailable();
+
+    void sendGesture(int sequence, in ParceledListSlice gestureSteps);
+
+    boolean isFingerprintGestureDetectionAvailable();
 }

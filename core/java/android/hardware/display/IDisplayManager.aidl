@@ -16,6 +16,7 @@
 
 package android.hardware.display;
 
+import android.graphics.Point;
 import android.hardware.display.IDisplayManagerCallback;
 import android.hardware.display.IVirtualDisplayCallback;
 import android.hardware.display.WifiDisplay;
@@ -59,14 +60,14 @@ interface IDisplayManager {
     // No permissions required.
     WifiDisplayStatus getWifiDisplayStatus();
 
-    // Requires CONFIGURE_DISPLAY_COLOR_TRANSFORM
-    void requestColorTransform(int displayId, int colorTransformId);
+    // Requires CONFIGURE_DISPLAY_COLOR_MODE
+    void requestColorMode(int displayId, int colorMode);
 
     // Requires CAPTURE_VIDEO_OUTPUT, CAPTURE_SECURE_VIDEO_OUTPUT, or an appropriate
     // MediaProjection token for certain combinations of flags.
     int createVirtualDisplay(in IVirtualDisplayCallback callback,
             in IMediaProjection projectionToken, String packageName, String name,
-            int width, int height, int densityDpi, in Surface surface, int flags);
+            int width, int height, int densityDpi, in Surface surface, int flags, String uniqueId);
 
     // No permissions required, but must be same Uid as the creator.
     void resizeVirtualDisplay(in IVirtualDisplayCallback token,
@@ -77,4 +78,7 @@ interface IDisplayManager {
 
     // No permissions required but must be same Uid as the creator.
     void releaseVirtualDisplay(in IVirtualDisplayCallback token);
+
+    // Get a stable metric for the device's display size. No permissions required.
+    Point getStableDisplaySize();
 }

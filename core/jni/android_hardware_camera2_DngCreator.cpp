@@ -14,13 +14,14 @@
  * limitations under the License.
  */
 
-#define LOG_NDEBUG 0
+//#define LOG_NDEBUG 0
 #define LOG_TAG "DngCreator_JNI"
 #include <inttypes.h>
 #include <string.h>
 #include <algorithm>
 #include <memory>
 #include <vector>
+#include <cmath>
 
 #include <utils/Log.h>
 #include <utils/Errors.h>
@@ -45,7 +46,7 @@
 #include "android_runtime/android_hardware_camera2_CameraMetadata.h"
 
 #include <jni.h>
-#include <JNIHelp.h>
+#include <nativehelper/JNIHelp.h>
 
 using namespace android;
 using namespace img_utils;
@@ -74,9 +75,16 @@ using namespace img_utils;
     }
 
 #define BAIL_IF_EMPTY_RET_NULL_SP(entry, jnienv, tagId, writer) \
-    if (entry.count == 0) { \
+    if ((entry).count == 0) { \
         jniThrowExceptionFmt(jnienv, "java/lang/IllegalArgumentException", \
                 "Missing metadata fields for tag %s (%x)", (writer)->getTagName(tagId), (tagId)); \
+        return nullptr; \
+    }
+
+#define BAIL_IF_EXPR_RET_NULL_SP(expr, jnienv, tagId, writer) \
+    if (expr) { \
+        jniThrowExceptionFmt(jnienv, "java/lang/IllegalArgumentException", \
+                "Invalid metadata for tag %s (%x)", (writer)->getTagName(tagId), (tagId)); \
         return nullptr; \
     }
 
@@ -195,8 +203,8 @@ private:
 NativeContext::NativeContext(const CameraMetadata& characteristics, const CameraMetadata& result) :
         mCharacteristics(std::make_shared<CameraMetadata>(characteristics)),
         mResult(std::make_shared<CameraMetadata>(result)), mThumbnailWidth(0),
-        mThumbnailHeight(0), mOrientation(0), mThumbnailSet(false), mGpsSet(false),
-        mDescriptionSet(false), mCaptureTimeSet(false) {}
+        mThumbnailHeight(0), mOrientation(TAG_ORIENTATION_UNKNOWN), mThumbnailSet(false),
+        mGpsSet(false), mDescriptionSet(false), mCaptureTimeSet(false) {}
 
 NativeContext::~NativeContext() {}
 
@@ -1096,7 +1104,7 @@ static sp<TiffWriter> DngCreator_setup(JNIEnv* env, jobject thiz, uint32_t image
 
     {
         // Set orientation
-        uint16_t orientation = 1; // Normal
+        uint16_t orientation = TAG_ORIENTATION_NORMAL;
         BAIL_IF_INVALID_RET_NULL_SP(writer->addEntry(TAG_ORIENTATION, 1, &orientation, TIFF_IFD_0),
                 env, TAG_ORIENTATION, writer);
     }
@@ -1138,12 +1146,27 @@ static sp<TiffWriter> DngCreator_setup(JNIEnv* env, jobject thiz, uint32_t image
     }
 
     {
-        // Set blacklevel tags
+        // Set blacklevel tags, using dynamic black level if available
         camera_metadata_entry entry =
-                characteristics.find(ANDROID_SENSOR_BLACK_LEVEL_PATTERN);
-        BAIL_IF_EMPTY_RET_NULL_SP(entry, env, TAG_BLACKLEVEL, writer);
-        const uint32_t* blackLevel = reinterpret_cast<const uint32_t*>(entry.data.i32);
-        BAIL_IF_INVALID_RET_NULL_SP(writer->addEntry(TAG_BLACKLEVEL, entry.count, blackLevel,
+                results.find(ANDROID_SENSOR_DYNAMIC_BLACK_LEVEL);
+        uint32_t blackLevelRational[8] = {0};
+        if (entry.count != 0) {
+            BAIL_IF_EXPR_RET_NULL_SP(entry.count != 4, env, TAG_BLACKLEVEL, writer);
+            for (size_t i = 0; i < entry.count; i++) {
+                blackLevelRational[i * 2] = static_cast<uint32_t>(entry.data.f[i] * 100);
+                blackLevelRational[i * 2 + 1] = 100;
+            }
+        } else {
+            // Fall back to static black level which is guaranteed
+            entry = characteristics.find(ANDROID_SENSOR_BLACK_LEVEL_PATTERN);
+            BAIL_IF_EXPR_RET_NULL_SP(entry.count != 4, env, TAG_BLACKLEVEL, writer);
+            for (size_t i = 0; i < entry.count; i++) {
+                blackLevelRational[i * 2] = static_cast<uint32_t>(entry.data.i32[i]);
+                blackLevelRational[i * 2 + 1] = 1;
+            }
+
+        }
+        BAIL_IF_INVALID_RET_NULL_SP(writer->addEntry(TAG_BLACKLEVEL, 4, blackLevelRational,
                 TIFF_IFD_0), env, TAG_BLACKLEVEL, writer);
 
         uint16_t repeatDim[2] = {2, 2};
@@ -1350,6 +1373,23 @@ static sp<TiffWriter> DngCreator_setup(JNIEnv* env, jobject thiz, uint32_t image
         uint16_t iso = static_cast<uint16_t>(tempIso);
         BAIL_IF_INVALID_RET_NULL_SP(writer->addEntry(TAG_ISOSPEEDRATINGS, 1, &iso,
                 TIFF_IFD_0), env, TAG_ISOSPEEDRATINGS, writer);
+    }
+
+    {
+        // Baseline exposure
+        camera_metadata_entry entry =
+                results.find(ANDROID_CONTROL_POST_RAW_SENSITIVITY_BOOST);
+        BAIL_IF_EMPTY_RET_NULL_SP(entry, env, TAG_BASELINEEXPOSURE, writer);
+
+        // post RAW gain should be boostValue / 100
+        double postRAWGain = static_cast<double> (entry.data.i32[0]) / 100.f;
+        // Baseline exposure should be in EV units so log2(gain) =
+        // log10(gain)/log10(2)
+        double baselineExposure = std::log(postRAWGain) / std::log(2.0f);
+        int32_t baseExposureSRat[] = { static_cast<int32_t> (baselineExposure * 100),
+                100 };
+        BAIL_IF_INVALID_RET_NULL_SP(writer->addEntry(TAG_BASELINEEXPOSURE, 1,
+                baseExposureSRat, TIFF_IFD_0), env, TAG_BASELINEEXPOSURE, writer);
     }
 
     {
@@ -1770,6 +1810,8 @@ static sp<TiffWriter> DngCreator_setup(JNIEnv* env, jobject thiz, uint32_t image
 
     {
         // Set up orientation tags.
+        // Note: There's only one orientation field for the whole file, in IFD0
+        // The main image and any thumbnails therefore have the same orientation.
         uint16_t orientation = nativeContext->getOrientation();
         BAIL_IF_INVALID_RET_NULL_SP(writer->addEntry(TAG_ORIENTATION, 1, &orientation, TIFF_IFD_0),
                 env, TAG_ORIENTATION, writer);
@@ -1851,7 +1893,6 @@ static sp<TiffWriter> DngCreator_setup(JNIEnv* env, jobject thiz, uint32_t image
         }
 
         Vector<uint16_t> tagsToMove;
-        tagsToMove.add(TAG_ORIENTATION);
         tagsToMove.add(TAG_NEWSUBFILETYPE);
         tagsToMove.add(TAG_ACTIVEAREA);
         tagsToMove.add(TAG_BITSPERSAMPLE);
@@ -1882,12 +1923,6 @@ static sp<TiffWriter> DngCreator_setup(JNIEnv* env, jobject thiz, uint32_t image
             return nullptr;
         }
 
-        // Make sure both IFDs get the same orientation tag
-        sp<TiffEntry> orientEntry = writer->getEntry(TAG_ORIENTATION, TIFF_IFD_SUB1);
-        if (orientEntry.get() != nullptr) {
-            writer->addEntry(orientEntry, TIFF_IFD_0);
-        }
-
         // Setup thumbnail tags
 
         {
@@ -1913,8 +1948,10 @@ static sp<TiffWriter> DngCreator_setup(JNIEnv* env, jobject thiz, uint32_t image
 
         {
             // Set bits per sample
-            uint16_t bits = BITS_PER_RGB_SAMPLE;
-            BAIL_IF_INVALID_RET_NULL_SP(writer->addEntry(TAG_BITSPERSAMPLE, 1, &bits, TIFF_IFD_0),
+            uint16_t bits[SAMPLES_PER_RGB_PIXEL];
+            for (int i = 0; i < SAMPLES_PER_RGB_PIXEL; i++) bits[i] = BITS_PER_RGB_SAMPLE;
+            BAIL_IF_INVALID_RET_NULL_SP(
+                    writer->addEntry(TAG_BITSPERSAMPLE, SAMPLES_PER_RGB_PIXEL, bits, TIFF_IFD_0),
                     env, TAG_BITSPERSAMPLE, writer);
         }
 
@@ -2281,7 +2318,7 @@ static void DngCreator_nativeWriteInputStream(JNIEnv* env, jobject thiz, jobject
 
 } /*extern "C" */
 
-static JNINativeMethod gDngCreatorMethods[] = {
+static const JNINativeMethod gDngCreatorMethods[] = {
     {"nativeClassInit",        "()V", (void*) DngCreator_nativeClassInit},
     {"nativeInit", "(Landroid/hardware/camera2/impl/CameraMetadataNative;"
             "Landroid/hardware/camera2/impl/CameraMetadataNative;Ljava/lang/String;)V",

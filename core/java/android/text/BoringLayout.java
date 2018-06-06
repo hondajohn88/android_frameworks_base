@@ -183,17 +183,13 @@ public class BoringLayout extends Layout implements TextUtils.EllipsizeCallback 
 
         if (includepad) {
             spacing = metrics.bottom - metrics.top;
+            mDesc = metrics.bottom;
         } else {
             spacing = metrics.descent - metrics.ascent;
+            mDesc = metrics.descent;
         }
 
         mBottom = spacing;
-
-        if (includepad) {
-            mDesc = spacing + metrics.top;
-        } else {
-            mDesc = spacing + metrics.ascent;
-        }
 
         if (trustWidth) {
             mMax = metrics.width;
@@ -225,22 +221,41 @@ public class BoringLayout extends Layout implements TextUtils.EllipsizeCallback 
     }
 
     /**
-     * Returns null if not boring; the width, ascent, and descent if boring.
-     * @hide
-     */
-    public static Metrics isBoring(CharSequence text,
-                                   TextPaint paint,
-                                   TextDirectionHeuristic textDir) {
-        return isBoring(text, paint, textDir, null);
-    }
-
-    /**
      * Returns null if not boring; the width, ascent, and descent in the
      * provided Metrics object (or a new one if the provided one was null)
      * if boring.
      */
     public static Metrics isBoring(CharSequence text, TextPaint paint, Metrics metrics) {
         return isBoring(text, paint, TextDirectionHeuristics.FIRSTSTRONG_LTR, metrics);
+    }
+
+    /**
+     * Returns true if the text contains any RTL characters, bidi format characters, or surrogate
+     * code units.
+     */
+    private static boolean hasAnyInterestingChars(CharSequence text, int textLength) {
+        final int MAX_BUF_LEN = 500;
+        final char[] buffer = TextUtils.obtain(MAX_BUF_LEN);
+        try {
+            for (int start = 0; start < textLength; start += MAX_BUF_LEN) {
+                final int end = Math.min(start + MAX_BUF_LEN, textLength);
+
+                // No need to worry about getting half codepoints, since we consider surrogate code
+                // units "interesting" as soon we see one.
+                TextUtils.getChars(text, start, end, buffer, 0);
+
+                final int len = end - start;
+                for (int i = 0; i < len; i++) {
+                    final char c = buffer[i];
+                    if (c == '\n' || c == '\t' || TextUtils.couldAffectRtl(c)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        } finally {
+            TextUtils.recycle(buffer);
+        }
     }
 
     /**
@@ -251,70 +266,35 @@ public class BoringLayout extends Layout implements TextUtils.EllipsizeCallback 
      */
     public static Metrics isBoring(CharSequence text, TextPaint paint,
             TextDirectionHeuristic textDir, Metrics metrics) {
-        char[] temp = TextUtils.obtain(500);
-        int length = text.length();
-        boolean boring = true;
-
-        outer:
-        for (int i = 0; i < length; i += 500) {
-            int j = i + 500;
-
-            if (j > length)
-                j = length;
-
-            TextUtils.getChars(text, i, j, temp, 0);
-
-            int n = j - i;
-
-            for (int a = 0; a < n; a++) {
-                char c = temp[a];
-
-                if (c == '\n' || c == '\t' ||
-                        (c >= 0x0590 && c <= 0x08FF) ||  // RTL scripts
-                        c == 0x200F ||  // Bidi format character
-                        (c >= 0x202A && c <= 0x202E) ||  // Bidi format characters
-                        (c >= 0x2066 && c <= 0x2069) ||  // Bidi format characters
-                        (c >= 0xD800 && c <= 0xDFFF) ||  // surrogate pairs
-                        (c >= 0xFB1D && c <= 0xFDFF) ||  // Hebrew and Arabic presentation forms
-                        (c >= 0xFE70 && c <= 0xFEFE) // Arabic presentation forms
-                   ) {
-                    boring = false;
-                    break outer;
-                }
-            }
-
-            if (textDir != null && textDir.isRtl(temp, 0, n)) {
-               boring = false;
-               break outer;
-            }
+        final int textLength = text.length();
+        if (hasAnyInterestingChars(text, textLength)) {
+           return null;  // There are some interesting characters. Not boring.
         }
-
-        TextUtils.recycle(temp);
-
-        if (boring && text instanceof Spanned) {
+        if (textDir != null && textDir.isRtl(text, 0, textLength)) {
+           return null;  // The heuristic considers the whole text RTL. Not boring.
+        }
+        if (text instanceof Spanned) {
             Spanned sp = (Spanned) text;
-            Object[] styles = sp.getSpans(0, length, ParagraphStyle.class);
+            Object[] styles = sp.getSpans(0, textLength, ParagraphStyle.class);
             if (styles.length > 0) {
-                boring = false;
+                return null;  // There are some PargraphStyle spans. Not boring.
             }
         }
 
-        if (boring) {
-            Metrics fm = metrics;
-            if (fm == null) {
-                fm = new Metrics();
-            }
-
-            TextLine line = TextLine.obtain();
-            line.set(paint, text, 0, length, Layout.DIR_LEFT_TO_RIGHT,
-                    Layout.DIRS_ALL_LEFT_TO_RIGHT, false, null);
-            fm.width = (int) Math.ceil(line.metrics(fm));
-            TextLine.recycle(line);
-
-            return fm;
+        Metrics fm = metrics;
+        if (fm == null) {
+            fm = new Metrics();
         } else {
-            return null;
+            fm.reset();
         }
+
+        TextLine line = TextLine.obtain();
+        line.set(paint, text, 0, textLength, Layout.DIR_LEFT_TO_RIGHT,
+                Layout.DIRS_ALL_LEFT_TO_RIGHT, false, null);
+        fm.width = (int) Math.ceil(line.metrics(fm));
+        TextLine.recycle(line);
+
+        return fm;
     }
 
     @Override
@@ -361,6 +341,11 @@ public class BoringLayout extends Layout implements TextUtils.EllipsizeCallback 
     @Override
     public float getLineMax(int line) {
         return mMax;
+    }
+
+    @Override
+    public float getLineWidth(int line) {
+        return (line == 0 ? mMax : 0);
     }
 
     @Override
@@ -412,8 +397,6 @@ public class BoringLayout extends Layout implements TextUtils.EllipsizeCallback 
         mEllipsizedCount = end - start;
     }
 
-    private static final char FIRST_RIGHT_TO_LEFT = '\u0590';
-
     private String mDirect;
     private Paint mPaint;
 
@@ -422,14 +405,20 @@ public class BoringLayout extends Layout implements TextUtils.EllipsizeCallback 
     private float mMax;
     private int mEllipsizedWidth, mEllipsizedStart, mEllipsizedCount;
 
-    private static final TextPaint sTemp =
-                                new TextPaint();
-
     public static class Metrics extends Paint.FontMetricsInt {
         public int width;
 
         @Override public String toString() {
             return super.toString() + " width=" + width;
+        }
+
+        private void reset() {
+            top = 0;
+            bottom = 0;
+            ascent = 0;
+            descent = 0;
+            width = 0;
+            leading = 0;
         }
     }
 }

@@ -18,16 +18,23 @@ package com.android.systemui.statusbar.phone;
 
 import android.content.Context;
 import android.content.Intent;
-import android.os.UserHandle;
 import android.os.UserManager;
 import android.provider.ContactsContract;
 import android.text.TextUtils;
 import android.util.AttributeSet;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
+import android.widget.Button;
 import android.widget.FrameLayout;
 
+import com.android.systemui.Dependency;
+import com.android.systemui.Prefs;
+import com.android.systemui.Prefs.Key;
 import com.android.systemui.R;
+import com.android.systemui.plugins.ActivityStarter;
+import com.android.systemui.plugins.qs.DetailAdapter;
 import com.android.systemui.qs.QSPanel;
 import com.android.systemui.statusbar.policy.KeyguardUserSwitcher;
 import com.android.systemui.statusbar.policy.UserSwitcherController;
@@ -37,7 +44,7 @@ import com.android.systemui.statusbar.policy.UserSwitcherController;
  */
 public class MultiUserSwitch extends FrameLayout implements View.OnClickListener {
 
-    private QSPanel mQsPanel;
+    protected QSPanel mQsPanel;
     private KeyguardUserSwitcher mKeyguardUserSwitcher;
     private boolean mKeyguardMode;
     private UserSwitcherController.BaseUserAdapter mUserListener;
@@ -46,7 +53,7 @@ public class MultiUserSwitch extends FrameLayout implements View.OnClickListener
 
     private final int[] mTmpInt2 = new int[2];
 
-    private UserSwitcherController mUserSwitcherController;
+    protected UserSwitcherController mUserSwitcherController;
 
     public MultiUserSwitch(Context context, AttributeSet attrs) {
         super(context, attrs);
@@ -62,7 +69,15 @@ public class MultiUserSwitch extends FrameLayout implements View.OnClickListener
 
     public void setQsPanel(QSPanel qsPanel) {
         mQsPanel = qsPanel;
-        setUserSwitcherController(qsPanel.getHost().getUserSwitcherController());
+        setUserSwitcherController(Dependency.get(UserSwitcherController.class));
+    }
+
+    public boolean hasMultipleUsers() {
+        if (mUserListener == null) {
+            return false;
+        }
+        return mUserListener.getUserCount() != 0
+                && Prefs.getBoolean(getContext(), Key.SEEN_MULTI_USER, false);
     }
 
     public void setUserSwitcherController(UserSwitcherController userSwitcherController) {
@@ -81,7 +96,7 @@ public class MultiUserSwitch extends FrameLayout implements View.OnClickListener
     }
 
     private void registerListener() {
-        if (UserSwitcherController.isUserSwitcherAvailable(mUserManager) && mUserListener == null) {
+        if (mUserManager.isUserSwitcherEnabled() && mUserListener == null) {
 
             final UserSwitcherController controller = mUserSwitcherController;
             if (controller != null) {
@@ -103,7 +118,7 @@ public class MultiUserSwitch extends FrameLayout implements View.OnClickListener
 
     @Override
     public void onClick(View v) {
-        if (UserSwitcherController.isUserSwitcherAvailable(mUserManager)) {
+        if (mUserManager.isUserSwitcherEnabled()) {
             if (mKeyguardMode) {
                 if (mKeyguardUserSwitcher != null) {
                     mKeyguardUserSwitcher.show(true /* animate */);
@@ -116,14 +131,16 @@ public class MultiUserSwitch extends FrameLayout implements View.OnClickListener
                 mTmpInt2[1] += center.getHeight() / 2;
 
                 mQsPanel.showDetailAdapter(true,
-                        mUserSwitcherController.userDetailAdapter,
+                        getUserDetailAdapter(),
                         mTmpInt2);
             }
         } else {
-            Intent intent = ContactsContract.QuickContact.composeQuickContactsIntent(
-                    getContext(), v, ContactsContract.Profile.CONTENT_URI,
-                    ContactsContract.QuickContact.MODE_LARGE, null);
-            getContext().startActivityAsUser(intent, new UserHandle(UserHandle.USER_CURRENT));
+            if (mQsPanel != null) {
+                Intent intent = ContactsContract.QuickContact.composeQuickContactsIntent(
+                        getContext(), v, ContactsContract.Profile.CONTENT_URI,
+                        ContactsContract.QuickContact.MODE_LARGE, null);
+                Dependency.get(ActivityStarter.class).postStartActivityDismissingKeyguard(intent, 0);
+            }
         }
     }
 
@@ -135,30 +152,17 @@ public class MultiUserSwitch extends FrameLayout implements View.OnClickListener
 
     private void refreshContentDescription() {
         String currentUser = null;
-        if (UserSwitcherController.isUserSwitcherAvailable(mUserManager)
+        if (mUserManager.isUserSwitcherEnabled()
                 && mUserSwitcherController != null) {
             currentUser = mUserSwitcherController.getCurrentUserName(mContext);
         }
 
         String text = null;
-        if (isClickable()) {
-            if (UserSwitcherController.isUserSwitcherAvailable(mUserManager)) {
-                if (TextUtils.isEmpty(currentUser)) {
-                    text = mContext.getString(R.string.accessibility_multi_user_switch_switcher);
-                } else {
-                    text = mContext.getString(
-                            R.string.accessibility_multi_user_switch_switcher_with_current,
-                            currentUser);
-                }
-            } else {
-                text = mContext.getString(R.string.accessibility_multi_user_switch_quick_contact);
-            }
-        } else {
-            if (!TextUtils.isEmpty(currentUser)) {
-                text = mContext.getString(
-                        R.string.accessibility_multi_user_switch_inactive,
-                        currentUser);
-            }
+
+        if (!TextUtils.isEmpty(currentUser)) {
+            text = mContext.getString(
+                    R.string.accessibility_quick_settings_user,
+                    currentUser);
         }
 
         if (!TextUtils.equals(getContentDescription(), text)) {
@@ -167,8 +171,23 @@ public class MultiUserSwitch extends FrameLayout implements View.OnClickListener
     }
 
     @Override
+    public void onInitializeAccessibilityEvent(AccessibilityEvent event) {
+        super.onInitializeAccessibilityEvent(event);
+        event.setClassName(Button.class.getName());
+    }
+
+    @Override
+    public void onInitializeAccessibilityNodeInfo(AccessibilityNodeInfo info) {
+        super.onInitializeAccessibilityNodeInfo(info);
+        info.setClassName(Button.class.getName());
+    }
+
+    @Override
     public boolean hasOverlappingRendering() {
         return false;
     }
 
+    protected DetailAdapter getUserDetailAdapter() {
+        return mUserSwitcherController.userDetailAdapter;
+    }
 }

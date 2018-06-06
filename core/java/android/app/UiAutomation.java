@@ -21,9 +21,12 @@ import android.accessibilityservice.AccessibilityService.IAccessibilityServiceCl
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.accessibilityservice.IAccessibilityServiceClient;
 import android.accessibilityservice.IAccessibilityServiceConnection;
+import android.annotation.NonNull;
+import android.annotation.TestApi;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Point;
+import android.graphics.Region;
 import android.hardware.display.DisplayManagerGlobal;
 import android.os.IBinder;
 import android.os.Looper;
@@ -102,6 +105,14 @@ public final class UiAutomation {
     /** Rotation constant: Freeze rotation to 270 degrees . */
     public static final int ROTATION_FREEZE_270 = Surface.ROTATION_270;
 
+    /**
+     * UiAutomation supresses accessibility services by default. This flag specifies that
+     * existing accessibility services should continue to run, and that new ones may start.
+     * This flag is set when obtaining the UiAutomation from
+     * {@link Instrumentation#getUiAutomation(int)}.
+     */
+    public static final int FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES = 0x00000001;
+
     private final Object mLock = new Object();
 
     private final ArrayList<AccessibilityEvent> mEventQueue = new ArrayList<AccessibilityEvent>();
@@ -119,6 +130,10 @@ public final class UiAutomation {
     private long mLastEventTimeMillis;
 
     private boolean mIsConnecting;
+
+    private boolean mIsDestroyed;
+
+    private int mFlags;
 
     /**
      * Listener for observing the {@link AccessibilityEvent} stream.
@@ -179,11 +194,22 @@ public final class UiAutomation {
     }
 
     /**
-     * Connects this UiAutomation to the accessibility introspection APIs.
+     * Connects this UiAutomation to the accessibility introspection APIs with default flags.
      *
      * @hide
      */
     public void connect() {
+        connect(0);
+    }
+
+    /**
+     * Connects this UiAutomation to the accessibility introspection APIs.
+     *
+     * @param flags Any flags to apply to the automation as it gets connected
+     *
+     * @hide
+     */
+    public void connect(int flags) {
         synchronized (mLock) {
             throwIfConnectedLocked();
             if (mIsConnecting) {
@@ -194,7 +220,8 @@ public final class UiAutomation {
 
         try {
             // Calling out without a lock held.
-            mUiAutomationConnection.connect(mClient);
+            mUiAutomationConnection.connect(mClient, flags);
+            mFlags = flags;
         } catch (RemoteException re) {
             throw new RuntimeException("Error while connecting UiAutomation", re);
         }
@@ -221,6 +248,17 @@ public final class UiAutomation {
                 mIsConnecting = false;
             }
         }
+    }
+
+    /**
+     * Get the flags used to connect the service.
+     *
+     * @return The flags used to connect
+     *
+     * @hide
+     */
+    public int getFlags() {
+        return mFlags;
     }
 
     /**
@@ -260,6 +298,17 @@ public final class UiAutomation {
     }
 
     /**
+     * Reports if the object has been destroyed
+     *
+     * @return {code true} if the object has been destroyed.
+     *
+     * @hide
+     */
+    public boolean isDestroyed() {
+        return mIsDestroyed;
+    }
+
+    /**
      * Sets a callback for observing the stream of {@link AccessibilityEvent}s.
      *
      * @param listener The callback.
@@ -268,6 +317,18 @@ public final class UiAutomation {
         synchronized (mLock) {
             mOnAccessibilityEventListener = listener;
         }
+    }
+
+    /**
+     * Destroy this UiAutomation. After calling this method, attempting to use the object will
+     * result in errors.
+     *
+     * @hide
+     */
+    @TestApi
+    public void destroy() {
+        disconnect();
+        mIsDestroyed = true;
     }
 
     /**
@@ -320,7 +381,7 @@ public final class UiAutomation {
      */
     public AccessibilityNodeInfo findFocus(int focus) {
         return AccessibilityInteractionClient.getInstance().findFocus(mConnectionId,
-                AccessibilityNodeInfo.ANY_WINDOW_ID, AccessibilityNodeInfo.ROOT_NODE_ID, focus);
+                AccessibilityWindowInfo.ANY_WINDOW_ID, AccessibilityNodeInfo.ROOT_NODE_ID, focus);
     }
 
     /**
@@ -519,37 +580,46 @@ public final class UiAutomation {
         command.run();
 
         // Acquire the lock and wait for the event.
-        synchronized (mLock) {
-            try {
-                // Wait for the event.
-                final long startTimeMillis = SystemClock.uptimeMillis();
-                while (true) {
-                    // Drain the event queue
-                    while (!mEventQueue.isEmpty()) {
-                        AccessibilityEvent event = mEventQueue.remove(0);
-                        // Ignore events from previous interactions.
-                        if (event.getEventTime() < executionStartTimeMillis) {
-                            continue;
-                        }
-                        if (filter.accept(event)) {
-                            return event;
-                        }
-                        event.recycle();
+        try {
+            // Wait for the event.
+            final long startTimeMillis = SystemClock.uptimeMillis();
+            while (true) {
+                List<AccessibilityEvent> localEvents = new ArrayList<>();
+                synchronized (mLock) {
+                    localEvents.addAll(mEventQueue);
+                    mEventQueue.clear();
+                }
+                // Drain the event queue
+                while (!localEvents.isEmpty()) {
+                    AccessibilityEvent event = localEvents.remove(0);
+                    // Ignore events from previous interactions.
+                    if (event.getEventTime() < executionStartTimeMillis) {
+                        continue;
                     }
-                    // Check if timed out and if not wait.
-                    final long elapsedTimeMillis = SystemClock.uptimeMillis() - startTimeMillis;
-                    final long remainingTimeMillis = timeoutMillis - elapsedTimeMillis;
-                    if (remainingTimeMillis <= 0) {
-                        throw new TimeoutException("Expected event not received within: "
-                                + timeoutMillis + " ms.");
+                    if (filter.accept(event)) {
+                        return event;
                     }
-                    try {
-                        mLock.wait(remainingTimeMillis);
-                    } catch (InterruptedException ie) {
-                        /* ignore */
+                    event.recycle();
+                }
+                // Check if timed out and if not wait.
+                final long elapsedTimeMillis = SystemClock.uptimeMillis() - startTimeMillis;
+                final long remainingTimeMillis = timeoutMillis - elapsedTimeMillis;
+                if (remainingTimeMillis <= 0) {
+                    throw new TimeoutException("Expected event not received within: "
+                            + timeoutMillis + " ms.");
+                }
+                synchronized (mLock) {
+                    if (mEventQueue.isEmpty()) {
+                        try {
+                            mLock.wait(remainingTimeMillis);
+                        } catch (InterruptedException ie) {
+                            /* ignore */
+                        }
                     }
                 }
-            } finally {
+            }
+        } finally {
+            synchronized (mLock) {
                 mWaitingForEventDelivery = false;
                 mEventQueue.clear();
                 mLock.notifyAll();
@@ -698,7 +768,7 @@ public final class UiAutomation {
             throwIfNotConnectedLocked();
         }
         try {
-            ActivityManagerNative.getDefault().setUserIsMonkey(enable);
+            ActivityManager.getService().setUserIsMonkey(enable);
         } catch (RemoteException re) {
             Log.e(LOG_TAG, "Error while setting run as monkey!", re);
         }
@@ -854,6 +924,7 @@ public final class UiAutomation {
      *
      * @hide
      */
+    @TestApi
     public boolean grantRuntimePermission(String packageName, String permission,
             UserHandle userHandle) {
         synchronized (mLock) {
@@ -882,6 +953,7 @@ public final class UiAutomation {
      *
      * @hide
      */
+    @TestApi
     public boolean revokeRuntimePermission(String packageName, String permission,
             UserHandle userHandle) {
         synchronized (mLock) {
@@ -903,11 +975,11 @@ public final class UiAutomation {
     }
 
     /**
-     * Executes a shell command. This method returs a file descriptor that points
+     * Executes a shell command. This method returns a file descriptor that points
      * to the standard output stream. The command execution is similar to running
      * "adb shell <command>" from a host connected to the device.
      * <p>
-     * <strong>Note:</strong> It is your responsibility to close the retunred file
+     * <strong>Note:</strong> It is your responsibility to close the returned file
      * descriptor once you are done reading.
      * </p>
      *
@@ -928,7 +1000,7 @@ public final class UiAutomation {
             sink = pipe[1];
 
             // Calling out without a lock held.
-            mUiAutomationConnection.executeShellCommand(command, sink);
+            mUiAutomationConnection.executeShellCommand(command, sink, null);
         } catch (IOException ioe) {
             Log.e(LOG_TAG, "Error executing shell command!", ioe);
         } catch (RemoteException re) {
@@ -938,6 +1010,59 @@ public final class UiAutomation {
         }
 
         return source;
+    }
+
+    /**
+     * Executes a shell command. This method returns two file descriptors,
+     * one that points to the standard output stream (element at index 0), and one that points
+     * to the standard input stream (element at index 1). The command execution is similar
+     * to running "adb shell <command>" from a host connected to the device.
+     * <p>
+     * <strong>Note:</strong> It is your responsibility to close the returned file
+     * descriptors once you are done reading/writing.
+     * </p>
+     *
+     * @param command The command to execute.
+     * @return File descriptors (out, in) to the standard output/input streams.
+     *
+     * @hide
+     */
+    @TestApi
+    public ParcelFileDescriptor[] executeShellCommandRw(String command) {
+        synchronized (mLock) {
+            throwIfNotConnectedLocked();
+        }
+
+        ParcelFileDescriptor source_read = null;
+        ParcelFileDescriptor sink_read = null;
+
+        ParcelFileDescriptor source_write = null;
+        ParcelFileDescriptor sink_write = null;
+
+        try {
+            ParcelFileDescriptor[] pipe_read = ParcelFileDescriptor.createPipe();
+            source_read = pipe_read[0];
+            sink_read = pipe_read[1];
+
+            ParcelFileDescriptor[] pipe_write = ParcelFileDescriptor.createPipe();
+            source_write = pipe_write[0];
+            sink_write = pipe_write[1];
+
+            // Calling out without a lock held.
+            mUiAutomationConnection.executeShellCommand(command, sink_read, source_write);
+        } catch (IOException ioe) {
+            Log.e(LOG_TAG, "Error executing shell command!", ioe);
+        } catch (RemoteException re) {
+            Log.e(LOG_TAG, "Error executing shell command!", re);
+        } finally {
+            IoUtils.closeQuietly(sink_read);
+            IoUtils.closeQuietly(source_write);
+        }
+
+        ParcelFileDescriptor[] result = new ParcelFileDescriptor[2];
+        result[0] = source_read;
+        result[1] = sink_write;
+        return result;
     }
 
     private static float getDegreesForRotation(int value) {
@@ -1019,6 +1144,42 @@ public final class UiAutomation {
                 @Override
                 public boolean onKeyEvent(KeyEvent event) {
                     return false;
+                }
+
+                @Override
+                public void onMagnificationChanged(@NonNull Region region,
+                        float scale, float centerX, float centerY) {
+                    /* do nothing */
+                }
+
+                @Override
+                public void onSoftKeyboardShowModeChanged(int showMode) {
+                    /* do nothing */
+                }
+
+                @Override
+                public void onPerformGestureResult(int sequence, boolean completedSuccessfully) {
+                    /* do nothing */
+                }
+
+                @Override
+                public void onFingerprintCapturingGesturesChanged(boolean active) {
+                    /* do nothing */
+                }
+
+                @Override
+                public void onFingerprintGesture(int gesture) {
+                    /* do nothing */
+                }
+
+                @Override
+                public void onAccessibilityButtonClicked() {
+                    /* do nothing */
+                }
+
+                @Override
+                public void onAccessibilityButtonAvailabilityChanged(boolean available) {
+                    /* do nothing */
                 }
             });
         }

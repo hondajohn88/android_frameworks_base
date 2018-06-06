@@ -18,21 +18,28 @@
 
 #include <stdio.h>
 
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 
 #include <gui/GLConsumer.h>
 #include <gui/Surface.h>
+#include <gui/BufferQueue.h>
 
 #include "core_jni_helpers.h"
 
+#include <cutils/atomic.h>
 #include <utils/Log.h>
 #include <utils/misc.h>
 
 #include "jni.h"
 #include "JNIHelp.h"
+#include "ScopedLocalRef.h"
 
 // ----------------------------------------------------------------------------
+
+#define EGL_PROTECTED_CONTENT_EXT 0x32C0
 
 namespace android {
 
@@ -53,6 +60,21 @@ static fields_t fields;
 static int32_t createProcessUniqueId() {
     static volatile int32_t globalCounter = 0;
     return android_atomic_inc(&globalCounter);
+}
+
+// Check whether the current EGL context is protected.
+static bool isProtectedContext() {
+    EGLDisplay dpy = eglGetCurrentDisplay();
+    EGLContext ctx = eglGetCurrentContext();
+
+    if (dpy == EGL_NO_DISPLAY || ctx == EGL_NO_CONTEXT) {
+        return false;
+    }
+
+    EGLint isProtected = EGL_FALSE;
+    eglQueryContext(dpy, ctx, EGL_PROTECTED_CONTENT_EXT, &isProtected);
+
+    return isProtected;
 }
 
 // ----------------------------------------------------------------------------
@@ -241,17 +263,16 @@ static void SurfaceTexture_init(JNIEnv* env, jobject thiz, jboolean isDetached,
     BufferQueue::createBufferQueue(&producer, &consumer);
 
     if (singleBufferMode) {
-        consumer->disableAsyncBuffer();
-        consumer->setDefaultMaxBufferCount(1);
+        consumer->setMaxBufferCount(1);
     }
 
     sp<GLConsumer> surfaceTexture;
     if (isDetached) {
         surfaceTexture = new GLConsumer(consumer, GL_TEXTURE_EXTERNAL_OES,
-                true, true);
+                true, !singleBufferMode);
     } else {
         surfaceTexture = new GLConsumer(consumer, texName,
-                GL_TEXTURE_EXTERNAL_OES, true, true);
+                GL_TEXTURE_EXTERNAL_OES, true, !singleBufferMode);
     }
 
     if (surfaceTexture == 0) {
@@ -263,6 +284,9 @@ static void SurfaceTexture_init(JNIEnv* env, jobject thiz, jboolean isDetached,
             (isDetached ? 0 : texName),
             getpid(),
             createProcessUniqueId()));
+
+    // If the current context is protected, inform the producer.
+    consumer->setConsumerIsProtected(isProtectedContext());
 
     SurfaceTexture_setSurfaceTexture(env, thiz, surfaceTexture);
     SurfaceTexture_setProducer(env, thiz, producer);
@@ -360,8 +384,7 @@ static jboolean SurfaceTexture_isReleased(JNIEnv* env, jobject thiz)
 
 // ----------------------------------------------------------------------------
 
-static JNINativeMethod gSurfaceTextureMethods[] = {
-    {"nativeClassInit",            "()V",   (void*)SurfaceTexture_classInit },
+static const JNINativeMethod gSurfaceTextureMethods[] = {
     {"nativeInit",                 "(ZIZLjava/lang/ref/WeakReference;)V", (void*)SurfaceTexture_init },
     {"nativeFinalize",             "()V",   (void*)SurfaceTexture_finalize },
     {"nativeSetDefaultBufferSize", "(II)V", (void*)SurfaceTexture_setDefaultBufferSize },
@@ -377,6 +400,10 @@ static JNINativeMethod gSurfaceTextureMethods[] = {
 
 int register_android_graphics_SurfaceTexture(JNIEnv* env)
 {
+    // Cache some fields.
+    ScopedLocalRef<jclass> klass(env, FindClassOrDie(env, kSurfaceTextureClassPathName));
+    SurfaceTexture_classInit(env, klass.get());
+
     return RegisterMethodsOrDie(env, kSurfaceTextureClassPathName, gSurfaceTextureMethods,
                                 NELEM(gSurfaceTextureMethods));
 }
