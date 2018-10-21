@@ -16,11 +16,12 @@
 
 package com.android.systemui.statusbar.policy;
 
+import static com.android.settingslib.Utils.updateLocationEnabled;
+
 import android.app.ActivityManager;
 import android.app.AppOpsManager;
 import android.app.StatusBarManager;
 import android.content.BroadcastReceiver;
-import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -28,14 +29,12 @@ import android.location.LocationManager;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
+import android.os.Process;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.provider.Settings;
 import android.support.annotation.VisibleForTesting;
-
-import com.android.systemui.R;
 import com.android.systemui.util.Utils;
-
 import java.util.ArrayList;
 import java.util.List;
 
@@ -57,6 +56,7 @@ public class LocationControllerImpl extends BroadcastReceiver implements Locatio
     private ArrayList<LocationChangeCallback> mSettingsChangeCallbacks =
             new ArrayList<LocationChangeCallback>();
     private final H mHandler = new H();
+    private final Object mLock = new Object();
 
     public LocationControllerImpl(Context context, Looper bgLooper) {
         mContext = context;
@@ -79,12 +79,16 @@ public class LocationControllerImpl extends BroadcastReceiver implements Locatio
      * Add a callback to listen for changes in location settings.
      */
     public void addCallback(LocationChangeCallback cb) {
-        mSettingsChangeCallbacks.add(cb);
+        synchronized(mLock) {
+            mSettingsChangeCallbacks.add(cb);
+        }
         mHandler.sendEmptyMessage(H.MSG_LOCATION_SETTINGS_CHANGED);
     }
 
     public void removeCallback(LocationChangeCallback cb) {
-        mSettingsChangeCallbacks.remove(cb);
+        synchronized(mLock) {
+            mSettingsChangeCallbacks.remove(cb);
+        }
     }
 
     /**
@@ -99,31 +103,29 @@ public class LocationControllerImpl extends BroadcastReceiver implements Locatio
      * @return true if attempt to change setting was successful.
      */
     public boolean setLocationEnabled(boolean enabled) {
+        // QuickSettings always runs as the owner, so specifically set the settings
+        // for the current foreground user.
         int currentUserId = ActivityManager.getCurrentUser();
         if (isUserLocationRestricted(currentUserId)) {
             return false;
         }
-        final ContentResolver cr = mContext.getContentResolver();
         // When enabling location, a user consent dialog will pop up, and the
         // setting won't be fully enabled until the user accepts the agreement.
-        int mode = enabled
-                ? Settings.Secure.LOCATION_MODE_PREVIOUS : Settings.Secure.LOCATION_MODE_OFF;
-        // QuickSettings always runs as the owner, so specifically set the settings
-        // for the current foreground user.
-        return Settings.Secure
-                .putIntForUser(cr, Settings.Secure.LOCATION_MODE, mode, currentUserId);
+        updateLocationEnabled(mContext, enabled, currentUserId,
+                Settings.Secure.LOCATION_CHANGER_QUICK_SETTINGS);
+        return true;
     }
 
     /**
-     * Returns true if location isn't disabled in settings.
+     * Returns true if location is enabled in settings.
      */
     public boolean isLocationEnabled() {
-        ContentResolver resolver = mContext.getContentResolver();
         // QuickSettings always runs as the owner, so specifically retrieve the settings
         // for the current foreground user.
-        int mode = Settings.Secure.getIntForUser(resolver, Settings.Secure.LOCATION_MODE,
-                Settings.Secure.LOCATION_MODE_OFF, ActivityManager.getCurrentUser());
-        return mode != Settings.Secure.LOCATION_MODE_OFF;
+        LocationManager locationManager =
+                (LocationManager) mContext.getSystemService(Context.LOCATION_SERVICE);
+        return locationManager.isLocationEnabledForUser(
+                UserHandle.of(ActivityManager.getCurrentUser()));
     }
 
     @Override
@@ -208,14 +210,18 @@ public class LocationControllerImpl extends BroadcastReceiver implements Locatio
         }
 
         private void locationActiveChanged() {
-            Utils.safeForeach(mSettingsChangeCallbacks,
-                    cb -> cb.onLocationActiveChanged(mAreActiveLocationRequests));
+            synchronized(mLock) {
+                Utils.safeForeach(mSettingsChangeCallbacks,
+                        cb -> cb.onLocationActiveChanged(mAreActiveLocationRequests));
+            }
         }
 
         private void locationSettingsChanged() {
-            boolean isEnabled = isLocationEnabled();
-            Utils.safeForeach(mSettingsChangeCallbacks,
-                    cb -> cb.onLocationSettingsChanged(isEnabled));
+            synchronized(mLock) {
+                boolean isEnabled = isLocationEnabled();
+                Utils.safeForeach(mSettingsChangeCallbacks,
+                        cb -> cb.onLocationSettingsChanged(isEnabled));
+            }
         }
     }
 }

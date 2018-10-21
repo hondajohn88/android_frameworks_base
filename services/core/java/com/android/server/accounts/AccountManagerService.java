@@ -58,6 +58,8 @@ import android.content.pm.IPackageManager;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageManager.NameNotFoundException;
+import android.content.pm.PackageManagerInternal;
+import android.content.pm.PackageParser;
 import android.content.pm.RegisteredServicesCache;
 import android.content.pm.RegisteredServicesCacheListener;
 import android.content.pm.ResolveInfo;
@@ -77,6 +79,8 @@ import android.os.Parcelable;
 import android.os.Process;
 import android.os.RemoteCallback;
 import android.os.RemoteException;
+import android.os.ResultReceiver;
+import android.os.ShellCallback;
 import android.os.StrictMode;
 import android.os.SystemClock;
 import android.os.UserHandle;
@@ -404,6 +408,15 @@ public class AccountManagerService
                 }
             }
         });
+    }
+
+
+    boolean getBindInstantServiceAllowed(int userId) {
+        return  mAuthenticatorCache.getBindInstantServiceAllowed(userId);
+    }
+
+    void setBindInstantServiceAllowed(int userId, boolean allowed) {
+        mAuthenticatorCache.setBindInstantServiceAllowed(userId, allowed);
     }
 
     private void cancelAccountAccessRequestNotificationIfNeeded(int uid,
@@ -1406,7 +1419,7 @@ public class AccountManagerService
             mLocalUnlockedUsers.put(userId, true);
         }
         if (userId < 1) return;
-        syncSharedAccounts(userId);
+        mHandler.post(() -> syncSharedAccounts(userId));
     }
 
     private void syncSharedAccounts(int userId) {
@@ -1435,6 +1448,7 @@ public class AccountManagerService
 
     @Override
     public String getPassword(Account account) {
+        android.util.SeempLog.record(14);
         int callingUid = Binder.getCallingUid();
         if (Log.isLoggable(TAG, Log.VERBOSE)) {
             Log.v(TAG, "getPassword: " + account
@@ -1515,6 +1529,7 @@ public class AccountManagerService
 
     @Override
     public String getUserData(Account account, String key) {
+        android.util.SeempLog.record(15);
         final int callingUid = Binder.getCallingUid();
         if (Log.isLoggable(TAG, Log.VERBOSE)) {
             String msg = String.format("getUserData( account: %s, key: %s, callerUid: %s, pid: %s",
@@ -2007,11 +2022,11 @@ public class AccountManagerService
                     getAccountRemovedReceivers(accountToRename, accounts);
                 accounts.accountsDb.beginTransaction();
                 Account renamedAccount = new Account(newName, accountToRename.type);
-                if ((accounts.accountsDb.findCeAccountId(renamedAccount) >= 0)) {
-                    Log.e(TAG, "renameAccount failed - account with new name already exists");
-                    return null;
-                }
                 try {
+                    if ((accounts.accountsDb.findCeAccountId(renamedAccount) >= 0)) {
+                        Log.e(TAG, "renameAccount failed - account with new name already exists");
+                        return null;
+                    }
                     final long accountId = accounts.accountsDb.findDeAccountId(accountToRename);
                     if (accountId >= 0) {
                         accounts.accountsDb.renameCeAccount(accountId, newName);
@@ -2088,6 +2103,7 @@ public class AccountManagerService
     @Override
     public void removeAccount(IAccountManagerResponse response, Account account,
             boolean expectActivityLaunch) {
+        android.util.SeempLog.record(17);
         removeAccountAsUser(
                 response,
                 account,
@@ -2118,13 +2134,14 @@ public class AccountManagerService
                             userId));
         }
         /*
-         * Only the system or authenticator should be allowed to remove accounts for that
-         * authenticator.  This will let users remove accounts (via Settings in the system) but not
-         * arbitrary applications (like competing authenticators).
+         * Only the system, authenticator or profile owner should be allowed to remove accounts for
+         * that authenticator.  This will let users remove accounts (via Settings in the system) but
+         * not arbitrary applications (like competing authenticators).
          */
         UserHandle user = UserHandle.of(userId);
         if (!isAccountManagedByCaller(account.type, callingUid, user.getIdentifier())
-                && !isSystemUid(callingUid)) {
+                && !isSystemUid(callingUid)
+                && !isProfileOwner(callingUid)) {
             String msg = String.format(
                     "uid %s cannot remove accounts of type: %s",
                     callingUid,
@@ -2191,7 +2208,7 @@ public class AccountManagerService
             return false;
         } else if (!isAccountManagedByCaller(account.type, callingUid, userId)) {
             String msg = String.format(
-                    "uid %s cannot explicitly add accounts of type: %s",
+                    "uid %s cannot explicitly remove accounts of type: %s",
                     callingUid,
                     account.type);
             throw new SecurityException(msg);
@@ -2248,12 +2265,10 @@ public class AccountManagerService
                         Log.v(TAG, getClass().getSimpleName() + " calling onResult() on response "
                                 + response);
                     }
-                    Bundle result2 = new Bundle();
-                    result2.putBoolean(AccountManager.KEY_BOOLEAN_RESULT, removalAllowed);
                     try {
-                        response.onResult(result2);
+                        response.onResult(result);
                     } catch (RemoteException e) {
-                        // ignore
+                        Slog.e(TAG, "Error calling onResult()", e);
                     }
                 }
             }
@@ -2529,6 +2544,7 @@ public class AccountManagerService
 
     @Override
     public void setPassword(Account account, String password) {
+        android.util.SeempLog.record(18);
         final int callingUid = Binder.getCallingUid();
         if (Log.isLoggable(TAG, Log.VERBOSE)) {
             Log.v(TAG, "setAuthToken: " + account
@@ -2595,6 +2611,7 @@ public class AccountManagerService
 
     @Override
     public void clearPassword(Account account) {
+        android.util.SeempLog.record(19);
         final int callingUid = Binder.getCallingUid();
         if (Log.isLoggable(TAG, Log.VERBOSE)) {
             Log.v(TAG, "clearPassword: " + account
@@ -2621,6 +2638,7 @@ public class AccountManagerService
 
     @Override
     public void setUserData(Account account, String key, String value) {
+        android.util.SeempLog.record(20);
         final int callingUid = Binder.getCallingUid();
         if (Log.isLoggable(TAG, Log.VERBOSE)) {
             Log.v(TAG, "setUserData: " + account
@@ -2969,9 +2987,13 @@ public class AccountManagerService
                              * have users launching arbitrary activities by tricking users to
                              * interact with malicious notifications.
                              */
-                            checkKeyIntent(
+                            if (!checkKeyIntent(
                                     Binder.getCallingUid(),
-                                    intent);
+                                    intent)) {
+                                onError(AccountManager.ERROR_CODE_INVALID_RESPONSE,
+                                        "invalid intent in bundle returned");
+                                return;
+                            }
                             doNotification(
                                     mAccounts,
                                     account,
@@ -3100,6 +3122,7 @@ public class AccountManagerService
     public void addAccount(final IAccountManagerResponse response, final String accountType,
             final String authTokenType, final String[] requiredFeatures,
             final boolean expectActivityLaunch, final Bundle optionsIn) {
+        android.util.SeempLog.record(16);
         Bundle.setDefusable(optionsIn, true);
         if (Log.isLoggable(TAG, Log.VERBOSE)) {
             Log.v(TAG, "addAccount: accountType " + accountType
@@ -3366,9 +3389,13 @@ public class AccountManagerService
             Intent intent = null;
             if (result != null
                     && (intent = result.getParcelable(AccountManager.KEY_INTENT)) != null) {
-                checkKeyIntent(
+                if (!checkKeyIntent(
                         Binder.getCallingUid(),
-                        intent);
+                        intent)) {
+                    onError(AccountManager.ERROR_CODE_INVALID_RESPONSE,
+                            "invalid intent in bundle returned");
+                    return;
+                }
             }
             IAccountManagerResponse response;
             if (mExpectActivityLaunch && result != null
@@ -3849,6 +3876,7 @@ public class AccountManagerService
     @Override
     public void editProperties(IAccountManagerResponse response, final String accountType,
             final boolean expectActivityLaunch) {
+        android.util.SeempLog.record(21);
         final int callingUid = Binder.getCallingUid();
         if (Log.isLoggable(TAG, Log.VERBOSE)) {
             Log.v(TAG, "editProperties: accountType " + accountType
@@ -4638,6 +4666,14 @@ public class AccountManagerService
         }
     }
 
+    @Override
+    public void onShellCommand(FileDescriptor in, FileDescriptor out,
+            FileDescriptor err, String[] args, ShellCallback callback,
+            ResultReceiver resultReceiver) {
+        new AccountManagerServiceShellCommand(this).exec(this, in, out, err, args,
+                callback, resultReceiver);
+    }
+
     private abstract class Session extends IAccountAuthenticatorResponse.Stub
             implements IBinder.DeathRecipient, ServiceConnection {
         IAccountManagerResponse mResponse;
@@ -4716,9 +4752,7 @@ public class AccountManagerService
          * into launching arbitrary intents on the device via by tricking to click authenticator
          * supplied entries in the system Settings app.
          */
-        protected void checkKeyIntent(
-                int authUid,
-                Intent intent) throws SecurityException {
+         protected boolean checkKeyIntent(int authUid, Intent intent) {
             intent.setFlags(intent.getFlags() & ~(Intent.FLAG_GRANT_READ_URI_PERMISSION
                     | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                     | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
@@ -4727,18 +4761,24 @@ public class AccountManagerService
             try {
                 PackageManager pm = mContext.getPackageManager();
                 ResolveInfo resolveInfo = pm.resolveActivityAsUser(intent, 0, mAccounts.userId);
+                if (resolveInfo == null) {
+                    return false;
+                }
                 ActivityInfo targetActivityInfo = resolveInfo.activityInfo;
                 int targetUid = targetActivityInfo.applicationInfo.uid;
+                PackageManagerInternal pmi = LocalServices.getService(PackageManagerInternal.class);
                 if (!isExportedSystemActivity(targetActivityInfo)
-                        && (PackageManager.SIGNATURE_MATCH != pm.checkSignatures(authUid,
-                                targetUid))) {
+                        && !pmi.hasSignatureCapability(
+                                targetUid, authUid,
+                                PackageParser.SigningDetails.CertCapabilities.AUTH)) {
                     String pkgName = targetActivityInfo.packageName;
                     String activityName = targetActivityInfo.name;
                     String tmpl = "KEY_INTENT resolved to an Activity (%s) in a package (%s) that "
                             + "does not share a signature with the supplying authenticator (%s).";
-                    throw new SecurityException(
-                            String.format(tmpl, activityName, pkgName, mAccountType));
+                    Log.e(TAG, String.format(tmpl, activityName, pkgName, mAccountType));
+                    return false;
                 }
+                return true;
             } finally {
                 Binder.restoreCallingIdentity(bid);
             }
@@ -4888,9 +4928,13 @@ public class AccountManagerService
             }
             if (result != null
                     && (intent = result.getParcelable(AccountManager.KEY_INTENT)) != null) {
-                checkKeyIntent(
+                if (!checkKeyIntent(
                         Binder.getCallingUid(),
-                        intent);
+                        intent)) {
+                    onError(AccountManager.ERROR_CODE_INVALID_RESPONSE,
+                            "invalid intent in bundle returned");
+                    return;
+                }
             }
             if (result != null
                     && !TextUtils.isEmpty(result.getString(AccountManager.KEY_AUTHTOKEN))) {
@@ -5001,8 +5045,11 @@ public class AccountManagerService
             if (Log.isLoggable(TAG, Log.VERBOSE)) {
                 Log.v(TAG, "performing bindService to " + authenticatorInfo.componentName);
             }
-            if (!mContext.bindServiceAsUser(intent, this, Context.BIND_AUTO_CREATE,
-                    UserHandle.of(mAccounts.userId))) {
+            int flags = Context.BIND_AUTO_CREATE;
+            if (mAuthenticatorCache.getBindInstantServiceAllowed(mAccounts.userId)) {
+                flags |= Context.BIND_ALLOW_INSTANT;
+            }
+            if (!mContext.bindServiceAsUser(intent, this, flags, UserHandle.of(mAccounts.userId))) {
                 if (Log.isLoggable(TAG, Log.VERBOSE)) {
                     Log.v(TAG, "bindService to " + authenticatorInfo.componentName + " failed");
                 }
@@ -5089,8 +5136,16 @@ public class AccountManagerService
                 logStatement.bindLong(4, callingUid);
                 logStatement.bindString(5, tableName);
                 logStatement.bindLong(6, userDebugDbInsertionPoint);
-                logStatement.execute();
-                logStatement.clearBindings();
+                try {
+                    logStatement.execute();
+                } catch (IllegalStateException e) {
+                    // Guard against crash, DB can already be closed
+                    // since this statement is executed on a handler thread
+                    Slog.w(TAG, "Failed to insert a log record. accountId=" + accountId
+                            + " action=" + action + " tableName=" + tableName + " Error: " + e);
+                } finally {
+                    logStatement.clearBindings();
+                }
             }
         }
 
@@ -5455,15 +5510,17 @@ public class AccountManagerService
         } finally {
             Binder.restoreCallingIdentity(identityToken);
         }
-        // Check for signature match with Authenticator.
+        // Check for signature match with Authenticator.LocalServices.getService(PackageManagerInternal.class);
+        PackageManagerInternal pmi = LocalServices.getService(PackageManagerInternal.class);
         for (RegisteredServicesCache.ServiceInfo<AuthenticatorDescription> serviceInfo
                 : serviceInfos) {
             if (accountType.equals(serviceInfo.type.type)) {
                 if (serviceInfo.uid == callingUid) {
                     return SIGNATURE_CHECK_UID_MATCH;
                 }
-                final int sigChk = mPackageManager.checkSignatures(serviceInfo.uid, callingUid);
-                if (sigChk == PackageManager.SIGNATURE_MATCH) {
+                if (pmi.hasSignatureCapability(
+                        serviceInfo.uid, callingUid,
+                        PackageParser.SigningDetails.CertCapabilities.AUTH)) {
                     return SIGNATURE_CHECK_MATCH;
                 }
             }
@@ -5499,10 +5556,13 @@ public class AccountManagerService
         } finally {
             Binder.restoreCallingIdentity(identityToken);
         }
+
+        PackageManagerInternal pmi = LocalServices.getService(PackageManagerInternal.class);
         for (RegisteredServicesCache.ServiceInfo<AuthenticatorDescription> serviceInfo :
                 serviceInfos) {
-            if (isOtherwisePermitted || (mPackageManager.checkSignatures(serviceInfo.uid,
-                    callingUid) == PackageManager.SIGNATURE_MATCH)) {
+            if (isOtherwisePermitted || pmi.hasSignatureCapability(
+                    serviceInfo.uid, callingUid,
+                    PackageParser.SigningDetails.CertCapabilities.AUTH)) {
                 managedAccountTypes.add(serviceInfo.type.type);
             }
         }
@@ -5574,24 +5634,25 @@ public class AccountManagerService
         long ident = Binder.clearCallingIdentity();
         try {
             packages = mPackageManager.getPackagesForUid(callingUid);
+            if (packages != null) {
+                for (String name : packages) {
+                    try {
+                        PackageInfo packageInfo =
+                                mPackageManager.getPackageInfo(name, 0 /* flags */);
+                        if (packageInfo != null
+                                && (packageInfo.applicationInfo.flags & ApplicationInfo.FLAG_SYSTEM)
+                                != 0) {
+                            return true;
+                        }
+                    } catch (NameNotFoundException e) {
+                        Log.w(TAG, String.format("Could not find package [%s]", name), e);
+                    }
+                }
+            } else {
+                Log.w(TAG, "No known packages with uid " + callingUid);
+            }
         } finally {
             Binder.restoreCallingIdentity(ident);
-        }
-        if (packages != null) {
-            for (String name : packages) {
-                try {
-                    PackageInfo packageInfo = mPackageManager.getPackageInfo(name, 0 /* flags */);
-                    if (packageInfo != null
-                            && (packageInfo.applicationInfo.flags & ApplicationInfo.FLAG_SYSTEM)
-                                    != 0) {
-                        return true;
-                    }
-                } catch (NameNotFoundException e) {
-                    Log.w(TAG, String.format("Could not find package [%s]", name), e);
-                }
-            }
-        } else {
-            Log.w(TAG, "No known packages with uid " + callingUid);
         }
         return false;
     }

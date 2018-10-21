@@ -18,6 +18,8 @@ package android.os;
 
 import android.view.Display;
 
+import java.util.function.Consumer;
+
 /**
  * Power manager local system service interface.
  *
@@ -69,6 +71,24 @@ public abstract class PowerManagerInternal {
     }
 
     /**
+     * Converts platform constants to proto enums.
+     */
+    public static int wakefulnessToProtoEnum(int wakefulness) {
+        switch (wakefulness) {
+            case WAKEFULNESS_ASLEEP:
+                return PowerManagerInternalProto.WAKEFULNESS_ASLEEP;
+            case WAKEFULNESS_AWAKE:
+                return PowerManagerInternalProto.WAKEFULNESS_AWAKE;
+            case WAKEFULNESS_DREAMING:
+                return PowerManagerInternalProto.WAKEFULNESS_DREAMING;
+            case WAKEFULNESS_DOZING:
+                return PowerManagerInternalProto.WAKEFULNESS_DOZING;
+            default:
+                return wakefulness;
+        }
+    }
+
+    /**
      * Returns true if the wakefulness state represents an interactive state
      * as defined by {@link android.os.PowerManager#isInteractive}.
      */
@@ -85,6 +105,16 @@ public abstract class PowerManagerInternal {
      * @param brightness The overridden brightness, or -1 to disable the override.
      */
     public abstract void setScreenBrightnessOverrideFromWindowManager(int brightness);
+
+    /**
+     * Used by the window manager to override the button brightness based on the
+     * current foreground activity.
+     *
+     * This method must only be called by the window manager.
+     *
+     * @param brightness The overridden brightness, or -1 to disable the override.
+     */
+    public abstract void setButtonBrightnessOverrideFromWindowManager(int brightness);
 
     /**
      * Used by the window manager to override the user activity timeout based on the
@@ -108,7 +138,7 @@ public abstract class PowerManagerInternal {
      *
      * This method must only be called by the device administration policy manager.
      */
-    public abstract void setMaximumScreenOffTimeoutFromDeviceAdmin(int timeMs);
+    public abstract void setMaximumScreenOffTimeoutFromDeviceAdmin(int userId, long timeMs);
 
     /**
      * Used by the dream manager to override certain properties while dozing.
@@ -121,9 +151,34 @@ public abstract class PowerManagerInternal {
     public abstract void setDozeOverrideFromDreamManager(
             int screenState, int screenBrightness);
 
+    /**
+     * Used by sidekick manager to tell the power manager if it shouldn't change the display state
+     * when a draw wake lock is acquired. Some processes may grab such a wake lock to do some work
+     * in a powered-up state, but we shouldn't give up sidekick control over the display until this
+     * override is lifted.
+     */
+    public abstract void setDrawWakeLockOverrideFromSidekick(boolean keepState);
+
     public abstract PowerSaveState getLowPowerState(int serviceType);
 
     public abstract void registerLowPowerModeObserver(LowPowerModeListener listener);
+
+    /**
+     * Same as {@link #registerLowPowerModeObserver} but can take a lambda.
+     */
+    public void registerLowPowerModeObserver(int serviceType, Consumer<PowerSaveState> listener) {
+        registerLowPowerModeObserver(new LowPowerModeListener() {
+            @Override
+            public int getServiceType() {
+                return serviceType;
+            }
+
+            @Override
+            public void onLowPowerModeChanged(PowerSaveState state) {
+                listener.accept(state);
+            }
+        });
+    }
 
     public interface LowPowerModeListener {
         int getServiceType();
@@ -155,4 +210,10 @@ public abstract class PowerManagerInternal {
      * PowerHint defined in android/hardware/power/<version 1.0 & up>/IPower.h
      */
     public abstract void powerHint(int hintId, int data);
+
+    public abstract boolean setPowerSaveMode(boolean mode);
+
+    public abstract void setFeature(int featureId, int data);
+
+    public abstract int getFeature(int featureId);
 }

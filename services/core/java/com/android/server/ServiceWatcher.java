@@ -16,6 +16,7 @@
 
 package com.android.server;
 
+import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
@@ -31,6 +32,7 @@ import android.content.pm.Signature;
 import android.content.res.Resources;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.SystemProperties;
 import android.os.UserHandle;
 import android.util.Log;
 import android.util.Slog;
@@ -52,6 +54,7 @@ public class ServiceWatcher implements ServiceConnection {
     private static final boolean D = false;
     public static final String EXTRA_SERVICE_VERSION = "serviceVersion";
     public static final String EXTRA_SERVICE_IS_MULTIUSER = "serviceIsMultiuser";
+    private static final String WHITELIST_PACKAGELIST_PROPERTY = "ro.services.whitelist.packagelist";
 
     private final String mTag;
     private final Context mContext;
@@ -88,12 +91,23 @@ public class ServiceWatcher implements ServiceConnection {
             List<String> initialPackageNames) {
         PackageManager pm = context.getPackageManager();
         ArrayList<HashSet<Signature>> sigSets = new ArrayList<HashSet<Signature>>();
+
+        String whitelistPackagesValue = SystemProperties.get(WHITELIST_PACKAGELIST_PROPERTY,"");
+        String[] whitelistPackagesArray = whitelistPackagesValue.split(",");
+        HashSet<String> whitelistPackagesSet = new HashSet<String>(Arrays.asList(whitelistPackagesArray));
+
         for (int i = 0, size = initialPackageNames.size(); i < size; i++) {
             String pkg = initialPackageNames.get(i);
             try {
                 HashSet<Signature> set = new HashSet<Signature>();
-                Signature[] sigs = pm.getPackageInfo(pkg, PackageManager.MATCH_SYSTEM_ONLY
-                        | PackageManager.GET_SIGNATURES).signatures;
+                Signature[] sigs = null;
+                if(whitelistPackagesSet != null && whitelistPackagesSet.contains(pkg)) {
+                    sigs = pm.getPackageInfo(pkg, PackageManager.GET_SIGNATURES).signatures;
+                    Log.i("ServiceWatcher", pkg + " is whitelisted, ignored PackageManager.MATCH_SYSTEM_ONLY");
+                } else {
+                    sigs = pm.getPackageInfo(pkg, PackageManager.MATCH_SYSTEM_ONLY
+                            | PackageManager.GET_SIGNATURES).signatures;
+                }
                 set.addAll(Arrays.asList(sigs));
                 sigSets.add(set);
             } catch (NameNotFoundException e) {
@@ -198,6 +212,7 @@ public class ServiceWatcher implements ServiceConnection {
      *            bound.
      * @returns {@code true} if a valid package was found to bind to.
      */
+    @GuardedBy("mLock")
     private boolean bindBestPackageLocked(String justCheckThisPackage, boolean forceRebind) {
         Intent intent = new Intent(mAction);
         if (justCheckThisPackage != null) {
@@ -272,6 +287,7 @@ public class ServiceWatcher implements ServiceConnection {
         return true;
     }
 
+    @GuardedBy("mLock")
     private void unbindLocked() {
         ComponentName component;
         component = mBoundComponent;
@@ -281,10 +297,12 @@ public class ServiceWatcher implements ServiceConnection {
         mBoundUserId = UserHandle.USER_NULL;
         if (component != null) {
             if (D) Log.d(mTag, "unbinding " + component);
+            mBoundService = null;
             mContext.unbindService(this);
         }
     }
 
+    @GuardedBy("mLock")
     private void bindToPackageLocked(ComponentName component, int version, int userId) {
         Intent intent = new Intent(mAction);
         intent.setComponent(component);
@@ -397,9 +415,29 @@ public class ServiceWatcher implements ServiceConnection {
         }
     }
 
-    public @Nullable IBinder getBinder() {
+    /**
+     * The runner that runs on the binder retrieved from {@link ServiceWatcher}.
+     */
+    public interface BinderRunner {
+        /**
+         * Runs on the retrieved binder.
+         * @param binder the binder retrieved from the {@link ServiceWatcher}.
+         */
+        public void run(@NonNull IBinder binder);
+    }
+
+    /**
+     * Retrieves the binder from {@link ServiceWatcher} and runs it.
+     * @return whether a valid service exists.
+     */
+    public boolean runOnBinder(@NonNull BinderRunner runner) {
         synchronized (mLock) {
-            return mBoundService;
+            if (mBoundService == null) {
+                return false;
+            } else {
+                runner.run(mBoundService);
+                return true;
+            }
         }
     }
 

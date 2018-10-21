@@ -58,8 +58,7 @@ import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.List;
-
-import libcore.util.Objects;
+import java.util.Objects;
 
 /**
  * Service api for managing dreams.
@@ -159,6 +158,12 @@ public final class DreamManagerService extends SystemService {
         synchronized (mLock) {
             return mCurrentDreamToken != null && !mCurrentDreamIsTest
                     && !mCurrentDreamIsWaking;
+        }
+    }
+
+    private boolean isDozingInternal() {
+        synchronized (mLock) {
+            return mCurrentDreamIsDozing;
         }
     }
 
@@ -349,7 +354,7 @@ public final class DreamManagerService extends SystemService {
 
     private void startDreamLocked(final ComponentName name,
             final boolean isTest, final boolean canDoze, final int userId) {
-        if (Objects.equal(mCurrentDreamName, name)
+        if (Objects.equals(mCurrentDreamName, name)
                 && mCurrentDreamIsTest == isTest
                 && mCurrentDreamCanDoze == canDoze
                 && mCurrentDreamUserId == userId) {
@@ -542,6 +547,18 @@ public final class DreamManagerService extends SystemService {
         }
 
         @Override // Binder call
+        public boolean isDozing() {
+            checkPermission(android.Manifest.permission.READ_DREAM_STATE);
+
+            final long ident = Binder.clearCallingIdentity();
+            try {
+                return isDozingInternal();
+            } finally {
+                Binder.restoreCallingIdentity(ident);
+            }
+        }
+
+        @Override // Binder call
         public void dream() {
             checkPermission(android.Manifest.permission.WRITE_DREAM_STATE);
 
@@ -649,6 +666,11 @@ public final class DreamManagerService extends SystemService {
         @Override
         public boolean isDreaming() {
             return isDreamingInternal();
+        }
+
+        @Override
+        public boolean isDozing() {
+            return isDozingInternal();
         }
     }
 

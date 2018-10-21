@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2015 The Android Open Source Project
+ * Coypright (C) 2017 The LineageOS Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -65,7 +66,7 @@ public class TileUtils {
      *
      * <p>A summary my be defined by meta-data named {@link #META_DATA_PREFERENCE_SUMMARY}
      */
-    private static final String EXTRA_SETTINGS_ACTION =
+    public static final String EXTRA_SETTINGS_ACTION =
             "com.android.settings.action.EXTRA_SETTINGS";
 
     /**
@@ -92,6 +93,9 @@ public class TileUtils {
 
     private static final String MANUFACTURER_DEFAULT_CATEGORY =
             "com.android.settings.category.device";
+
+    private static final String LINEAGE_SETTINGS_ACTION =
+            "org.lineageos.lineageparts.action.SETTINGS";
 
     /**
      * The key used to get the category from metadata of activities of action
@@ -124,6 +128,13 @@ public class TileUtils {
 
     /**
      * Name of the meta-data item that should be set in the AndroidManifest.xml
+     * to specify the icon background color. The value may or may not be used by Settings app.
+     */
+    public static final String META_DATA_PREFERENCE_ICON_BACKGROUND_HINT =
+            "com.android.settings.bg.hint";
+
+    /**
+     * Name of the meta-data item that should be set in the AndroidManifest.xml
      * to specify the content provider providing the icon that should be displayed for
      * the preference.
      *
@@ -149,13 +160,6 @@ public class TileUtils {
     public static final String META_DATA_PREFERENCE_TITLE = "com.android.settings.title";
 
     /**
-     * @deprecated Use {@link #META_DATA_PREFERENCE_TITLE} with {@code android:resource}
-     */
-    @Deprecated
-    public static final String META_DATA_PREFERENCE_TITLE_RES_ID =
-            "com.android.settings.title.resid";
-
-    /**
      * Name of the meta-data item that should be set in the AndroidManifest.xml
      * to specify the summary text that should be displayed for the preference.
      */
@@ -176,13 +180,15 @@ public class TileUtils {
      * custom view which should be displayed for the preference. The custom view will be inflated
      * as a remote view.
      *
-     * This also can be used with {@link META_DATA_PREFERENCE_SUMMARY_URI} above, by setting the id
+     * This also can be used with {@link #META_DATA_PREFERENCE_SUMMARY_URI}, by setting the id
      * of the summary TextView to '@android:id/summary'.
      */
     public static final String META_DATA_PREFERENCE_CUSTOM_VIEW =
             "com.android.settings.custom_view";
 
     public static final String SETTING_PKG = "com.android.settings";
+
+    public static final String LINEAGE_SETTING_PKG = "org.lineageos.lineageparts";
 
     /**
      * Build a list of DashboardCategory. Each category must be defined in manifest.
@@ -226,6 +232,10 @@ public class TileUtils {
                 // Only add Settings for this user.
                 getTilesForAction(context, user, SETTINGS_ACTION, cache, null, tiles, true,
                         settingPkg);
+                if (SETTING_PKG.equals(settingPkg)) {
+                    getTilesForAction(context, user, LINEAGE_SETTINGS_ACTION, cache, null, tiles,
+                        true, LINEAGE_SETTING_PKG);
+                }
                 getTilesForAction(context, user, OPERATOR_SETTINGS, cache,
                         OPERATOR_DEFAULT_CATEGORY, tiles, false, true, settingPkg);
                 getTilesForAction(context, user, MANUFACTURER_SETTINGS, cache,
@@ -260,7 +270,7 @@ public class TileUtils {
         }
         ArrayList<DashboardCategory> categories = new ArrayList<>(categoryMap.values());
         for (DashboardCategory category : categories) {
-            Collections.sort(category.tiles, TILE_COMPARATOR);
+            category.sortTiles();
         }
         Collections.sort(categories, CATEGORY_COMPARATOR);
         if (DEBUG_TIMING) Log.d(LOG_TAG, "getCategories took "
@@ -294,8 +304,10 @@ public class TileUtils {
                 continue;
             }
             category.title = resolved.activityInfo.loadLabel(pm);
-            category.priority = SETTING_PKG.equals(
-                    resolved.activityInfo.applicationInfo.packageName) ? resolved.priority : 0;
+            String pkgName = resolved.activityInfo.applicationInfo.packageName;
+            category.priority = (SETTING_PKG.equals(pkgName) || LINEAGE_SETTING_PKG.equals(pkgName))
+                    ? resolved.priority
+                    : 0;
             if (DEBUG) Log.d(LOG_TAG, "Adding category " + category.title);
         }
 
@@ -421,14 +433,7 @@ public class TileUtils {
                                     metaData.getBoolean(META_DATA_PREFERENCE_ICON_TINTABLE);
                         }
                     }
-                    int resId = 0;
-                    if (metaData.containsKey(META_DATA_PREFERENCE_TITLE_RES_ID)) {
-                        resId = metaData.getInt(META_DATA_PREFERENCE_TITLE_RES_ID);
-                        if (resId != 0) {
-                            title = res.getString(resId);
-                        }
-                    }
-                    if ((resId == 0) && metaData.containsKey(META_DATA_PREFERENCE_TITLE)) {
+                    if (metaData.containsKey(META_DATA_PREFERENCE_TITLE)) {
                         if (metaData.get(META_DATA_PREFERENCE_TITLE) instanceof Integer) {
                             title = res.getString(metaData.getInt(META_DATA_PREFERENCE_TITLE));
                         } else {
@@ -466,12 +471,14 @@ public class TileUtils {
             }
 
             // Set the icon
-            if (iconFromUri != null) {
-                tile.icon = Icon.createWithResource(iconFromUri.first, iconFromUri.second);
-            } else {
-                if (icon == 0) {
+            if (icon == 0) {
+                // Only fallback to activityinfo.icon if metadata does not contain ICON_URI.
+                // ICON_URI should be loaded in app UI when need the icon object.
+                if (!tile.metaData.containsKey(META_DATA_PREFERENCE_ICON_URI)) {
                     icon = activityInfo.icon;
                 }
+            }
+            if (icon != 0) {
                 tile.icon = Icon.createWithResource(activityInfo.packageName, icon);
             }
 
@@ -513,7 +520,7 @@ public class TileUtils {
 
     /**
      * Gets the icon package name and resource id from content provider.
-     * @param Context context
+     * @param context context
      * @param packageName package name of the target activity
      * @param uriString URI for the content provider
      * @param providerMap Maps URI authorities to providers
@@ -543,7 +550,7 @@ public class TileUtils {
 
     /**
      * Gets text associated with the input key from the content provider.
-     * @param Context context
+     * @param context context
      * @param uriString URI for the content provider
      * @param providerMap Maps URI authorities to providers
      * @param key Key mapping to the text in bundle returned by the content provider
@@ -606,14 +613,6 @@ public class TileUtils {
         }
         return pathSegments.get(0);
     }
-
-    public static final Comparator<Tile> TILE_COMPARATOR =
-            new Comparator<Tile>() {
-        @Override
-        public int compare(Tile lhs, Tile rhs) {
-            return rhs.priority - lhs.priority;
-        }
-    };
 
     private static final Comparator<DashboardCategory> CATEGORY_COMPARATOR =
             new Comparator<DashboardCategory>() {

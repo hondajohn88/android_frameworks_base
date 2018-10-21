@@ -33,19 +33,19 @@ import android.os.UserManager;
 import android.provider.Settings.Global;
 import android.provider.Settings.Secure;
 import android.service.notification.Condition;
-import android.service.notification.IConditionListener;
 import android.service.notification.ZenModeConfig;
 import android.service.notification.ZenModeConfig.ZenRule;
-import android.support.annotation.VisibleForTesting;
 import android.util.Log;
 import android.util.Slog;
 
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.systemui.qs.GlobalSetting;
 import com.android.systemui.settings.CurrentUserTracker;
 import com.android.systemui.util.Utils;
 
-import java.util.ArrayList;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Objects;
 
 /** Platform implementation of the zen mode controller. **/
@@ -53,7 +53,7 @@ public class ZenModeControllerImpl extends CurrentUserTracker implements ZenMode
     private static final String TAG = "ZenModeController";
     private static final boolean DEBUG = Log.isLoggable(TAG, Log.DEBUG);
 
-    private final ArrayList<Callback> mCallbacks = new ArrayList<Callback>();
+    private List<Callback> mCallbacks = new CopyOnWriteArrayList<Callback>();
     private final Context mContext;
     private final GlobalSetting mModeSetting;
     private final GlobalSetting mConfigSetting;
@@ -64,9 +64,9 @@ public class ZenModeControllerImpl extends CurrentUserTracker implements ZenMode
     private final UserManager mUserManager;
 
     private int mUserId;
-    private boolean mRequesting;
     private boolean mRegistered;
     private ZenModeConfig mConfig;
+    private int mZenMode;
 
     public ZenModeControllerImpl(Context context, Handler handler) {
         super(context);
@@ -74,6 +74,7 @@ public class ZenModeControllerImpl extends CurrentUserTracker implements ZenMode
         mModeSetting = new GlobalSetting(mContext, handler, Global.ZEN_MODE) {
             @Override
             protected void handleValueChanged(int value) {
+                updateZenMode(value);
                 fireZenChanged(value);
             }
         };
@@ -86,7 +87,9 @@ public class ZenModeControllerImpl extends CurrentUserTracker implements ZenMode
         mNoMan = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
         mConfig = mNoMan.getZenModeConfig();
         mModeSetting.setListening(true);
+        updateZenMode(mModeSetting.getValue());
         mConfigSetting.setListening(true);
+        updateZenModeConfig();
         mAlarmManager = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
         mSetupObserver = new SetupObserver(handler);
         mSetupObserver.register();
@@ -101,7 +104,20 @@ public class ZenModeControllerImpl extends CurrentUserTracker implements ZenMode
     }
 
     @Override
+    public boolean areNotificationsHiddenInShade() {
+        if (mZenMode != Global.ZEN_MODE_OFF) {
+            return (mConfig.suppressedVisualEffects & NotificationManager.Policy
+                    .SUPPRESSED_EFFECT_NOTIFICATION_LIST) != 0;
+        }
+        return false;
+    }
+
+    @Override
     public void addCallback(Callback callback) {
+        if (callback == null) {
+            Slog.e(TAG, "Attempted to add a null callback.");
+            return;
+        }
         mCallbacks.add(callback);
     }
 
@@ -112,7 +128,7 @@ public class ZenModeControllerImpl extends CurrentUserTracker implements ZenMode
 
     @Override
     public int getZen() {
-        return mModeSetting.getValue();
+        return mZenMode;
     }
 
     @Override
@@ -171,45 +187,37 @@ public class ZenModeControllerImpl extends CurrentUserTracker implements ZenMode
     }
 
     private void fireNextAlarmChanged() {
-        Utils.safeForeach(mCallbacks, c -> c.onNextAlarmChanged());
+        mCallbacks.forEach(c -> c.onNextAlarmChanged());
     }
 
     private void fireEffectsSuppressorChanged() {
-        Utils.safeForeach(mCallbacks, c -> c.onEffectsSupressorChanged());
+        mCallbacks.forEach(c -> c.onEffectsSupressorChanged());
     }
 
     private void fireZenChanged(int zen) {
-        Utils.safeForeach(mCallbacks, c -> c.onZenChanged(zen));
+        mCallbacks.forEach(c -> c.onZenChanged(zen));
     }
 
     private void fireZenAvailableChanged(boolean available) {
-        Utils.safeForeach(mCallbacks, c -> c.onZenAvailableChanged(available));
-    }
-
-    private void fireConditionsChanged(Condition[] conditions) {
-        Utils.safeForeach(mCallbacks, c -> c.onConditionsChanged(conditions));
+        mCallbacks.forEach(c -> c.onZenAvailableChanged(available));
     }
 
     private void fireManualRuleChanged(ZenRule rule) {
-        Utils.safeForeach(mCallbacks, c -> c.onManualRuleChanged(rule));
+        mCallbacks.forEach(c -> c.onManualRuleChanged(rule));
     }
 
     @VisibleForTesting
     protected void fireConfigChanged(ZenModeConfig config) {
-        Utils.safeForeach(mCallbacks, c -> c.onConfigChanged(config));
+        mCallbacks.forEach(c -> c.onConfigChanged(config));
     }
 
-    private void updateConditions(Condition[] conditions) {
-        if (conditions == null || conditions.length == 0) return;
-        for (Condition c : conditions) {
-            if ((c.flags & Condition.FLAG_RELEVANT_NOW) == 0) continue;
-            mConditions.put(c.id, c);
-        }
-        fireConditionsChanged(
-                mConditions.values().toArray(new Condition[mConditions.values().size()]));
+    @VisibleForTesting
+    protected void updateZenMode(int mode) {
+        mZenMode = mode;
     }
 
-    private void updateZenModeConfig() {
+    @VisibleForTesting
+    protected void updateZenModeConfig() {
         final ZenModeConfig config = mNoMan.getZenModeConfig();
         if (Objects.equals(config, mConfig)) return;
         final ZenRule oldRule = mConfig != null ? mConfig.manualRule : null;
@@ -219,16 +227,6 @@ public class ZenModeControllerImpl extends CurrentUserTracker implements ZenMode
         if (Objects.equals(oldRule, newRule)) return;
         fireManualRuleChanged(newRule);
     }
-
-    private final IConditionListener mListener = new IConditionListener.Stub() {
-        @Override
-        public void onConditionsReceived(Condition[] conditions) {
-            if (DEBUG) Slog.d(TAG, "onConditionsReceived "
-                    + (conditions == null ? 0 : conditions.length) + " mRequesting=" + mRequesting);
-            if (!mRequesting) return;
-            updateConditions(conditions);
-        }
-    };
 
     private final BroadcastReceiver mReceiver = new BroadcastReceiver() {
         @Override

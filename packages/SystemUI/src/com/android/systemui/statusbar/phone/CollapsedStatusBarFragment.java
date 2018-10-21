@@ -14,10 +14,9 @@
 
 package com.android.systemui.statusbar.phone;
 
+import static android.app.StatusBarManager.DISABLE_CLOCK;
 import static android.app.StatusBarManager.DISABLE_NOTIFICATION_ICONS;
 import static android.app.StatusBarManager.DISABLE_SYSTEM_INFO;
-
-import static com.android.systemui.statusbar.phone.StatusBar.reinflateSignalCluster;
 
 import android.annotation.Nullable;
 import android.app.Fragment;
@@ -34,7 +33,6 @@ import com.android.systemui.Interpolators;
 import com.android.systemui.R;
 import com.android.systemui.SysUiServiceProvider;
 import com.android.systemui.statusbar.CommandQueue;
-import com.android.systemui.statusbar.SignalClusterView;
 import com.android.systemui.statusbar.phone.StatusBarIconController.DarkIconManager;
 import com.android.systemui.statusbar.policy.DarkIconDispatcher;
 import com.android.systemui.statusbar.policy.EncryptionHelper;
@@ -51,15 +49,23 @@ public class CollapsedStatusBarFragment extends Fragment implements CommandQueue
 
     public static final String TAG = "CollapsedStatusBarFragment";
     private static final String EXTRA_PANEL_STATE = "panel_state";
+    public static final String STATUS_BAR_ICON_MANAGER_TAG = "status_bar_icon_manager";
+    public static final int FADE_IN_DURATION = 320;
+    public static final int FADE_IN_DELAY = 50;
     private PhoneStatusBarView mStatusBar;
     private KeyguardMonitor mKeyguardMonitor;
     private NetworkController mNetworkController;
     private LinearLayout mSystemIconArea;
+    private LinearLayout mCustomIconArea;
+    private LinearLayout mCenterClockLayout;
+    private View mCrDroidLogoRight;
     private View mNotificationIconAreaInner;
     private int mDisabled1;
     private StatusBar mStatusBarComponent;
     private DarkIconManager mDarkIconManager;
-    private SignalClusterView mSignalClusterView;
+    private View mOperatorNameFrame;
+    private ClockController mClockController;
+    private boolean mIsClockBlacklisted;
 
     private SignalCallback mSignalCallback = new SignalCallback() {
         @Override
@@ -90,13 +96,16 @@ public class CollapsedStatusBarFragment extends Fragment implements CommandQueue
             mStatusBar.go(savedInstanceState.getInt(EXTRA_PANEL_STATE));
         }
         mDarkIconManager = new DarkIconManager(view.findViewById(R.id.statusIcons));
+        mDarkIconManager.setShouldLog(true);
         Dependency.get(StatusBarIconController.class).addIconGroup(mDarkIconManager);
         mSystemIconArea = mStatusBar.findViewById(R.id.system_icon_area);
-        mSignalClusterView = mStatusBar.findViewById(R.id.signal_cluster);
-        Dependency.get(DarkIconDispatcher.class).addDarkReceiver(mSignalClusterView);
-        // Default to showing until we know otherwise.
+        mCustomIconArea = mStatusBar.findViewById(R.id.left_icon_area);
+        mCenterClockLayout = (LinearLayout) mStatusBar.findViewById(R.id.center_clock_layout);
+        mCrDroidLogoRight = mStatusBar.findViewById(R.id.crdroid_logo_right);
+        mClockController = new ClockController(mStatusBar);
         showSystemIconArea(false);
         initEmergencyCryptkeeperText();
+        initOperatorName();
     }
 
     @Override
@@ -120,7 +129,6 @@ public class CollapsedStatusBarFragment extends Fragment implements CommandQueue
     @Override
     public void onDestroyView() {
         super.onDestroyView();
-        Dependency.get(DarkIconDispatcher.class).removeDarkReceiver(mSignalClusterView);
         Dependency.get(StatusBarIconController.class).removeIconGroup(mDarkIconManager);
         if (mNetworkController.hasEmergencyCryptKeeperText()) {
             mNetworkController.removeCallback(mSignalCallback);
@@ -150,8 +158,10 @@ public class CollapsedStatusBarFragment extends Fragment implements CommandQueue
         if ((diff1 & DISABLE_SYSTEM_INFO) != 0) {
             if ((state1 & DISABLE_SYSTEM_INFO) != 0) {
                 hideSystemIconArea(animate);
+                hideOperatorName(animate);
             } else {
                 showSystemIconArea(animate);
+                showOperatorName(animate);
             }
         }
         if ((diff1 & DISABLE_NOTIFICATION_ICONS) != 0) {
@@ -169,6 +179,7 @@ public class CollapsedStatusBarFragment extends Fragment implements CommandQueue
                 && shouldHideNotificationIcons()) {
             state |= DISABLE_NOTIFICATION_ICONS;
             state |= DISABLE_SYSTEM_INFO;
+            state |= DISABLE_CLOCK;
         }
         if (mNetworkController != null && EncryptionHelper.IS_DATA_ENCRYPTED) {
             if (mNetworkController.hasEmergencyCryptKeeperText()) {
@@ -193,42 +204,85 @@ public class CollapsedStatusBarFragment extends Fragment implements CommandQueue
 
     public void hideSystemIconArea(boolean animate) {
         animateHide(mSystemIconArea, animate);
+        animateHide(mCenterClockLayout, animate);
+        animateHide(mCrDroidLogoRight, animate);
     }
 
     public void showSystemIconArea(boolean animate) {
         animateShow(mSystemIconArea, animate);
+        animateShow(mCenterClockLayout, animate);
+        animateShow(mCrDroidLogoRight, animate);
+    }
+
+    /**
+     * If panel is expanded/expanding it usually means QS shade is opening, so
+     * don't set the clock GONE otherwise it'll mess up the animation.
+     */
+    private int clockHiddenMode() {
+        if (!mStatusBar.isClosed() && !mKeyguardMonitor.isShowing()) {
+            return View.INVISIBLE;
+        }
+        return View.GONE;
     }
 
     public void hideNotificationIconArea(boolean animate) {
         animateHide(mNotificationIconAreaInner, animate);
+        animateHide(mCustomIconArea, animate);
+        animateHide(mCenterClockLayout, animate);
     }
 
     public void showNotificationIconArea(boolean animate) {
         animateShow(mNotificationIconAreaInner, animate);
+        animateShow(mCustomIconArea, animate);
+        animateShow(mCenterClockLayout, animate);
+    }
+
+    public void hideOperatorName(boolean animate) {
+        if (mOperatorNameFrame != null) {
+            animateHide(mOperatorNameFrame, animate);
+        }
+    }
+
+    public void showOperatorName(boolean animate) {
+        if (mOperatorNameFrame != null) {
+            animateShow(mOperatorNameFrame, animate);
+        }
+    }
+
+    /**
+     * Animate a view to INVISIBLE or GONE
+     */
+    private void animateHiddenState(final View v, int state, boolean animate) {
+        v.animate().cancel();
+        if (!animate) {
+            v.setAlpha(0f);
+            v.setVisibility(state);
+            return;
+        }
+
+        v.animate()
+                .alpha(0f)
+                .setDuration(160)
+                .setStartDelay(0)
+                .setInterpolator(Interpolators.ALPHA_OUT)
+                .withEndAction(() -> v.setVisibility(state));
     }
 
     /**
      * Hides a view.
      */
     private void animateHide(final View v, boolean animate) {
-        v.animate().cancel();
-        if (!animate) {
-            v.setAlpha(0f);
-            v.setVisibility(View.INVISIBLE);
+        if (v.getVisibility() == View.GONE)
             return;
-        }
-        v.animate()
-                .alpha(0f)
-                .setDuration(160)
-                .setStartDelay(0)
-                .setInterpolator(Interpolators.ALPHA_OUT)
-                .withEndAction(() -> v.setVisibility(View.INVISIBLE));
+        animateHiddenState(v, View.INVISIBLE, animate);
     }
 
     /**
      * Shows a view, and synchronizes the animation with Keyguard exit animations, if applicable.
      */
     private void animateShow(View v, boolean animate) {
+        if (v.getVisibility() == View.GONE)
+            return;
         v.animate().cancel();
         v.setVisibility(View.VISIBLE);
         if (!animate) {
@@ -237,9 +291,9 @@ public class CollapsedStatusBarFragment extends Fragment implements CommandQueue
         }
         v.animate()
                 .alpha(1f)
-                .setDuration(320)
+                .setDuration(FADE_IN_DURATION)
                 .setInterpolator(Interpolators.ALPHA_IN)
-                .setStartDelay(50)
+                .setStartDelay(FADE_IN_DELAY)
 
                 // We need to clean up any pending end action from animateHide if we call
                 // both hide and show in the same frame before the animation actually gets started.
@@ -266,6 +320,13 @@ public class CollapsedStatusBarFragment extends Fragment implements CommandQueue
         } else if (emergencyViewStub != null) {
             ViewGroup parent = (ViewGroup) emergencyViewStub.getParent();
             parent.removeView(emergencyViewStub);
+        }
+    }
+
+    private void initOperatorName() {
+        if (getResources().getBoolean(R.bool.config_showOperatorNameInStatusBar)) {
+            ViewStub stub = mStatusBar.findViewById(R.id.operator_name);
+            mOperatorNameFrame = stub.inflate();
         }
     }
 }

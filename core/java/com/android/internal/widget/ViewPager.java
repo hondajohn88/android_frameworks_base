@@ -1204,7 +1204,7 @@ public class ViewPager extends ViewGroup {
         Parcelable adapterState;
         ClassLoader loader;
 
-        public SavedState(Parcelable superState) {
+        public SavedState(@NonNull Parcelable superState) {
             super(superState);
         }
 

@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2011 The Android Open Source Project
+ * Copyright (C) 2018 The LineageOS Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +21,7 @@ import android.content.ContentResolver;
 import android.content.Context;
 import android.content.res.Resources;
 import android.net.ConnectivityManager;
+import android.net.Network;
 import android.net.NetworkInfo;
 import android.net.SntpClient;
 import android.os.SystemClock;
@@ -39,20 +41,22 @@ public class NtpTrustedTime implements TrustedTime {
     private static NtpTrustedTime sSingleton;
     private static Context sContext;
 
-    private final String mServer;
+    private String mServer;
     private final long mTimeout;
 
     private ConnectivityManager mCM;
 
     private boolean mHasCache;
+    private final boolean mHasSecureServer;
     private long mCachedNtpTime;
     private long mCachedNtpElapsedRealtime;
     private long mCachedNtpCertainty;
 
-    private NtpTrustedTime(String server, long timeout) {
+    private NtpTrustedTime(String server, long timeout, boolean hasSecureServer) {
         if (LOGD) Log.d(TAG, "creating NtpTrustedTime using " + server);
         mServer = server;
         mTimeout = timeout;
+        mHasSecureServer = hasSecureServer;
     }
 
     public static synchronized NtpTrustedTime getInstance(Context context) {
@@ -71,7 +75,7 @@ public class NtpTrustedTime implements TrustedTime {
                     resolver, Settings.Global.NTP_TIMEOUT, defaultTimeout);
 
             final String server = secureServer != null ? secureServer : defaultServer;
-            sSingleton = new NtpTrustedTime(server, timeout);
+            sSingleton = new NtpTrustedTime(server, timeout, secureServer != null);
             sContext = context;
         }
 
@@ -80,6 +84,18 @@ public class NtpTrustedTime implements TrustedTime {
 
     @Override
     public boolean forceRefresh() {
+        // We can't do this at initialization time: ConnectivityService might not be running yet.
+        synchronized (this) {
+            if (mCM == null) {
+                mCM = sContext.getSystemService(ConnectivityManager.class);
+            }
+        }
+
+        final Network network = mCM == null ? null : mCM.getActiveNetwork();
+        return forceRefresh(network);
+    }
+
+    public boolean forceRefresh(Network network) {
         if (TextUtils.isEmpty(mServer)) {
             // missing server, so no trusted time available
             return false;
@@ -88,11 +104,11 @@ public class NtpTrustedTime implements TrustedTime {
         // We can't do this at initialization time: ConnectivityService might not be running yet.
         synchronized (this) {
             if (mCM == null) {
-                mCM = (ConnectivityManager) sContext.getSystemService(Context.CONNECTIVITY_SERVICE);
+                mCM = sContext.getSystemService(ConnectivityManager.class);
             }
         }
 
-        final NetworkInfo ni = mCM == null ? null : mCM.getActiveNetworkInfo();
+        final NetworkInfo ni = mCM == null ? null : mCM.getNetworkInfo(network);
         if (ni == null || !ni.isConnected()) {
             if (LOGD) Log.d(TAG, "forceRefresh: no connectivity");
             return false;
@@ -101,7 +117,12 @@ public class NtpTrustedTime implements TrustedTime {
 
         if (LOGD) Log.d(TAG, "forceRefresh() from cache miss");
         final SntpClient client = new SntpClient();
-        if (client.requestTime(mServer, (int) mTimeout)) {
+        if (!mHasSecureServer) {
+            mServer = sContext.getResources().getString(
+                    com.android.internal.R.string.config_ntpServer);
+            if (LOGD) Log.d(TAG, "NTP server changed to " + mServer);
+        }
+        if (client.requestTime(mServer, (int) mTimeout, network)) {
             mHasCache = true;
             mCachedNtpTime = client.getNtpTime();
             mCachedNtpElapsedRealtime = client.getNtpTimeReference();

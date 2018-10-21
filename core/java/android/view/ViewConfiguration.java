@@ -40,7 +40,7 @@ public class ViewConfiguration {
     /**
      * Duration of the fade when scrollbars fade away in milliseconds
      */
-    private static final int SCROLL_BAR_FADE_DURATION = 250;
+    private static final int SCROLL_BAR_FADE_DURATION = 280;
 
     /**
      * Default delay before the scrollbars fade in milliseconds
@@ -56,13 +56,13 @@ public class ViewConfiguration {
      * Defines the duration in milliseconds of the pressed state in child
      * components.
      */
-    private static final int PRESSED_STATE_DURATION = 64;
+    private static final int PRESSED_STATE_DURATION = 56;
 
     /**
      * Defines the default duration in milliseconds before a press turns into
      * a long press
      */
-    private static final int DEFAULT_LONG_PRESS_TIMEOUT = 500;
+    private static final int DEFAULT_LONG_PRESS_TIMEOUT = 250;
 
     /**
      * Defines the default duration in milliseconds between the first tap's up event and the second
@@ -80,28 +80,33 @@ public class ViewConfiguration {
      * appropriate button to bring up the global actions dialog (power off,
      * lock screen, etc).
      */
-    private static final int GLOBAL_ACTIONS_KEY_TIMEOUT = 500;
+    private static final int GLOBAL_ACTIONS_KEY_TIMEOUT = 250;
 
     /**
      * Defines the duration in milliseconds a user needs to hold down the
-     * appropriate button to bring up the accessibility shortcut (first time) or enable it
-     * (once shortcut is configured).
+     * appropriate button to bring up the accessibility shortcut for the first time
      */
     private static final int A11Y_SHORTCUT_KEY_TIMEOUT = 3000;
+
+    /**
+     * Defines the duration in milliseconds a user needs to hold down the
+     * appropriate button to enable the accessibility shortcut once it's configured.
+     */
+    private static final int A11Y_SHORTCUT_KEY_TIMEOUT_AFTER_CONFIRMATION = 1000;
 
     /**
      * Defines the duration in milliseconds we will wait to see if a touch event
      * is a tap or a scroll. If the user does not move within this interval, it is
      * considered to be a tap.
      */
-    private static final int TAP_TIMEOUT = 100;
+    private static final int TAP_TIMEOUT = 96;
 
     /**
      * Defines the duration in milliseconds we will wait to see if a touch event
      * is a jump tap. If the user does not complete the jump tap within this interval, it is
      * considered to be a tap.
      */
-    private static final int JUMP_TAP_TIMEOUT = 500;
+    private static final int JUMP_TAP_TIMEOUT = 250;
 
     /**
      * Defines the duration in milliseconds between the first tap's up event and
@@ -135,12 +140,12 @@ public class ViewConfiguration {
      * Defines the duration in milliseconds we want to display zoom controls in response
      * to a user panning within an application.
      */
-    private static final int ZOOM_CONTROLS_TIMEOUT = 3000;
+    private static final int ZOOM_CONTROLS_TIMEOUT = 1500;
 
     /**
      * Inset in dips to look for touchable content when the user touches the edge of the screen
      */
-    private static final int EDGE_SLOP = 12;
+    private static final int EDGE_SLOP = 6;
 
     /**
      * Distance a touch can wander before we think the user is scrolling in dips.
@@ -194,12 +199,12 @@ public class ViewConfiguration {
     /**
      * Minimum velocity to initiate a fling, as measured in dips per second
      */
-    private static final int MINIMUM_FLING_VELOCITY = 50;
+    private static final int MINIMUM_FLING_VELOCITY = 60;
 
     /**
      * Maximum velocity to initiate a fling, as measured in dips per second
      */
-    private static final int MAXIMUM_FLING_VELOCITY = 8000;
+    private static final int MAXIMUM_FLING_VELOCITY = 16000;
 
     /**
      * Delay before dispatching a recurring accessibility event in milliseconds.
@@ -214,12 +219,12 @@ public class ViewConfiguration {
      * should be at least equal to the size of the screen in ARGB888 format.
      */
     @Deprecated
-    private static final int MAXIMUM_DRAWING_CACHE_SIZE = 480 * 800 * 4; // ARGB8888
+    private static final int MAXIMUM_DRAWING_CACHE_SIZE = 480 * 854 * 4; // ARGB8888
 
     /**
      * The coefficient of friction applied to flings/scrolls.
      */
-    private static final float SCROLL_FRICTION = 0.015f;
+    private static final float SCROLL_FRICTION = 0.007f;
 
     /**
      * Max distance in dips to overscroll for edge effects
@@ -285,6 +290,7 @@ public class ViewConfiguration {
     private final int mMaximumFlingVelocity;
     private final int mScrollbarSize;
     private final int mTouchSlop;
+    private final int mHoverSlop;
     private final int mMinScrollbarTouchTarget;
     private final int mDoubleTapTouchSlop;
     private final int mPagingTouchSlop;
@@ -297,6 +303,7 @@ public class ViewConfiguration {
     private final long mGlobalActionsKeyTimeout;
     private final float mVerticalScrollFactor;
     private final float mHorizontalScrollFactor;
+    private final boolean mShowMenuShortcutsWhenKeyboardPresent;
 
     private boolean sHasPermanentMenuKey;
     private boolean sHasPermanentMenuKeySet;
@@ -315,6 +322,7 @@ public class ViewConfiguration {
         mMaximumFlingVelocity = MAXIMUM_FLING_VELOCITY;
         mScrollbarSize = SCROLL_BAR_SIZE;
         mTouchSlop = TOUCH_SLOP;
+        mHoverSlop = TOUCH_SLOP / 2;
         mMinScrollbarTouchTarget = MIN_SCROLLBAR_TOUCH_TARGET;
         mDoubleTapTouchSlop = DOUBLE_TAP_TOUCH_SLOP;
         mPagingTouchSlop = PAGING_TOUCH_SLOP;
@@ -328,6 +336,7 @@ public class ViewConfiguration {
         mGlobalActionsKeyTimeout = GLOBAL_ACTIONS_KEY_TIMEOUT;
         mHorizontalScrollFactor = HORIZONTAL_SCROLL_FACTOR;
         mVerticalScrollFactor = VERTICAL_SCROLL_FACTOR;
+        mShowMenuShortcutsWhenKeyboardPresent = false;
     }
 
     /**
@@ -402,6 +411,8 @@ public class ViewConfiguration {
                 com.android.internal.R.bool.config_ui_enableFadingMarquee);
         mTouchSlop = res.getDimensionPixelSize(
                 com.android.internal.R.dimen.config_viewConfigurationTouchSlop);
+        mHoverSlop = res.getDimensionPixelSize(
+                com.android.internal.R.dimen.config_viewConfigurationHoverSlop);
         mMinScrollbarTouchTarget = res.getDimensionPixelSize(
                 com.android.internal.R.dimen.config_minScrollbarTouchTarget);
         mPagingTouchSlop = mTouchSlop * 2;
@@ -419,6 +430,10 @@ public class ViewConfiguration {
                 com.android.internal.R.dimen.config_horizontalScrollFactor);
         mVerticalScrollFactor = res.getDimensionPixelSize(
                 com.android.internal.R.dimen.config_verticalScrollFactor);
+
+        mShowMenuShortcutsWhenKeyboardPresent = res.getBoolean(
+            com.android.internal.R.bool.config_showMenuShortcutsWhenKeyboardPresent);
+
     }
 
     /**
@@ -632,6 +647,14 @@ public class ViewConfiguration {
      */
     public int getScaledTouchSlop() {
         return mTouchSlop;
+    }
+
+    /**
+     * @return Distance in pixels a hover can wander while it is still considered "stationary".
+     *
+     */
+    public int getScaledHoverSlop() {
+        return mHoverSlop;
     }
 
     /**
@@ -851,6 +874,15 @@ public class ViewConfiguration {
     }
 
     /**
+     * @return The amount of time a user needs to press the relevant keys to activate the
+     *   accessibility shortcut after it's confirmed that accessibility shortcut is used.
+     * @hide
+     */
+    public long getAccessibilityShortcutKeyTimeoutAfterConfirmation() {
+        return A11Y_SHORTCUT_KEY_TIMEOUT_AFTER_CONFIRMATION;
+    }
+
+    /**
      * The amount of friction applied to scrolls and flings.
      *
      * @return A scalar dimensionless value representing the coefficient of
@@ -881,6 +913,15 @@ public class ViewConfiguration {
      */
     public boolean hasPermanentMenuKey() {
         return sHasPermanentMenuKey;
+    }
+
+    /**
+     * Check if shortcuts should be displayed in menus.
+     *
+     * @return {@code True} if shortcuts should be displayed in menus.
+     */
+    public boolean shouldShowMenuShortcutsWhenKeyboardPresent() {
+        return mShowMenuShortcutsWhenKeyboardPresent;
     }
 
     /**

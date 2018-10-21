@@ -19,15 +19,22 @@ package android.os;
 import android.Manifest;
 import android.annotation.RequiresPermission;
 import android.annotation.SystemApi;
+import android.annotation.TestApi;
+import android.app.Application;
 import android.content.Context;
 import android.text.TextUtils;
 import android.util.Slog;
+import android.view.View;
 
 import com.android.internal.telephony.TelephonyProperties;
 
 import dalvik.system.VMRuntime;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.util.Objects;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Information about the current build, extracted from system properties.
@@ -52,6 +59,11 @@ public class Build {
 
     /** The name of the underlying board, like "goldfish". */
     public static final String BOARD = getString("ro.product.board");
+
+    /**
+     * The build date
+     */
+    public static final String DATE = getString("ro.build.date");
 
     /**
      * The name of the instruction set (CPU type + ABI convention) of native code.
@@ -103,7 +115,7 @@ public class Build {
 
     /**
      * A hardware serial number, if available. Alphanumeric only, case-insensitive.
-     * For apps targeting SDK higher than {@link Build.VERSION_CODES#N_MR1} this
+     * For apps targeting SDK higher than {@link Build.VERSION_CODES#O_MR1} this
      * field is set to {@link Build#UNKNOWN}.
      *
      * @deprecated Use {@link #getSerial()} instead.
@@ -115,8 +127,14 @@ public class Build {
     public static final String SERIAL = getString("no.such.thing");
 
     /**
-     * Gets the hardware serial, if available.
-     * @return The serial if specified.
+     * Gets the hardware serial number, if available.
+     *
+     * <p class="note"><b>Note:</b> Root access may allow you to modify device identifiers, such as
+     * the hardware serial number. If you change these identifiers, you can use
+     * <a href="/training/articles/security-key-attestation.html">key attestation</a> to obtain
+     * proof of the device's original identifiers.
+     *
+     * @return The serial number if specified.
      */
     @RequiresPermission(Manifest.permission.READ_PHONE_STATE)
     public static String getSerial() {
@@ -213,11 +231,31 @@ public class Build {
         public static final String SDK = getString("ro.build.version.sdk");
 
         /**
-         * The user-visible SDK version of the framework; its possible
-         * values are defined in {@link Build.VERSION_CODES}.
+         * The SDK version of the software currently running on this hardware
+         * device. This value never changes while a device is booted, but it may
+         * increase when the hardware manufacturer provides an OTA update.
+         * <p>
+         * Possible values are defined in {@link Build.VERSION_CODES}.
+         *
+         * @see #FIRST_SDK_INT
          */
         public static final int SDK_INT = SystemProperties.getInt(
                 "ro.build.version.sdk", 0);
+
+        /**
+         * The SDK version of the software that <em>initially</em> shipped on
+         * this hardware device. It <em>never</em> changes during the lifetime
+         * of the device, even when {@link #SDK_INT} increases due to an OTA
+         * update.
+         * <p>
+         * Possible values are defined in {@link Build.VERSION_CODES}.
+         *
+         * @see #SDK_INT
+         * @hide
+         */
+        @TestApi
+        public static final int FIRST_SDK_INT = SystemProperties
+                .getInt("ro.product.first_api_level", 0);
 
         /**
          * The developer preview revision of a prerelease SDK. This value will always
@@ -261,7 +299,18 @@ public class Build {
          * we are operating under, we bump the assumed resource platform version by 1.
          * @hide
          */
+        @TestApi
         public static final int RESOURCES_SDK_INT = SDK_INT + ACTIVE_CODENAMES.length;
+
+        /**
+         * The current lowest supported value of app target SDK. Applications targeting
+         * lower values may not function on devices running this SDK version. Its possible
+         * values are defined in {@link Build.VERSION_CODES}.
+         *
+         * @hide
+         */
+        public static final int MIN_SUPPORTED_TARGET_SDK_INT = SystemProperties.getInt(
+                "ro.build.version.min_supported_target_sdk", 0);
     }
 
     /**
@@ -761,6 +810,80 @@ public class Build {
          * <p>Applications targeting this or a later release will get these
          * new changes in behavior:</p>
          * <ul>
+         * <li><a href="{@docRoot}about/versions/oreo/background.html">Background execution limits</a>
+         * are applied to the application.</li>
+         * <li>The behavior of AccountManager's
+         * {@link android.accounts.AccountManager#getAccountsByType},
+         * {@link android.accounts.AccountManager#getAccountsByTypeAndFeatures}, and
+         * {@link android.accounts.AccountManager#hasFeatures} has changed as documented there.</li>
+         * <li>{@link android.app.ActivityManager.RunningAppProcessInfo#IMPORTANCE_PERCEPTIBLE_PRE_26}
+         * is now returned as
+         * {@link android.app.ActivityManager.RunningAppProcessInfo#IMPORTANCE_PERCEPTIBLE}.</li>
+         * <li>The {@link android.app.NotificationManager} now requires the use of notification
+         * channels.</li>
+         * <li>Changes to the strict mode that are set in
+         * {@link Application#onCreate Application.onCreate} will no longer be clobbered after
+         * that function returns.</li>
+         * <li>A shared library apk with native code will have that native code included in
+         * the library path of its clients.</li>
+         * <li>{@link android.content.Context#getSharedPreferences Context.getSharedPreferences}
+         * in credential encrypted storage will throw an exception before the user is unlocked.</li>
+         * <li>Attempting to retrieve a {@link Context#FINGERPRINT_SERVICE} on a device that
+         * does not support that feature will now throw a runtime exception.</li>
+         * <li>{@link android.app.Fragment} will stop any active view animations when
+         * the fragment is stopped.</li>
+         * <li>Some compatibility code in Resources that attempts to use the default Theme
+         * the app may be using will be turned off, requiring the app to explicitly request
+         * resources with the right theme.</li>
+         * <li>{@link android.content.ContentResolver#notifyChange ContentResolver.notifyChange} and
+         * {@link android.content.ContentResolver#registerContentObserver
+         * ContentResolver.registerContentObserver}
+         * will throw a SecurityException if the caller does not have permission to access
+         * the provider (or the provider doesn't exit); otherwise the call will be silently
+         * ignored.</li>
+         * <li>{@link android.hardware.camera2.CameraDevice#createCaptureRequest
+         * CameraDevice.createCaptureRequest} will enable
+         * {@link android.hardware.camera2.CaptureRequest#CONTROL_ENABLE_ZSL} by default for
+         * still image capture.</li>
+         * <li>WallpaperManager's {@link android.app.WallpaperManager#getWallpaperFile},
+         * {@link android.app.WallpaperManager#getDrawable},
+         * {@link android.app.WallpaperManager#getFastDrawable},
+         * {@link android.app.WallpaperManager#peekDrawable}, and
+         * {@link android.app.WallpaperManager#peekFastDrawable} will throw an exception
+         * if you can not access the wallpaper.</li>
+         * <li>The behavior of
+         * {@link android.hardware.usb.UsbDeviceConnection#requestWait UsbDeviceConnection.requestWait}
+         * is modified as per the documentation there.</li>
+         * <li>{@link StrictMode.VmPolicy.Builder#detectAll StrictMode.VmPolicy.Builder.detectAll}
+         * will also enable {@link StrictMode.VmPolicy.Builder#detectContentUriWithoutPermission}
+         * and {@link StrictMode.VmPolicy.Builder#detectUntaggedSockets}.</li>
+         * <li>{@link StrictMode.ThreadPolicy.Builder#detectAll StrictMode.ThreadPolicy.Builder.detectAll}
+         * will also enable {@link StrictMode.ThreadPolicy.Builder#detectUnbufferedIo}.</li>
+         * <li>{@link android.provider.DocumentsContract}'s various methods will throw failure
+         * exceptions back to the caller instead of returning null.
+         * <li>{@link View#hasFocusable View.hasFocusable} now includes auto-focusable views.</li>
+         * <li>{@link android.view.SurfaceView} will no longer always change the underlying
+         * Surface object when something about it changes; apps need to look at the current
+         * state of the object to determine which things they are interested in have changed.</li>
+         * <li>{@link android.view.WindowManager.LayoutParams#TYPE_APPLICATION_OVERLAY} must be
+         * used for overlay windows, other system overlay window types are not allowed.</li>
+         * <li>{@link android.view.ViewTreeObserver#addOnDrawListener
+         * ViewTreeObserver.addOnDrawListener} will throw an exception if called from within
+         * onDraw.</li>
+         * <li>{@link android.graphics.Canvas#setBitmap Canvas.setBitmap} will no longer preserve
+         * the current matrix and clip stack of the canvas.</li>
+         * <li>{@link android.widget.ListPopupWindow#setHeight ListPopupWindow.setHeight}
+         * will throw an exception if a negative height is supplied.</li>
+         * <li>{@link android.widget.TextView} will use internationalized input for numbers,
+         * dates, and times.</li>
+         * <li>{@link android.widget.Toast} must be used for showing toast windows; the toast
+         * window type can not be directly used.</li>
+         * <li>{@link android.net.wifi.WifiManager#getConnectionInfo WifiManager.getConnectionInfo}
+         * requires that the caller hold the location permission to return BSSID/SSID</li>
+         * <li>{@link android.net.wifi.p2p.WifiP2pManager#requestPeers WifiP2pManager.requestPeers}
+         * requires the caller hold the location permission.</li>
+         * <li>{@link android.R.attr#maxAspectRatio} defaults to 0, meaning there is no restriction
+         * on the app's maximum aspect ratio (so it can be stretched to fill larger screens).</li>
          * <li>{@link android.R.attr#focusable} defaults to a new state ({@code auto}) where it will
          * inherit the value of {@link android.R.attr#clickable} unless explicitly overridden.</li>
          * <li>A default theme-appropriate focus-state highlight will be supplied to all Views
@@ -772,12 +895,37 @@ public class Build {
 
         /**
          * O MR1.
+         *
+         * <p>Applications targeting this or a later release will get these
+         * new changes in behavior:</p>
+         * <ul>
+         * <li>Apps exporting and linking to apk shared libraries must explicitly
+         * enumerate all signing certificates in a consistent order.</li>
+         * <li>{@link android.R.attr#screenOrientation} can not be used to request a fixed
+         * orientation if the associated activity is not fullscreen and opaque.</li>
+         * </ul>
          */
         public static final int O_MR1 = 27;
+
+        /**
+         * P.
+         *
+         * <p>Applications targeting this or a later release will get these
+         * new changes in behavior:</p>
+         * <ul>
+         * <li>{@link android.app.Service#startForeground Service.startForeground} requires
+         * that apps hold the permission
+         * {@link android.Manifest.permission#FOREGROUND_SERVICE}.</li>
+         * <li>{@link android.widget.LinearLayout} will always remeasure weighted children,
+         * even if there is no excess space.</li>
+         * </ul>
+         */
+        public static final int P = 28;
     }
 
     /** The type of build, like "user" or "eng". */
     public static final String TYPE = getString("ro.build.type");
+    private static String TYPE_FOR_APPS = parseBuildTypeFromFingerprint();
 
     /** Comma-separated tags describing the build, like "unsigned,debug". */
     public static final String TAGS = getString("ro.build.tags");
@@ -804,6 +952,44 @@ public class Build {
         return finger;
     }
 
+    /*
+     * Some apps like to compare the build type embedded in fingerprint
+     * to the actual build type. As the fingerprint in our case is almost
+     * always hardcoded to the stock ROM fingerprint, provide that instead
+     * of the actual one if possible.
+     */
+    private static String parseBuildTypeFromFingerprint() {
+        final String fingerprint = SystemProperties.get("ro.build.fingerprint");
+        if (TextUtils.isEmpty(fingerprint)) {
+            return null;
+        }
+        Pattern fingerprintPattern =
+                Pattern.compile("(.*)\\/(.*)\\/(.*):(.*)\\/(.*)\\/(.*):(.*)\\/(.*)");
+        Matcher matcher = fingerprintPattern.matcher(fingerprint);
+        return matcher.matches() ? matcher.group(7) : null;
+    }
+
+    /** @hide */
+    public static void adjustBuildTypeIfNeeded() {
+        if (Process.isApplicationUid(Process.myUid()) && !TextUtils.isEmpty(TYPE_FOR_APPS)) {
+            try {
+                // This is sick. TYPE is final (which can't be changed because it's an API
+                // guarantee), but we have to reassign it. Resort to reflection to unset the
+                // final modifier, change the value and restore the final modifier afterwards.
+                Field typeField = Build.class.getField("TYPE");
+                Field accessFlagsField = Field.class.getDeclaredField("accessFlags");
+                accessFlagsField.setAccessible(true);
+                int currentFlags = accessFlagsField.getInt(typeField);
+                accessFlagsField.setInt(typeField, currentFlags & ~Modifier.FINAL);
+                typeField.set(null, TYPE_FOR_APPS);
+                accessFlagsField.setInt(typeField, currentFlags);
+                accessFlagsField.setAccessible(false);
+            } catch (Exception e) {
+                // shouldn't happen, but we don't want to crash the app even if it does happen
+            }
+        }
+    }
+
     /**
      * Ensure that raw fingerprint system property is defined. If it was derived
      * dynamically by {@link #deriveFingerprint()} this is where we push the
@@ -822,20 +1008,8 @@ public class Build {
     }
 
     /**
-     * True if Treble is enabled and required for this device.
-     *
-     * @hide
-     */
-    public static final boolean IS_TREBLE_ENABLED =
-        SystemProperties.getBoolean("ro.treble.enabled", false);
-
-    /**
-     * Verifies the current flash of the device is consistent with what
+     * Verifies the the current flash of the device is consistent with what
      * was expected at build time.
-     *
-     * Treble devices will verify the Vendor Interface (VINTF). A device
-     * launched without Treble:
-     *
      * 1) Checks that device fingerprint is defined and that it matches across
      *    various partitions.
      * 2) Verifies radio and bootloader partitions are those expected in the build.
@@ -845,17 +1019,6 @@ public class Build {
     public static boolean isBuildConsistent() {
         // Don't care on eng builds.  Incremental build may trigger false negative.
         if (IS_ENG) return true;
-
-        if (IS_TREBLE_ENABLED) {
-            int result = VintfObject.verify(new String[0]);
-
-            if (result != 0) {
-                Slog.e(TAG, "Vendor interface is incompatible, error="
-                        + String.valueOf(result));
-            }
-
-            return result == 0;
-        }
 
         final String system = SystemProperties.get("ro.build.fingerprint");
         final String vendor = SystemProperties.get("ro.vendor.build.fingerprint");

@@ -27,7 +27,10 @@ import android.media.IPlaybackConfigDispatcher;
 import android.media.PlayerBase;
 import android.media.VolumeShaper;
 import android.os.Binder;
+import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.IBinder;
+import android.os.Message;
 import android.os.RemoteException;
 import android.util.Log;
 
@@ -97,11 +100,31 @@ public final class PlaybackActivityMonitor
     private final int mMaxAlarmVolume;
     private int mPrivilegedAlarmActiveCount = 0;
 
+    private Handler mHanlder;
+    private HandlerThread mHandlerThread;
+    private static final int MSG_PLAYBACK_CHANGED = 1;
+
     PlaybackActivityMonitor(Context context, int maxAlarmVolume) {
         mContext = context;
         mMaxAlarmVolume = maxAlarmVolume;
         PlayMonitorClient.sListenerDeathMonitor = this;
         AudioPlaybackConfiguration.sPlayerDeathMonitor = this;
+
+        mHandlerThread = new HandlerThread(TAG);
+        mHandlerThread.start();
+        mHanlder = new Handler(mHandlerThread.getLooper()) {
+            @Override
+            public void handleMessage(Message msg) {
+                switch (msg.what) {
+                    case MSG_PLAYBACK_CHANGED:
+                        onDispatchPlaybackChange(msg.arg1 != 0);
+                        break;
+                    default:
+                        Log.d(TAG, "unknow msg:" + msg.what);
+                        break;
+                }
+            }
+        };
     }
 
     //=================================================================
@@ -267,6 +290,7 @@ public final class PlaybackActivityMonitor
 
     public void releasePlayer(int piid, int binderUid) {
         if (DEBUG) { Log.v(TAG, "releasePlayer() for piid=" + piid); }
+        boolean change = false;
         synchronized(mPlayerLock) {
             final AudioPlaybackConfiguration apc = mPlayers.get(new Integer(piid));
             if (checkConfigurationCaller(piid, apc, binderUid)) {
@@ -275,8 +299,11 @@ public final class PlaybackActivityMonitor
                 mPlayers.remove(new Integer(piid));
                 mDuckingManager.removeReleased(apc);
                 checkVolumeForPrivilegedAlarm(apc, AudioPlaybackConfiguration.PLAYER_STATE_RELEASED);
-                apc.handleStateEvent(AudioPlaybackConfiguration.PLAYER_STATE_RELEASED);
+                change = apc.handleStateEvent(AudioPlaybackConfiguration.PLAYER_STATE_RELEASED);
             }
+        }
+        if (change) {
+            dispatchPlaybackChange(true /*iplayerreleased*/);
         }
     }
 
@@ -348,11 +375,20 @@ public final class PlaybackActivityMonitor
         return true;
     }
 
+    private void dispatchPlaybackChange(boolean iplayerReleased) {
+        if (mHanlder != null) {
+            Message msg = mHanlder.obtainMessage(MSG_PLAYBACK_CHANGED,
+                                                 iplayerReleased ? 1 : 0,
+                                                 0,
+                                                 null);
+            msg.sendToTarget();
+        }
+    }
     /**
      * Sends new list after update of playback configurations
      * @param iplayerReleased indicates if the change was due to a player being released
      */
-    private void dispatchPlaybackChange(boolean iplayerReleased) {
+    private void onDispatchPlaybackChange(boolean iplayerReleased) {
         synchronized (mClients) {
             // typical use case, nobody is listening, don't do any work
             if (mClients.isEmpty()) {
@@ -421,7 +457,7 @@ public final class PlaybackActivityMonitor
     private final DuckingManager mDuckingManager = new DuckingManager();
 
     @Override
-    public boolean duckPlayers(FocusRequester winner, FocusRequester loser) {
+    public boolean duckPlayers(FocusRequester winner, FocusRequester loser, boolean forceDuck) {
         if (DEBUG) {
             Log.v(TAG, String.format("duckPlayers: uids winner=%d loser=%d",
                     winner.getClientUid(), loser.getClientUid()));
@@ -441,8 +477,8 @@ public final class PlaybackActivityMonitor
                         && loser.hasSameUid(apc.getClientUid())
                         && apc.getPlayerState() == AudioPlaybackConfiguration.PLAYER_STATE_STARTED)
                 {
-                    if (apc.getAudioAttributes().getContentType() ==
-                            AudioAttributes.CONTENT_TYPE_SPEECH) {
+                    if (!forceDuck && (apc.getAudioAttributes().getContentType() ==
+                            AudioAttributes.CONTENT_TYPE_SPEECH)) {
                         // the player is speaking, ducking will make the speech unintelligible
                         // so let the app handle it instead
                         Log.v(TAG, "not ducking player " + apc.getPlayerInterfaceId()

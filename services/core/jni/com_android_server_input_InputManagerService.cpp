@@ -32,6 +32,7 @@
 #include <atomic>
 #include <cinttypes>
 #include <limits.h>
+#include <android-base/stringprintf.h>
 #include <android_runtime/AndroidRuntime.h>
 #include <android_runtime/Log.h>
 
@@ -64,6 +65,8 @@
 #include "android_hardware_display_DisplayViewport.h"
 
 #define INDENT "  "
+
+using android::base::StringPrintf;
 
 namespace android {
 
@@ -198,7 +201,7 @@ public:
 
     inline sp<InputManager> getInputManager() const { return mInputManager; }
 
-    void dump(String8& dump);
+    void dump(std::string& dump);
 
     void setVirtualDisplayViewports(JNIEnv* env, jobjectArray viewportObjArray);
     void setDisplayViewport(int32_t viewportType, const DisplayViewport& viewport);
@@ -214,6 +217,7 @@ public:
     void setPointerSpeed(int32_t speed);
     void setInputDeviceEnabled(uint32_t deviceId, bool enabled);
     void setShowTouches(bool enabled);
+    void setVolumeKeysRotation(int mode);
     void setInteractive(bool interactive);
     void reloadCalibration();
     void setPointerIconType(int32_t iconId);
@@ -240,7 +244,7 @@ public:
     virtual void notifyConfigurationChanged(nsecs_t when);
     virtual nsecs_t notifyANR(const sp<InputApplicationHandle>& inputApplicationHandle,
             const sp<InputWindowHandle>& inputWindowHandle,
-            const String8& reason);
+            const std::string& reason);
     virtual void notifyInputChannelBroken(const sp<InputWindowHandle>& inputWindowHandle);
     virtual bool filterInputEvent(const InputEvent* inputEvent, uint32_t policyFlags);
     virtual void getDispatcherConfiguration(InputDispatcherConfiguration* outConfig);
@@ -251,7 +255,7 @@ public:
             const KeyEvent* keyEvent, uint32_t policyFlags);
     virtual bool dispatchUnhandledKey(const sp<InputWindowHandle>& inputWindowHandle,
             const KeyEvent* keyEvent, uint32_t policyFlags, KeyEvent* outFallbackKeyEvent);
-    virtual void pokeUserActivity(nsecs_t eventTime, int32_t eventType);
+    virtual void pokeUserActivity(nsecs_t eventTime, int32_t eventType, int32_t keyCode);
     virtual bool checkInjectEventsPermissionNonReentrant(
             int32_t injectorPid, int32_t injectorUid);
 
@@ -293,6 +297,9 @@ private:
         // Pointer capture feature enable/disable.
         bool pointerCapture;
 
+        // Volume keys rotation mode (0 - off, 1 - phone, 2 - tablet)
+        int32_t volumeKeysRotationMode;
+
         // Sprite controller singleton, created on first use.
         sp<SpriteController> spriteController;
 
@@ -333,6 +340,7 @@ NativeInputManager::NativeInputManager(jobject contextObj,
         mLocked.pointerGesturesEnabled = true;
         mLocked.showTouches = false;
         mLocked.pointerCapture = false;
+        mLocked.volumeKeysRotationMode = 0;
     }
     mInteractive = true;
 
@@ -347,28 +355,28 @@ NativeInputManager::~NativeInputManager() {
     env->DeleteGlobalRef(mServiceObj);
 }
 
-void NativeInputManager::dump(String8& dump) {
-    dump.append("Input Manager State:\n");
+void NativeInputManager::dump(std::string& dump) {
+    dump += "Input Manager State:\n";
     {
-        dump.appendFormat(INDENT "Interactive: %s\n", toString(mInteractive.load()));
+        dump += StringPrintf(INDENT "Interactive: %s\n", toString(mInteractive.load()));
     }
     {
         AutoMutex _l(mLock);
-        dump.appendFormat(INDENT "System UI Visibility: 0x%0" PRIx32 "\n",
+        dump += StringPrintf(INDENT "System UI Visibility: 0x%0" PRIx32 "\n",
                 mLocked.systemUiVisibility);
-        dump.appendFormat(INDENT "Pointer Speed: %" PRId32 "\n", mLocked.pointerSpeed);
-        dump.appendFormat(INDENT "Pointer Gestures Enabled: %s\n",
+        dump += StringPrintf(INDENT "Pointer Speed: %" PRId32 "\n", mLocked.pointerSpeed);
+        dump += StringPrintf(INDENT "Pointer Gestures Enabled: %s\n",
                 toString(mLocked.pointerGesturesEnabled));
-        dump.appendFormat(INDENT "Show Touches: %s\n", toString(mLocked.showTouches));
-        dump.appendFormat(INDENT "Pointer Capture Enabled: %s\n", toString(mLocked.pointerCapture));
+        dump += StringPrintf(INDENT "Show Touches: %s\n", toString(mLocked.showTouches));
+        dump += StringPrintf(INDENT "Pointer Capture Enabled: %s\n", toString(mLocked.pointerCapture));
     }
-    dump.append("\n");
+    dump += "\n";
 
     mInputManager->getReader()->dump(dump);
-    dump.append("\n");
+    dump += "\n";
 
     mInputManager->getDispatcher()->dump(dump);
-    dump.append("\n");
+    dump += "\n";
 }
 
 bool NativeInputManager::checkAndClearExceptionFromCallback(JNIEnv* env, const char* methodName) {
@@ -520,6 +528,7 @@ void NativeInputManager::getReaderConfiguration(InputReaderConfiguration* outCon
         outConfig->pointerGesturesEnabled = mLocked.pointerGesturesEnabled;
 
         outConfig->showTouches = mLocked.showTouches;
+        outConfig->volumeKeysRotationMode = mLocked.volumeKeysRotationMode;
 
         outConfig->pointerCapture = mLocked.pointerCapture;
 
@@ -668,7 +677,7 @@ void NativeInputManager::notifyConfigurationChanged(nsecs_t when) {
 }
 
 nsecs_t NativeInputManager::notifyANR(const sp<InputApplicationHandle>& inputApplicationHandle,
-        const sp<InputWindowHandle>& inputWindowHandle, const String8& reason) {
+        const sp<InputWindowHandle>& inputWindowHandle, const std::string& reason) {
 #if DEBUG_INPUT_DISPATCHER_POLICY
     ALOGD("notifyANR");
 #endif
@@ -680,7 +689,7 @@ nsecs_t NativeInputManager::notifyANR(const sp<InputApplicationHandle>& inputApp
             getInputApplicationHandleObjLocalRef(env, inputApplicationHandle);
     jobject inputWindowHandleObj =
             getInputWindowHandleObjLocalRef(env, inputWindowHandle);
-    jstring reasonObj = env->NewStringUTF(reason.string());
+    jstring reasonObj = env->NewStringUTF(reason.c_str());
 
     jlong newTimeout = env->CallLongMethod(mServiceObj,
                 gServiceClassInfo.notifyANR, inputApplicationHandleObj, inputWindowHandleObj,
@@ -876,6 +885,22 @@ void NativeInputManager::setPointerCapture(bool enabled) {
 
     mInputManager->getReader()->requestRefreshConfiguration(
             InputReaderConfiguration::CHANGE_POINTER_CAPTURE);
+}
+
+void NativeInputManager::setVolumeKeysRotation(int mode) {
+    { // acquire lock
+        AutoMutex _l(mLock);
+
+        if (mLocked.volumeKeysRotationMode == mode) {
+            return;
+        }
+
+        ALOGI("Volume keys: rotation mode set to %d.", mode);
+        mLocked.volumeKeysRotationMode = mode;
+    } // release lock
+
+    mInputManager->getReader()->requestRefreshConfiguration(
+            InputReaderConfiguration::CHANGE_VOLUME_KEYS_ROTATION);
 }
 
 void NativeInputManager::setInteractive(bool interactive) {
@@ -1140,9 +1165,9 @@ bool NativeInputManager::dispatchUnhandledKey(const sp<InputWindowHandle>& input
     return result;
 }
 
-void NativeInputManager::pokeUserActivity(nsecs_t eventTime, int32_t eventType) {
+void NativeInputManager::pokeUserActivity(nsecs_t eventTime, int32_t eventType, int32_t keyCode) {
     ATRACE_CALL();
-    android_server_PowerManagerService_userActivity(eventTime, eventType);
+    android_server_PowerManagerService_userActivity(eventTime, eventType, keyCode);
 }
 
 
@@ -1342,7 +1367,7 @@ static void handleInputChannelDisposed(JNIEnv* env,
     NativeInputManager* im = static_cast<NativeInputManager*>(data);
 
     ALOGW("Input channel object '%s' was disposed without first being unregistered with "
-            "the input manager!", inputChannel->getName().string());
+            "the input manager!", inputChannel->getName().c_str());
     im->unregisterInputChannel(env, inputChannel);
 }
 
@@ -1363,9 +1388,9 @@ static void nativeRegisterInputChannel(JNIEnv* env, jclass /* clazz */,
     status_t status = im->registerInputChannel(
             env, inputChannel, inputWindowHandle, monitor);
     if (status) {
-        String8 message;
-        message.appendFormat("Failed to register input channel.  status=%d", status);
-        jniThrowRuntimeException(env, message.string());
+        std::string message;
+        message += StringPrintf("Failed to register input channel.  status=%d", status);
+        jniThrowRuntimeException(env, message.c_str());
         return;
     }
 
@@ -1390,9 +1415,9 @@ static void nativeUnregisterInputChannel(JNIEnv* env, jclass /* clazz */,
 
     status_t status = im->unregisterInputChannel(env, inputChannel);
     if (status && status != BAD_VALUE) { // ignore already unregistered channel
-        String8 message;
-        message.appendFormat("Failed to unregister input channel.  status=%d", status);
-        jniThrowRuntimeException(env, message.string());
+        std::string message;
+        message += StringPrintf("Failed to unregister input channel.  status=%d", status);
+        jniThrowRuntimeException(env, message.c_str());
     }
 }
 
@@ -1512,6 +1537,13 @@ static void nativeSetShowTouches(JNIEnv* /* env */,
     im->setShowTouches(enabled);
 }
 
+static void nativeSetVolumeKeysRotation(JNIEnv* env,
+        jclass clazz, jlong ptr, int mode) {
+    NativeInputManager* im = reinterpret_cast<NativeInputManager*>(ptr);
+
+    im->setVolumeKeysRotation(mode);
+}
+
 static void nativeSetInteractive(JNIEnv* env,
         jclass clazz, jlong ptr, jboolean interactive) {
     NativeInputManager* im = reinterpret_cast<NativeInputManager*>(ptr);
@@ -1576,9 +1608,9 @@ static void nativeReloadDeviceAliases(JNIEnv* /* env */,
 static jstring nativeDump(JNIEnv* env, jclass /* clazz */, jlong ptr) {
     NativeInputManager* im = reinterpret_cast<NativeInputManager*>(ptr);
 
-    String8 dump;
+    std::string dump;
     im->dump(dump);
-    return env->NewStringUTF(dump.string());
+    return env->NewStringUTF(dump.c_str());
 }
 
 static void nativeMonitor(JNIEnv* /* env */, jclass /* clazz */, jlong ptr) {
@@ -1691,6 +1723,8 @@ static const JNINativeMethod gInputManagerMethods[] = {
             (void*) nativeSetPointerSpeed },
     { "nativeSetShowTouches", "(JZ)V",
             (void*) nativeSetShowTouches },
+    { "nativeSetVolumeKeysRotation", "(JI)V",
+            (void*) nativeSetVolumeKeysRotation },
     { "nativeSetInteractive", "(JZ)V",
             (void*) nativeSetInteractive },
     { "nativeReloadCalibration", "(J)V",

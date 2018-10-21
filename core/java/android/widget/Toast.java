@@ -23,15 +23,18 @@ import android.annotation.StringRes;
 import android.app.INotificationManager;
 import android.app.ITransientNotification;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.graphics.PixelFormat;
+import android.graphics.drawable.Drawable;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
 import android.os.RemoteException;
 import android.os.ServiceManager;
+import android.provider.Settings;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.LayoutInflater;
@@ -71,7 +74,10 @@ public class Toast {
     static final boolean localLOGV = false;
 
     /** @hide */
-    @IntDef({LENGTH_SHORT, LENGTH_LONG})
+    @IntDef(prefix = { "LENGTH_" }, value = {
+            LENGTH_SHORT,
+            LENGTH_LONG
+    })
     @Retention(RetentionPolicy.SOURCE)
     public @interface Duration {}
 
@@ -463,6 +469,20 @@ public class Toast {
                 if (context == null) {
                     context = mView.getContext();
                 }
+
+                ImageView appIcon = (ImageView) mView.findViewById(android.R.id.icon);
+                if ((Settings.Global.getInt(context.getContentResolver(), Settings.Global.TOAST_ICON, 0) == 1)) {
+                    if (appIcon != null) {
+                        PackageManager pm = context.getPackageManager();
+                        Drawable icon = null;
+                        try {
+                            icon = pm.getApplicationIcon(packageName);
+                        } catch (PackageManager.NameNotFoundException e) {
+                            // nothing to do
+                        }
+                        appIcon.setImageDrawable(icon);
+                    }
+                }
                 mWM = (WindowManager)context.getSystemService(Context.WINDOW_SERVICE);
                 // We can resolve the Gravity here by using the Locale for getting
                 // the layout direction
@@ -526,6 +546,14 @@ public class Toast {
                 if (mView.getParent() != null) {
                     if (localLOGV) Log.v(TAG, "REMOVE! " + mView + " in " + this);
                     mWM.removeViewImmediate(mView);
+                }
+
+
+                // Now that we've removed the view it's safe for the server to release
+                // the resources.
+                try {
+                    getService().finishToken(mPackageName, this);
+                } catch (RemoteException e) {
                 }
 
                 mView = null;

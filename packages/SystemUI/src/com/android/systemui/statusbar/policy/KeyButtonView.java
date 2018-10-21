@@ -16,6 +16,9 @@
 
 package com.android.systemui.statusbar.policy;
 
+import static android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK;
+import static android.view.accessibility.AccessibilityNodeInfo.ACTION_LONG_CLICK;
+
 import android.app.ActivityManager;
 import android.content.Context;
 import android.content.res.Configuration;
@@ -41,36 +44,46 @@ import android.view.ViewConfiguration;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.ImageView;
-
 import com.android.internal.logging.MetricsLogger;
 import com.android.internal.logging.nano.MetricsProto.MetricsEvent;
 import com.android.systemui.Dependency;
+import com.android.systemui.OverviewProxyService;
 import com.android.systemui.R;
 import com.android.systemui.plugins.statusbar.phone.NavBarButtonProvider.ButtonInterface;
-
-import static android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK;
-import static android.view.accessibility.AccessibilityNodeInfo.ACTION_LONG_CLICK;
+import com.android.systemui.shared.system.NavigationBarCompat;
 
 public class KeyButtonView extends ImageView implements ButtonInterface {
+    private static final String TAG = KeyButtonView.class.getSimpleName();
+    private static final int CURSOR_REPEAT_FLAGS = KeyEvent.FLAG_SOFT_KEYBOARD
+            | KeyEvent.FLAG_KEEP_TOUCH_MODE;
 
     private final boolean mPlaySounds;
     private int mContentDescriptionRes;
     private long mDownTime;
     private int mCode;
-    private int mTouchSlop;
+    private int mTouchDownX;
+    private int mTouchDownY;
+    private boolean mIsVertical;
     private boolean mSupportsLongpress = true;
     private AudioManager mAudioManager;
     private boolean mGestureAborted;
     private boolean mLongClicked;
     private OnClickListener mOnClickListener;
     private final KeyButtonRipple mRipple;
+    private final OverviewProxyService mOverviewProxyService;
     private final MetricsLogger mMetricsLogger = Dependency.get(MetricsLogger.class);
 
     private final Runnable mCheckLongPress = new Runnable() {
         public void run() {
             if (isPressed()) {
                 // Log.d("KeyButtonView", "longpressed: " + this);
-                if (isLongClickable()) {
+                if (mCode == KeyEvent.KEYCODE_DPAD_LEFT || mCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                    sendEvent(KeyEvent.ACTION_UP, CURSOR_REPEAT_FLAGS,
+                            System.currentTimeMillis(), false);
+                    sendEvent(KeyEvent.ACTION_DOWN, CURSOR_REPEAT_FLAGS,
+                            System.currentTimeMillis(), false);
+                    postDelayed(mCheckLongPress, ViewConfiguration.getKeyRepeatDelay());
+                } else if (isLongClickable()) {
                     // Just an old-fashioned ImageView
                     performLongClick();
                     mLongClicked = true;
@@ -106,11 +119,12 @@ public class KeyButtonView extends ImageView implements ButtonInterface {
         a.recycle();
 
         setClickable(true);
-        mTouchSlop = ViewConfiguration.get(context).getScaledTouchSlop();
         mAudioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
 
         mRipple = new KeyButtonRipple(context, this);
+        mOverviewProxyService = Dependency.get(OverviewProxyService.class);
         setBackground(mRipple);
+        forceHasOverlappingRendering(false);
     }
 
     @Override
@@ -189,12 +203,14 @@ public class KeyButtonView extends ImageView implements ButtonInterface {
     }
 
     public boolean onTouchEvent(MotionEvent ev) {
+        final boolean showSwipeUI = mOverviewProxyService.shouldShowSwipeUpUI();
         final int action = ev.getAction();
         int x, y;
         if (action == MotionEvent.ACTION_DOWN) {
             mGestureAborted = false;
         }
         if (mGestureAborted) {
+            setPressed(false);
             return false;
         }
 
@@ -203,23 +219,41 @@ public class KeyButtonView extends ImageView implements ButtonInterface {
                 mDownTime = SystemClock.uptimeMillis();
                 mLongClicked = false;
                 setPressed(true);
-                if (mCode != 0) {
+
+                // Use raw X and Y to detect gestures in case a parent changes the x and y values
+                mTouchDownX = (int) ev.getRawX();
+                mTouchDownY = (int) ev.getRawY();
+                if (mCode == KeyEvent.KEYCODE_DPAD_LEFT || mCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                    sendEvent(KeyEvent.ACTION_DOWN, KeyEvent.FLAG_VIRTUAL_HARD_KEY
+                            | KeyEvent.FLAG_KEEP_TOUCH_MODE, mDownTime, false);
+                } else if (mCode != 0) {
                     sendEvent(KeyEvent.ACTION_DOWN, 0, mDownTime);
                 } else {
                     // Provide the same haptic feedback that the system offers for virtual keys.
                     performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
                 }
-                playSoundEffect(SoundEffectConstants.CLICK);
+                if (!showSwipeUI) {
+                    playSoundEffect(SoundEffectConstants.CLICK);
+                }
                 removeCallbacks(mCheckLongPress);
                 postDelayed(mCheckLongPress, ViewConfiguration.getLongPressTimeout());
                 break;
             case MotionEvent.ACTION_MOVE:
-                x = (int)ev.getX();
-                y = (int)ev.getY();
-                setPressed(x >= -mTouchSlop
-                        && x < getWidth() + mTouchSlop
-                        && y >= -mTouchSlop
-                        && y < getHeight() + mTouchSlop);
+                x = (int)ev.getRawX();
+                y = (int)ev.getRawY();
+
+                boolean exceededTouchSlopX = Math.abs(x - mTouchDownX) > (mIsVertical
+                        ? NavigationBarCompat.getQuickScrubTouchSlopPx()
+                        : NavigationBarCompat.getQuickStepTouchSlopPx());
+                boolean exceededTouchSlopY = Math.abs(y - mTouchDownY) > (mIsVertical
+                        ? NavigationBarCompat.getQuickStepTouchSlopPx()
+                        : NavigationBarCompat.getQuickScrubTouchSlopPx());
+                if (exceededTouchSlopX || exceededTouchSlopY) {
+                    // When quick step is enabled, prevent animating the ripple triggered by
+                    // setPressed and decide to run it on touch up
+                    setPressed(false);
+                    removeCallbacks(mCheckLongPress);
+                }
                 break;
             case MotionEvent.ACTION_CANCEL:
                 setPressed(false);
@@ -231,9 +265,16 @@ public class KeyButtonView extends ImageView implements ButtonInterface {
             case MotionEvent.ACTION_UP:
                 final boolean doIt = isPressed() && !mLongClicked;
                 setPressed(false);
-                // Always send a release ourselves because it doesn't seem to be sent elsewhere
-                // and it feels weird to sometimes get a release haptic and other times not.
-                if ((SystemClock.uptimeMillis() - mDownTime) > 150 && !mLongClicked) {
+                final boolean doHapticFeedback = (SystemClock.uptimeMillis() - mDownTime) > 150;
+                if (showSwipeUI) {
+                    if (doIt) {
+                        // Apply haptic feedback on touch up since there is none on touch down
+                        performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+                        playSoundEffect(SoundEffectConstants.CLICK);
+                    }
+                } else if (doHapticFeedback && !mLongClicked) {
+                    // Always send a release ourselves because it doesn't seem to be sent elsewhere
+                    // and it feels weird to sometimes get a release haptic and other times not.
                     performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY_RELEASE);
                 }
                 if (mCode != 0) {
@@ -267,16 +308,23 @@ public class KeyButtonView extends ImageView implements ButtonInterface {
     }
 
     void sendEvent(int action, int flags, long when) {
+        sendEvent(action, flags, when, true);
+    }
+
+    void sendEvent(int action, int flags, long when, boolean applyDefaultFlags) {
         mMetricsLogger.write(new LogMaker(MetricsEvent.ACTION_NAV_BUTTON_EVENT)
                 .setType(MetricsEvent.TYPE_ACTION)
                 .setSubtype(mCode)
                 .addTaggedData(MetricsEvent.FIELD_NAV_ACTION, action)
                 .addTaggedData(MetricsEvent.FIELD_FLAGS, flags));
         final int repeatCount = (flags & KeyEvent.FLAG_LONG_PRESS) != 0 ? 1 : 0;
+        if (applyDefaultFlags) {
+            flags |= KeyEvent.FLAG_FROM_SYSTEM | KeyEvent.FLAG_VIRTUAL_HARD_KEY;
+        }
         final KeyEvent ev = new KeyEvent(mDownTime, when, action, mCode, repeatCount,
                 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0,
-                flags | KeyEvent.FLAG_FROM_SYSTEM | KeyEvent.FLAG_VIRTUAL_HARD_KEY,
-                InputDevice.SOURCE_KEYBOARD);
+                flags,
+                InputDevice.SOURCE_NAVIGATION_BAR);
         InputManager.getInstance().injectInputEvent(ev,
                 InputManager.INJECT_INPUT_EVENT_MODE_ASYNC);
     }
@@ -284,6 +332,7 @@ public class KeyButtonView extends ImageView implements ButtonInterface {
     @Override
     public void abortCurrentGesture() {
         setPressed(false);
+        mRipple.abortDelayedRipple();
         mGestureAborted = true;
     }
 
@@ -301,8 +350,13 @@ public class KeyButtonView extends ImageView implements ButtonInterface {
     }
 
     @Override
+    public void setDelayTouchFeedback(boolean shouldDelay) {
+        mRipple.setDelayTouchFeedback(shouldDelay);
+    }
+
+    @Override
     public void setVertical(boolean vertical) {
-        //no op
+        mIsVertical = vertical;
     }
 }
 

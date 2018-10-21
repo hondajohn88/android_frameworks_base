@@ -804,11 +804,12 @@ public class KeyEvent extends InputEvent implements Parcelable {
     public static final int KEYCODE_SYSTEM_NAVIGATION_LEFT = 282;
     /** Key code constant: Consumed by the system for navigation right */
     public static final int KEYCODE_SYSTEM_NAVIGATION_RIGHT = 283;
-    /** Key code constant: Show all apps
-     * @hide */
+    /** Key code constant: Show all apps */
     public static final int KEYCODE_ALL_APPS = 284;
+    /** Key code constant: Refresh key. */
+    public static final int KEYCODE_REFRESH = 285;
 
-    private static final int LAST_KEYCODE = KEYCODE_ALL_APPS;
+    private static final int LAST_KEYCODE = KEYCODE_REFRESH;
 
     // NOTE: If you add a new keycode here you must also add it to:
     //  isSystem()
@@ -1876,6 +1877,11 @@ public class KeyEvent extends InputEvent implements Parcelable {
             case KeyEvent.KEYCODE_STEM_1:
             case KeyEvent.KEYCODE_STEM_2:
             case KeyEvent.KEYCODE_STEM_3:
+            case KeyEvent.KEYCODE_VOLUME_UP:
+            case KeyEvent.KEYCODE_VOLUME_DOWN:
+            case KeyEvent.KEYCODE_VOLUME_MUTE:
+            case KeyEvent.KEYCODE_CAMERA:
+            case KeyEvent.KEYCODE_FOCUS:
                 return true;
         }
         return false;

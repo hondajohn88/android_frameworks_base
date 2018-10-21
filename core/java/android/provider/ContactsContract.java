@@ -22,6 +22,7 @@ import android.annotation.SdkConstant.SdkConstantType;
 import android.annotation.SystemApi;
 import android.app.Activity;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.ContentProviderClient;
 import android.content.ContentProviderOperation;
 import android.content.ContentResolver;
@@ -42,10 +43,12 @@ import android.database.DatabaseUtils;
 import android.graphics.Rect;
 import android.net.Uri;
 import android.os.RemoteException;
+import android.telecom.PhoneAccountHandle;
 import android.text.TextUtils;
 import android.util.DisplayMetrics;
 import android.util.Pair;
 import android.view.View;
+
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -1623,6 +1626,7 @@ public final class ContactsContract {
          *            {@link #CONTENT_LOOKUP_URI} to attempt refreshing.
          */
         public static Uri getLookupUri(ContentResolver resolver, Uri contactUri) {
+            android.util.SeempLog.record(86);
             final Cursor c = resolver.query(contactUri, new String[] {
                     Contacts.LOOKUP_KEY, Contacts._ID
             }, null, null, null);
@@ -1650,6 +1654,7 @@ public final class ContactsContract {
          * provided parameters.
          */
         public static Uri getLookupUri(long contactId, String lookupKey) {
+            android.util.SeempLog.record(86);
             if (TextUtils.isEmpty(lookupKey)) {
                 return null;
             }
@@ -1663,6 +1668,7 @@ public final class ContactsContract {
          * Returns null if the contact cannot be found.
          */
         public static Uri lookupContact(ContentResolver resolver, Uri lookupUri) {
+            android.util.SeempLog.record(87);
             if (lookupUri == null) {
                 return null;
             }
@@ -2132,6 +2138,7 @@ public final class ContactsContract {
          */
         public static InputStream openContactPhotoInputStream(ContentResolver cr, Uri contactUri,
                 boolean preferHighres) {
+            android.util.SeempLog.record(88);
             if (preferHighres) {
                 final Uri displayPhotoUri = Uri.withAppendedPath(contactUri,
                         Contacts.Photo.DISPLAY_PHOTO);
@@ -2180,6 +2187,7 @@ public final class ContactsContract {
          * of the thumbnail the high-res picture is preferred
          */
         public static InputStream openContactPhotoInputStream(ContentResolver cr, Uri contactUri) {
+            android.util.SeempLog.record(88);
             return openContactPhotoInputStream(cr, contactUri, false);
         }
     }
@@ -2877,6 +2885,7 @@ public final class ContactsContract {
          * entry of the given {@link RawContacts} entry.
          */
         public static Uri getContactLookupUri(ContentResolver resolver, Uri rawContactUri) {
+            android.util.SeempLog.record(89);
             // TODO: use a lighter query by joining rawcontacts with contacts in provider
             final Uri dataUri = Uri.withAppendedPath(rawContactUri, Data.CONTENT_DIRECTORY);
             final Cursor cursor = resolver.query(dataUri, new String[] {
@@ -4237,6 +4246,45 @@ public final class ContactsContract {
          * current carrier. An allowed bitmask of {@link #CARRIER_PRESENCE}.
          */
         public static final int CARRIER_PRESENCE_VT_CAPABLE = 0x01;
+
+        /**
+         * The flattened {@link android.content.ComponentName} of a  {@link
+         * android.telecom.PhoneAccountHandle} that is the preferred {@code PhoneAccountHandle} to
+         * call the contact with.
+         *
+         * <p> On a multi-SIM device this field can be used in a {@link CommonDataKinds.Phone} row
+         * to indicate the {@link PhoneAccountHandle} to call the number with, instead of using
+         * {@link android.telecom.TelecomManager#getDefaultOutgoingPhoneAccount(String)} or asking
+         * every time.
+         *
+         * <p>{@link android.telecom.TelecomManager#placeCall(Uri, android.os.Bundle)}
+         * should be called with {@link android.telecom.TelecomManager#EXTRA_PHONE_ACCOUNT_HANDLE}
+         * set to the {@link PhoneAccountHandle} using the {@link ComponentName} from this field.
+         *
+         * @see #PREFERRED_PHONE_ACCOUNT_ID
+         * @see PhoneAccountHandle#getComponentName()
+         * @see ComponentName#flattenToString()
+         */
+        String PREFERRED_PHONE_ACCOUNT_COMPONENT_NAME = "preferred_phone_account_component_name";
+
+        /**
+         * The ID of a {@link
+         * android.telecom.PhoneAccountHandle} that is the preferred {@code PhoneAccountHandle} to
+         * call the contact with. Used by {@link CommonDataKinds.Phone}.
+         *
+         * <p> On a multi-SIM device this field can be used in a {@link CommonDataKinds.Phone} row
+         * to indicate the {@link PhoneAccountHandle} to call the number with, instead of using
+         * {@link android.telecom.TelecomManager#getDefaultOutgoingPhoneAccount(String)} or asking
+         * every time.
+         *
+         * <p>{@link android.telecom.TelecomManager#placeCall(Uri, android.os.Bundle)}
+         * should be called with {@link android.telecom.TelecomManager#EXTRA_PHONE_ACCOUNT_HANDLE}
+         * set to the {@link PhoneAccountHandle} using the id from this field.
+         *
+         * @see #PREFERRED_PHONE_ACCOUNT_COMPONENT_NAME
+         * @see PhoneAccountHandle#getId()
+         */
+        String PREFERRED_PHONE_ACCOUNT_ID = "preferred_phone_account_id";
     }
 
     /**
@@ -4835,6 +4883,7 @@ public final class ContactsContract {
          * </p>
          */
         public static Uri getContactLookupUri(ContentResolver resolver, Uri dataUri) {
+            android.util.SeempLog.record(89);
             final Cursor cursor = resolver.query(dataUri, new String[] {
                     RawContacts.CONTACT_ID, Contacts.LOOKUP_KEY
             }, null, null, null);

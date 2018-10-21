@@ -16,6 +16,9 @@
 
 package com.android.server.policy;
 
+import static com.android.server.wm.WindowOrientationListenerProto.ENABLED;
+import static com.android.server.wm.WindowOrientationListenerProto.ROTATION;
+
 import android.content.Context;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
@@ -24,11 +27,11 @@ import android.hardware.SensorManager;
 import android.os.Handler;
 import android.os.SystemClock;
 import android.os.SystemProperties;
-import android.text.TextUtils;
 import android.util.Slog;
+import android.util.proto.ProtoOutputStream;
+import android.view.Surface;
 
 import java.io.PrintWriter;
-import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -56,6 +59,7 @@ public abstract class WindowOrientationListener {
     private boolean mEnabled;
     private int mRate;
     private String mSensorType;
+    private boolean mUseSystemClockforRotationSensor;
     private Sensor mSensor;
     private OrientationJudge mOrientationJudge;
     private int mCurrentRotation = -1;
@@ -64,7 +68,7 @@ public abstract class WindowOrientationListener {
 
     /**
      * Creates a new WindowOrientationListener.
-     * 
+     *
      * @param context for the WindowOrientationListener.
      * @param handler Provides the Looper for receiving sensor updates.
      */
@@ -74,12 +78,12 @@ public abstract class WindowOrientationListener {
 
     /**
      * Creates a new WindowOrientationListener.
-     * 
+     *
      * @param context for the WindowOrientationListener.
      * @param handler Provides the Looper for receiving sensor updates.
      * @param rate at which sensor events are processed (see also
      * {@link android.hardware.SensorManager SensorManager}). Use the default
-     * value of {@link android.hardware.SensorManager#SENSOR_DELAY_NORMAL 
+     * value of {@link android.hardware.SensorManager#SENSOR_DELAY_NORMAL
      * SENSOR_DELAY_NORMAL} for simple screen orientation change detection.
      *
      * This constructor is private since no one uses it.
@@ -88,7 +92,31 @@ public abstract class WindowOrientationListener {
         mHandler = handler;
         mSensorManager = (SensorManager)context.getSystemService(Context.SENSOR_SERVICE);
         mRate = rate;
-        mSensor = mSensorManager.getDefaultSensor(Sensor.TYPE_DEVICE_ORIENTATION);
+        List<Sensor> l = mSensorManager.getSensorList(Sensor.TYPE_DEVICE_ORIENTATION);
+        Sensor wakeUpDeviceOrientationSensor = null;
+        Sensor nonWakeUpDeviceOrientationSensor = null;
+        /**
+         *  Prefer the wakeup form of the sensor if implemented.
+         *  It's OK to look for just two types of this sensor and use
+         *  the last found. Typical devices will only have one sensor of
+         *  this type.
+         */
+        for (Sensor s : l) {
+            if (s.isWakeUpSensor()) {
+                wakeUpDeviceOrientationSensor = s;
+            } else {
+                nonWakeUpDeviceOrientationSensor = s;
+            }
+        }
+
+        if (wakeUpDeviceOrientationSensor != null) {
+            mSensor = wakeUpDeviceOrientationSensor;
+        } else {
+            mSensor = nonWakeUpDeviceOrientationSensor;
+        }
+
+        mUseSystemClockforRotationSensor = context.getResources().getBoolean(
+                com.android.internal.R.bool.config_useSystemClockforRotationSensor);
 
         if (mSensor != null) {
             mOrientationJudge = new OrientationSensorJudge();
@@ -231,12 +259,21 @@ public abstract class WindowOrientationListener {
      */
     public abstract void onProposedRotationChanged(int rotation);
 
+    public void writeToProto(ProtoOutputStream proto, long fieldId) {
+        final long token = proto.start(fieldId);
+        synchronized (mLock) {
+            proto.write(ENABLED, mEnabled);
+            proto.write(ROTATION, mCurrentRotation);
+        }
+        proto.end(token);
+    }
+
     public void dump(PrintWriter pw, String prefix) {
         synchronized (mLock) {
             pw.println(prefix + TAG);
             prefix += "  ";
             pw.println(prefix + "mEnabled=" + mEnabled);
-            pw.println(prefix + "mCurrentRotation=" + mCurrentRotation);
+            pw.println(prefix + "mCurrentRotation=" + Surface.rotationToString(mCurrentRotation));
             pw.println(prefix + "mSensorType=" + mSensorType);
             pw.println(prefix + "mSensor=" + mSensor);
             pw.println(prefix + "mRate=" + mRate);
@@ -363,22 +400,22 @@ public abstract class WindowOrientationListener {
         // the low-pass filter already suppresses most of the noise so we're really just
         // looking for quick confirmation that the last few samples are in agreement as to
         // the desired orientation.
-        private static final long PROPOSAL_SETTLE_TIME_NANOS = 40 * NANOS_PER_MS;
+        private static final long PROPOSAL_SETTLE_TIME_NANOS = 25 * NANOS_PER_MS;
 
         // The minimum amount of time that must have elapsed since the device last exited
         // the flat state (time since it was picked up) before the proposed rotation
         // can change.
-        private static final long PROPOSAL_MIN_TIME_SINCE_FLAT_ENDED_NANOS = 500 * NANOS_PER_MS;
+        private static final long PROPOSAL_MIN_TIME_SINCE_FLAT_ENDED_NANOS = 250 * NANOS_PER_MS;
 
         // The minimum amount of time that must have elapsed since the device stopped
         // swinging (time since device appeared to be in the process of being put down
         // or put away into a pocket) before the proposed rotation can change.
-        private static final long PROPOSAL_MIN_TIME_SINCE_SWING_ENDED_NANOS = 300 * NANOS_PER_MS;
+        private static final long PROPOSAL_MIN_TIME_SINCE_SWING_ENDED_NANOS = 150 * NANOS_PER_MS;
 
         // The minimum amount of time that must have elapsed since the device stopped
         // undergoing external acceleration before the proposed rotation can change.
         private static final long PROPOSAL_MIN_TIME_SINCE_ACCELERATION_ENDED_NANOS =
-                500 * NANOS_PER_MS;
+                250 * NANOS_PER_MS;
 
         // If the tilt angle remains greater than the specified angle for a minimum of
         // the specified time, then the device is deemed to be lying flat
@@ -608,7 +645,8 @@ public abstract class WindowOrientationListener {
                 // Reset the orientation listener state if the samples are too far apart in time
                 // or when we see values of (0, 0, 0) which indicates that we polled the
                 // accelerometer too soon after turning it on and we don't have any data yet.
-                final long now = event.timestamp;
+                final long now = mUseSystemClockforRotationSensor
+                        ? SystemClock.elapsedRealtimeNanos() : event.timestamp;
                 final long then = mLastFilteredTimestampNanos;
                 final float timeDeltaMS = (now - then) * 0.000001f;
                 final boolean skipSample;
@@ -1026,8 +1064,9 @@ public abstract class WindowOrientationListener {
         public void dumpLocked(PrintWriter pw, String prefix) {
             pw.println(prefix + "OrientationSensorJudge");
             prefix += "  ";
-            pw.println(prefix + "mDesiredRotation=" + mDesiredRotation);
-            pw.println(prefix + "mProposedRotation=" + mProposedRotation);
+            pw.println(prefix + "mDesiredRotation=" + Surface.rotationToString(mDesiredRotation));
+            pw.println(prefix + "mProposedRotation="
+                    + Surface.rotationToString(mProposedRotation));
             pw.println(prefix + "mTouching=" + mTouching);
             pw.println(prefix + "mTouchEndedTimestampNanos=" + mTouchEndedTimestampNanos);
         }

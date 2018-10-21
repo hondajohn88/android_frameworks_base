@@ -16,6 +16,9 @@
 
 package com.android.server.policy;
 
+import static android.app.ActivityManager.LOCK_TASK_MODE_LOCKED;
+import static android.app.ActivityManager.LOCK_TASK_MODE_NONE;
+
 import android.animation.ArgbEvaluator;
 import android.animation.ValueAnimator;
 import android.app.ActivityManager;
@@ -45,6 +48,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
 import android.view.WindowManager;
+import android.view.WindowManagerPolicyControl;
 import android.view.animation.Animation;
 import android.view.animation.AnimationUtils;
 import android.view.animation.Interpolator;
@@ -78,6 +82,7 @@ public class ImmersiveModeConfirmation {
     // Local copy of vr mode enabled state, to avoid calling into VrManager with
     // the lock held.
     boolean mVrModeEnabled = false;
+    private int mLockTaskState = LOCK_TASK_MODE_NONE;
 
     public ImmersiveModeConfirmation(Context context) {
         mContext = ActivityThread.currentActivityThread().getSystemUiContext();
@@ -140,7 +145,7 @@ public class ImmersiveModeConfirmation {
             boolean userSetupComplete, boolean navBarEmpty) {
         mHandler.removeMessages(H.SHOW);
         if (isImmersiveMode) {
-            final boolean disabled = PolicyControl.disableImmersiveConfirmation(pkg);
+            final boolean disabled = WindowManagerPolicyControl.disableImmersiveConfirmation(pkg);
             if (DEBUG) Slog.d(TAG, String.format("immersiveModeChanged() disabled=%s mConfirmed=%s",
                     disabled, mConfirmed));
             if (!disabled
@@ -148,7 +153,8 @@ public class ImmersiveModeConfirmation {
                     && userSetupComplete
                     && !mVrModeEnabled
                     && !navBarEmpty
-                    && !UserManager.isDeviceInDemoMode(mContext)) {
+                    && !UserManager.isDeviceInDemoMode(mContext)
+                    && (mLockTaskState != LOCK_TASK_MODE_LOCKED)) {
                 mHandler.sendEmptyMessageDelayed(H.SHOW, mShowDelayMs);
             }
         } else {
@@ -401,4 +407,8 @@ public class ImmersiveModeConfirmation {
             }
         }
     };
+
+    void onLockTaskModeChangedLw(int lockTaskState) {
+        mLockTaskState = lockTaskState;
+    }
 }

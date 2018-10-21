@@ -23,6 +23,11 @@ import android.os.UserHandle;
 interface IDeviceIdleController {
     void addPowerSaveWhitelistApp(String name);
     void removePowerSaveWhitelistApp(String name);
+    /* Removes an app from the system whitelist. Calling restoreSystemPowerWhitelistApp will add
+    the app back into the system whitelist */
+    void removeSystemPowerWhitelistApp(String name);
+    void restoreSystemPowerWhitelistApp(String name);
+    String[] getRemovedSystemPowerWhitelistApps();
     String[] getSystemPowerWhitelistExceptIdle();
     String[] getSystemPowerWhitelist();
     String[] getUserPowerWhitelist();
@@ -40,4 +45,6 @@ interface IDeviceIdleController {
     void exitIdle(String reason);
     boolean registerMaintenanceActivityListener(IMaintenanceActivityListener listener);
     void unregisterMaintenanceActivityListener(IMaintenanceActivityListener listener);
+    int getIdleStateDetailed();
+    int getLightIdleStateDetailed();
 }

@@ -16,8 +16,14 @@
 
 package com.android.systemui.qs;
 
+import static android.content.res.Configuration.ORIENTATION_LANDSCAPE;
 import static com.android.systemui.qs.tileimpl.QSTileImpl.getColorForState;
 
+import android.animation.Animator;
+import android.animation.Animator.AnimatorListener;
+import android.animation.AnimatorListenerAdapter;
+import android.animation.ObjectAnimator;
+import android.annotation.Nullable;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.res.Configuration;
@@ -25,10 +31,19 @@ import android.content.res.Resources;
 import android.metrics.LogMaker;
 import android.os.Handler;
 import android.os.Message;
+import android.provider.Settings;
 import android.service.quicksettings.Tile;
 import android.util.AttributeSet;
 import android.view.LayoutInflater;
 import android.view.View;
+import android.view.animation.AccelerateInterpolator;
+import android.view.animation.AccelerateDecelerateInterpolator;
+import android.view.animation.AnticipateInterpolator;
+import android.view.animation.AnticipateOvershootInterpolator;
+import android.view.animation.BounceInterpolator;
+import android.view.animation.DecelerateInterpolator;
+import android.view.animation.LinearInterpolator;
+import android.view.animation.OvershootInterpolator;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 
@@ -50,31 +65,45 @@ import com.android.systemui.statusbar.policy.BrightnessMirrorController.Brightne
 import com.android.systemui.tuner.TunerService;
 import com.android.systemui.tuner.TunerService.Tunable;
 
+import lineageos.providers.LineageSettings;
+
 import java.util.ArrayList;
 import java.util.Collection;
 
-/** View that represents the quick settings tile panel. **/
+/** View that represents the quick settings tile panel (when expanded/pulled down). **/
 public class QSPanel extends LinearLayout implements Tunable, Callback, BrightnessMirrorListener {
 
-    public static final String QS_SHOW_BRIGHTNESS = "qs_show_brightness";
+    private static final String QS_SHOW_AUTO_BRIGHTNESS =
+            "lineagesecure:" + LineageSettings.Secure.QS_SHOW_AUTO_BRIGHTNESS;
+    public static final String QS_SHOW_BRIGHTNESS_SLIDER =
+            "lineagesecure:" + LineageSettings.Secure.QS_SHOW_BRIGHTNESS_SLIDER;
+    public static final String QS_SHOW_HEADER = "qs_show_header";
+    public static final String ANIM_TILE_STYLE =
+            "system:" + Settings.System.ANIM_TILE_STYLE;
+    public static final String ANIM_TILE_DURATION =
+            "system:" + Settings.System.ANIM_TILE_DURATION;
+    public static final String ANIM_TILE_INTERPOLATOR =
+            "system:" + Settings.System.ANIM_TILE_INTERPOLATOR;
 
     protected final Context mContext;
-    protected final ArrayList<TileRecord> mRecords = new ArrayList<TileRecord>();
+    protected final ArrayList<TileRecord> mRecords = new ArrayList<>();
     protected final View mBrightnessView;
+    protected final ImageView mAutoBrightnessView;
     private final H mHandler = new H();
-    private final View mPageIndicator;
     private final MetricsLogger mMetricsLogger = Dependency.get(MetricsLogger.class);
+    private final QSTileRevealController mQsTileRevealController;
 
-    private int mPanelPaddingBottom;
-    private int mBrightnessPaddingTop;
     protected boolean mExpanded;
     protected boolean mListening;
+    private boolean mIsAutomaticBrightnessAvailable = false;
 
     private QSDetail.Callback mCallback;
     private BrightnessController mBrightnessController;
     protected QSTileHost mHost;
 
     protected QSSecurityFooter mFooter;
+    private PageIndicator mPanelPageIndicator;
+    private PageIndicator mFooterPageIndicator;
     private boolean mGridContentVisible = true;
 
     protected QSTileLayout mTileLayout;
@@ -84,6 +113,9 @@ public class QSPanel extends LinearLayout implements Tunable, Callback, Brightne
 
     private BrightnessMirrorController mBrightnessMirrorController;
     private View mDivider;
+
+    private int mBrightnessSlider = 1;
+    private int animStyle, animDuration, interpolatorType;
 
     public QSPanel(Context context) {
         this(context, null);
@@ -95,29 +127,59 @@ public class QSPanel extends LinearLayout implements Tunable, Callback, Brightne
 
         setOrientation(VERTICAL);
 
-        mBrightnessView = LayoutInflater.from(context).inflate(
-                R.layout.quick_settings_brightness_dialog, this, false);
-        addView(mBrightnessView);
+        mBrightnessView = LayoutInflater.from(mContext).inflate(
+            R.layout.quick_settings_brightness_dialog, this, false);
 
-        setupTileLayout();
+        mTileLayout = (QSTileLayout) LayoutInflater.from(mContext).inflate(
+                R.layout.qs_paged_tile_layout, this, false);
+        mTileLayout.setListening(mListening);
 
-        mPageIndicator = LayoutInflater.from(context).inflate(
+        mPanelPageIndicator = (PageIndicator) LayoutInflater.from(context).inflate(
                 R.layout.qs_page_indicator, this, false);
-        addView(mPageIndicator);
-        if (mTileLayout instanceof PagedTileLayout) {
-            ((PagedTileLayout) mTileLayout).setPageIndicator((PageIndicator) mPageIndicator);
-        }
 
-        addDivider();
+        mQsTileRevealController = new QSTileRevealController(mContext, this,
+                (PagedTileLayout) mTileLayout);
 
         mFooter = new QSSecurityFooter(this, context);
-        addView(mFooter.getView());
 
-        updateResources();
+        addQSPanel();
 
         mBrightnessController = new BrightnessController(getContext(),
                 findViewById(R.id.brightness_icon),
                 findViewById(R.id.brightness_slider));
+
+        mAutoBrightnessView = findViewById(R.id.brightness_icon);
+
+        mIsAutomaticBrightnessAvailable = getResources().getBoolean(
+                com.android.internal.R.bool.config_automatic_brightness_available);
+    }
+
+    private void addQSPanel() {
+        if (mBrightnessSlider == 1) {
+            addView(mBrightnessView);
+            addView((View) mTileLayout);
+        } else {
+            addView((View) mTileLayout);
+            addView(mBrightnessView);
+        }
+
+        addView(mPanelPageIndicator);
+        if (mTileLayout instanceof PagedTileLayout) {
+            ((PagedTileLayout) mTileLayout).setPageIndicator(mPanelPageIndicator);
+        }
+        addDivider();
+        addView(mFooter.getView());
+        updateResources();
+    }
+
+    private void restartQSPanel() {
+        if (mFooter.getView() != null) removeView(mFooter.getView());
+        if (mDivider != null) removeView(mDivider);
+        if (mPanelPageIndicator != null) removeView(mPanelPageIndicator);
+        if ((View) mTileLayout != null) removeView((View) mTileLayout);
+        if (mBrightnessView != null) removeView(mBrightnessView);
+
+        addQSPanel();
     }
 
     protected void addDivider() {
@@ -132,14 +194,11 @@ public class QSPanel extends LinearLayout implements Tunable, Callback, Brightne
     }
 
     public View getPageIndicator() {
-        return mPageIndicator;
+        return mPanelPageIndicator;
     }
 
-    protected void setupTileLayout() {
-        mTileLayout = (QSTileLayout) LayoutInflater.from(mContext).inflate(
-                R.layout.qs_paged_tile_layout, this, false);
-        mTileLayout.setListening(mListening);
-        addView((View) mTileLayout);
+    public QSTileRevealController getQsTileRevealController() {
+        return mQsTileRevealController;
     }
 
     public boolean isShowingCustomize() {
@@ -149,7 +208,13 @@ public class QSPanel extends LinearLayout implements Tunable, Callback, Brightne
     @Override
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
-        Dependency.get(TunerService.class).addTunable(this, QS_SHOW_BRIGHTNESS);
+        final TunerService tunerService = Dependency.get(TunerService.class);
+        tunerService.addTunable(this, QS_SHOW_AUTO_BRIGHTNESS);
+        tunerService.addTunable(this, QS_SHOW_BRIGHTNESS_SLIDER);
+        tunerService.addTunable(this, ANIM_TILE_STYLE);
+        tunerService.addTunable(this, ANIM_TILE_DURATION);
+        tunerService.addTunable(this, ANIM_TILE_INTERPOLATOR);
+
         if (mHost != null) {
             setTiles(mHost.getTiles());
         }
@@ -180,10 +245,32 @@ public class QSPanel extends LinearLayout implements Tunable, Callback, Brightne
 
     @Override
     public void onTuningChanged(String key, String newValue) {
-        if (QS_SHOW_BRIGHTNESS.equals(key)) {
-            mBrightnessView.setVisibility(newValue == null || Integer.parseInt(newValue) != 0
-                    ? VISIBLE : GONE);
+        if (QS_SHOW_AUTO_BRIGHTNESS.equals(key) && mIsAutomaticBrightnessAvailable) {
+            updateViewVisibilityForTuningValue(mAutoBrightnessView, newValue);
+        } else if (QS_SHOW_BRIGHTNESS_SLIDER.equals(key)) {
+            mBrightnessSlider = newValue == null ? 1 : Integer.parseInt(newValue);
+            mBrightnessView.setVisibility(mBrightnessSlider != 0 ? VISIBLE : GONE);
+            restartQSPanel();
+        } else if (ANIM_TILE_STYLE.equals(key)) {
+            animStyle = newValue == null ? 0 : Integer.parseInt(newValue);
+            if (mHost != null) {
+                setTiles(mHost.getTiles());
+            }
+        } else if (ANIM_TILE_DURATION.equals(key)) {
+            animDuration = newValue == null ? 0 : Integer.parseInt(newValue);
+            if (mHost != null) {
+                setTiles(mHost.getTiles());
+            }
+        } else if (ANIM_TILE_INTERPOLATOR.equals(key)) {
+            interpolatorType = newValue == null ? 0 : Integer.parseInt(newValue);
+            if (mHost != null) {
+                setTiles(mHost.getTiles());
+            }
         }
+    }
+
+    private void updateViewVisibilityForTuningValue(View view, @Nullable String newValue) {
+        view.setVisibility(newValue == null || Integer.parseInt(newValue) != 0 ? VISIBLE : GONE);
     }
 
     public void openDetails(String subPanel) {
@@ -235,15 +322,48 @@ public class QSPanel extends LinearLayout implements Tunable, Callback, Brightne
         }
     }
 
+    /**
+     * Links the footer's page indicator, which is used in landscape orientation to save space.
+     *
+     * @param pageIndicator indicator to use for page scrolling
+     */
+    public void setFooterPageIndicator(PageIndicator pageIndicator) {
+        if (mTileLayout instanceof PagedTileLayout) {
+            mFooterPageIndicator = pageIndicator;
+            updatePageIndicator();
+        }
+    }
+
+    private void updatePageIndicator() {
+        if (mTileLayout instanceof PagedTileLayout) {
+            // If we're in landscape, and we have the footer page indicator (which we should if the
+            // footer has been initialized & linked), then we'll show the footer page indicator to
+            // save space in the main QS tile area. Otherwise, we'll use the default one under the
+            // tiles/above the footer.
+            boolean shouldUseFooterPageIndicator =
+                    getResources().getConfiguration().orientation == ORIENTATION_LANDSCAPE
+                            && mFooterPageIndicator != null;
+
+            mPanelPageIndicator.setVisibility(View.GONE);
+            if (mFooterPageIndicator != null) {
+                mFooterPageIndicator.setVisibility(View.GONE);
+            }
+
+            ((PagedTileLayout) mTileLayout).setPageIndicator(
+                    shouldUseFooterPageIndicator ? mFooterPageIndicator : mPanelPageIndicator);
+        }
+    }
+
     public QSTileHost getHost() {
         return mHost;
     }
 
     public void updateResources() {
         final Resources res = mContext.getResources();
-        mPanelPaddingBottom = res.getDimensionPixelSize(R.dimen.qs_panel_padding_bottom);
-        mBrightnessPaddingTop = res.getDimensionPixelSize(R.dimen.qs_brightness_padding_top);
-        setPadding(0, mBrightnessPaddingTop, 0, mPanelPaddingBottom);
+        setPadding(0, res.getDimensionPixelSize(R.dimen.qs_panel_padding_top), 0, res.getDimensionPixelSize(R.dimen.qs_panel_padding_bottom));
+
+        updatePageIndicator();
+
         for (TileRecord r : mRecords) {
             r.tile.clearState();
         }
@@ -293,6 +413,12 @@ public class QSPanel extends LinearLayout implements Tunable, Callback, Brightne
         }
     }
 
+    public void setPageListener(final PagedTileLayout.PageListener pageListener) {
+        if (mTileLayout instanceof PagedTileLayout) {
+            ((PagedTileLayout) mTileLayout).setPageListener(pageListener);
+        }
+    }
+
     public boolean isExpanded() {
         return mExpanded;
     }
@@ -317,6 +443,7 @@ public class QSPanel extends LinearLayout implements Tunable, Callback, Brightne
     }
 
     public void refreshAllTiles() {
+        mBrightnessController.checkRestrictionAndSetEnabled();
         for (TileRecord r : mRecords) {
             r.tile.refreshState();
         }
@@ -348,6 +475,9 @@ public class QSPanel extends LinearLayout implements Tunable, Callback, Brightne
     }
 
     public void setTiles(Collection<QSTile> tiles, boolean collapsedView) {
+        if (!collapsedView) {
+            mQsTileRevealController.updateRevealedTiles(tiles);
+        }
         for (TileRecord record : mRecords) {
             mTileLayout.removeTile(record);
             record.tile.removeCallback(record.callback);
@@ -420,6 +550,7 @@ public class QSPanel extends LinearLayout implements Tunable, Callback, Brightne
 
         if (mTileLayout != null) {
             mTileLayout.addTile(r);
+            configureTile(r.tile, r.tileView);
         }
 
         return r;
@@ -564,6 +695,17 @@ public class QSPanel extends LinearLayout implements Tunable, Callback, Brightne
         mFooter.showDeviceMonitoringDialog();
     }
 
+    public void setMargins(int sideMargins) {
+        for (int i = 0; i < getChildCount(); i++) {
+            View view = getChildAt(i);
+            if (view != mTileLayout) {
+                LayoutParams lp = (LayoutParams) view.getLayoutParams();
+                lp.leftMargin = sideMargins;
+                lp.rightMargin = sideMargins;
+            }
+        }
+    }
+
     private class H extends Handler {
         private static final int SHOW_DETAIL = 1;
         private static final int SET_TILE_VISIBILITY = 2;
@@ -602,5 +744,61 @@ public class QSPanel extends LinearLayout implements Tunable, Callback, Brightne
         boolean updateResources();
 
         void setListening(boolean listening);
+
+        default void setExpansion(float expansion) {}
+    }
+
+    private void setAnimationTile(QSTileView v) {
+        ObjectAnimator animTile = null;
+        if (animStyle == 0) {
+            //No animation
+        }
+        if (animStyle == 1) {
+            animTile = ObjectAnimator.ofFloat(v, "rotationY", 0f, 360f);
+        }
+        if (animStyle == 2) {
+            animTile = ObjectAnimator.ofFloat(v, "rotation", 0f, 360f);
+        }
+        if (animTile != null) {
+            switch (interpolatorType) {
+                    case 0:
+                        animTile.setInterpolator(new LinearInterpolator());
+                        break;
+                    case 1:
+                        animTile.setInterpolator(new AccelerateInterpolator());
+                        break;
+                    case 2:
+                        animTile.setInterpolator(new DecelerateInterpolator());
+                        break;
+                    case 3:
+                        animTile.setInterpolator(new AccelerateDecelerateInterpolator());
+                        break;
+                    case 4:
+                        animTile.setInterpolator(new BounceInterpolator());
+                        break;
+                    case 5:
+                        animTile.setInterpolator(new OvershootInterpolator());
+                        break;
+                    case 6:
+                        animTile.setInterpolator(new AnticipateInterpolator());
+                        break;
+                    case 7:
+                        animTile.setInterpolator(new AnticipateOvershootInterpolator());
+                        break;
+                    default:
+                        break;
+            }
+            animTile.setDuration(animDuration);
+            animTile.start();
+        }
+    }
+
+    private void configureTile(QSTile t, QSTileView v) {
+        if (mTileLayout != null) {
+            v.setOnClickListener(view -> {
+                    t.click();
+                    setAnimationTile(v);
+            });
+        }
     }
 }

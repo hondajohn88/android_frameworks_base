@@ -16,6 +16,9 @@
 
 package com.android.server.am;
 
+import static android.app.WindowConfiguration.ACTIVITY_TYPE_STANDARD;
+import static android.app.WindowConfiguration.WINDOWING_MODE_PINNED;
+
 import android.app.RemoteAction;
 import android.content.res.Configuration;
 import android.graphics.Rect;
@@ -32,15 +35,16 @@ import java.util.List;
 class PinnedActivityStack extends ActivityStack<PinnedStackWindowController>
         implements PinnedStackWindowListener {
 
-    PinnedActivityStack(ActivityStackSupervisor.ActivityDisplay display, int stackId,
-            ActivityStackSupervisor supervisor, RecentTasks recentTasks, boolean onTop) {
-        super(display, stackId, supervisor, recentTasks, onTop);
+    PinnedActivityStack(ActivityDisplay display, int stackId, ActivityStackSupervisor supervisor,
+            boolean onTop) {
+        super(display, stackId, supervisor, WINDOWING_MODE_PINNED, ACTIVITY_TYPE_STANDARD, onTop);
     }
 
     @Override
     PinnedStackWindowController createStackWindowController(int displayId, boolean onTop,
             Rect outBounds) {
-        return new PinnedStackWindowController(mStackId, this, displayId, onTop, outBounds);
+        return new PinnedStackWindowController(mStackId, this, displayId, onTop, outBounds,
+                mStackSupervisor.mWindowManager);
     }
 
     Rect getDefaultPictureInPictureBounds(float aspectRatio) {
@@ -96,7 +100,7 @@ class PinnedActivityStack extends ActivityStack<PinnedStackWindowController>
         // It is guaranteed that the activities requiring the update will be in the pinned stack at
         // this point (either reparented before the animation into PiP, or before reparenting after
         // the animation out of PiP)
-        synchronized(this) {
+        synchronized(mService) {
             ArrayList<TaskRecord> tasks = getAllTasks();
             for (int i = 0; i < tasks.size(); i++ ) {
                 mStackSupervisor.updatePictureInPictureMode(tasks.get(i), targetStackBounds,

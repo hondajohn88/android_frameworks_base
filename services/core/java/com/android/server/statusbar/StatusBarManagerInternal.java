@@ -30,12 +30,14 @@ public interface StatusBarManagerInternal {
 
     void cancelPreloadRecentApps();
 
-    void showRecentApps(boolean triggeredFromAltTab, boolean fromHome);
+    void showRecentApps(boolean triggeredFromAltTab);
 
     void hideRecentApps(boolean triggeredFromAltTab, boolean triggeredFromHomeKey);
 
     void dismissKeyboardShortcutsMenu();
     void toggleKeyboardShortcutsMenu(int deviceId);
+
+    void showChargingAnimation(int batteryLevel);
 
     /**
      * Show picture-in-picture menu.
@@ -77,9 +79,6 @@ public interface StatusBarManagerInternal {
 
     void setCurrentUser(int newUserId);
 
-    void setGlobalActionsListener(GlobalActionsListener listener);
-    void showGlobalActions();
-
     /**
      * Set whether the top app currently hides the statusbar.
      *
@@ -87,24 +86,12 @@ public interface StatusBarManagerInternal {
      */
     void setTopAppHidesStatusBar(boolean hidesStatusBar);
 
-    boolean showShutdownUi(boolean isReboot, String requestString);
+    boolean showShutdownUi(boolean isReboot, String requestString, boolean rebootCustom);
 
-    public interface GlobalActionsListener {
-        /**
-         * Called when sysui starts and connects its status bar, or when the status bar binder
-         * dies indicating sysui is no longer alive.
-         */
-        void onStatusBarConnectedChanged(boolean connected);
-
-        /**
-         * Callback from sysui to notify system that global actions has been successfully shown.
-         */
-        void onGlobalActionsShown();
-
-        /**
-         * Callback from sysui to notify system that the user has dismissed global actions and
-         * it no longer needs to be displayed (even if sysui dies).
-         */
-        void onGlobalActionsDismissed();
-    }
+    /**
+     * Show a rotation suggestion that a user may approve to rotate the screen.
+     *
+     * @param rotation rotation suggestion
+     */
+    void onProposedRotationChanged(int rotation, boolean isValid);
 }

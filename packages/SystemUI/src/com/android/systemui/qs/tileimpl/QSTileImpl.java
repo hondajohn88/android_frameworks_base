@@ -31,6 +31,8 @@ import android.metrics.LogMaker;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
+import android.os.Vibrator;
+import android.provider.Settings;
 import android.service.quicksettings.Tile;
 import android.text.format.DateUtils;
 import android.util.ArraySet;
@@ -42,6 +44,7 @@ import com.android.internal.logging.MetricsLogger;
 import com.android.settingslib.RestrictedLockUtils;
 import com.android.settingslib.Utils;
 import com.android.systemui.Dependency;
+import com.android.systemui.Prefs;
 import com.android.systemui.plugins.ActivityStarter;
 import com.android.systemui.plugins.qs.DetailAdapter;
 import com.android.systemui.plugins.qs.QSIconView;
@@ -49,6 +52,9 @@ import com.android.systemui.plugins.qs.QSTile;
 import com.android.systemui.plugins.qs.QSTile.State;
 import com.android.systemui.qs.PagedTileLayout.TilePage;
 import com.android.systemui.qs.QSHost;
+import com.android.systemui.qs.QuickStatusBarHeader;
+import com.android.systemui.tuner.TunerService;
+import com.android.systemui.tuner.TunerServiceImpl;
 
 import java.util.ArrayList;
 
@@ -59,11 +65,12 @@ import java.util.ArrayList;
  * handleUpdateState.  Callbacks affecting state should use refreshState to trigger another
  * state update pass on tile looper.
  */
-public abstract class QSTileImpl<TState extends State> implements QSTile {
+public abstract class QSTileImpl<TState extends State> implements QSTile, TunerService.Tunable {
     protected final String TAG = "Tile." + getClass().getSimpleName();
     protected static final boolean DEBUG = Log.isLoggable("Tile", Log.DEBUG);
 
     private static final long DEFAULT_STALE_TIMEOUT = 10 * DateUtils.MINUTE_IN_MILLIS;
+    protected static final Object ARG_SHOW_TRANSIENT_ENABLING = new Object();
 
     protected final QSHost mHost;
     protected final Context mContext;
@@ -82,6 +89,13 @@ public abstract class QSTileImpl<TState extends State> implements QSTile {
     private String mTileSpec;
     private EnforcedAdmin mEnforcedAdmin;
     private boolean mShowingDetail;
+    private int mIsFullQs;
+
+    protected Vibrator mVibrator;
+    private boolean mVibrationEnabled;
+
+    private static final String QUICK_SETTINGS_VIBRATE =
+            Settings.Secure.QUICK_SETTINGS_VIBRATE;
 
     public abstract TState newTileState();
 
@@ -100,7 +114,22 @@ public abstract class QSTileImpl<TState extends State> implements QSTile {
     protected QSTileImpl(QSHost host) {
         mHost = host;
         mContext = host.getContext();
-        handleStale(); // Tile was just created, must be stale.
+        mVibrator = (Vibrator) mContext.getSystemService(Context.VIBRATOR_SERVICE);
+
+        Dependency.get(TunerService.class).addTunable(this,
+                QUICK_SETTINGS_VIBRATE);
+    }
+
+    @Override
+    public void onTuningChanged(String key, String newValue) {
+        switch (key) {
+            case QUICK_SETTINGS_VIBRATE:
+                mVibrationEnabled =
+                        newValue != null && Integer.parseInt(newValue) == 1;
+                break;
+            default:
+                break;
+        }
     }
 
     /**
@@ -108,18 +137,7 @@ public abstract class QSTileImpl<TState extends State> implements QSTile {
      * listening client it will go into the listening state.
      */
     public void setListening(Object listener, boolean listening) {
-        if (listening) {
-            if (mListeners.add(listener) && mListeners.size() == 1) {
-                if (DEBUG) Log.d(TAG, "setListening " + true);
-                mHandler.obtainMessage(H.SET_LISTENING, 1, 0).sendToTarget();
-                refreshState(); // Ensure we get at least one refresh after listening.
-            }
-        } else {
-            if (mListeners.remove(listener) && mListeners.size() == 0) {
-                if (DEBUG) Log.d(TAG, "setListening " + false);
-                mHandler.obtainMessage(H.SET_LISTENING, 0, 0).sendToTarget();
-            }
-        }
+        mHandler.obtainMessage(H.SET_LISTENING, listening ? 1 : 0, 0, listener).sendToTarget();
     }
 
     protected long getStaleTimeout() {
@@ -164,6 +182,12 @@ public abstract class QSTileImpl<TState extends State> implements QSTile {
         return true;
     }
 
+    public void vibrateTile(int duration) {
+        if (mVibrationEnabled && mVibrator != null && mVibrator.hasVibrator()) {
+            mVibrator.vibrate(duration);
+        }
+    }
+
     // safe to call from any thread
 
     public void addCallback(Callback callback) {
@@ -181,16 +205,24 @@ public abstract class QSTileImpl<TState extends State> implements QSTile {
     public void click() {
         mMetricsLogger.write(populate(new LogMaker(ACTION_QS_CLICK).setType(TYPE_ACTION)));
         mHandler.sendEmptyMessage(H.CLICK);
+        vibrateTile(100);
     }
 
     public void secondaryClick() {
         mMetricsLogger.write(populate(new LogMaker(ACTION_QS_SECONDARY_CLICK).setType(TYPE_ACTION)));
         mHandler.sendEmptyMessage(H.SECONDARY_CLICK);
+        vibrateTile(100);
     }
 
     public void longClick() {
         mMetricsLogger.write(populate(new LogMaker(ACTION_QS_LONG_PRESS).setType(TYPE_ACTION)));
         mHandler.sendEmptyMessage(H.LONG_CLICK);
+        vibrateTile(100);
+
+        Prefs.putInt(
+                mContext,
+                Prefs.Key.QS_LONG_PRESS_TOOLTIP_SHOWN_COUNT,
+                QuickStatusBarHeader.MAX_TOOLTIP_SHOWN_COUNT);
     }
 
     public LogMaker populate(LogMaker logMaker) {
@@ -198,17 +230,8 @@ public abstract class QSTileImpl<TState extends State> implements QSTile {
             logMaker.addTaggedData(FIELD_QS_VALUE, ((BooleanState) mState).value ? 1 : 0);
         }
         return logMaker.setSubtype(getMetricsCategory())
-                .addTaggedData(FIELD_CONTEXT, isFullQs())
+                .addTaggedData(FIELD_CONTEXT, mIsFullQs)
                 .addTaggedData(FIELD_QS_POSITION, mHost.indexOf(mTileSpec));
-    }
-
-    private int isFullQs() {
-        for (Object listener : mListeners) {
-            if (TilePage.class.equals(listener.getClass())) {
-                return 1;
-            }
-        }
-        return 0;
     }
 
     public void showDetail(boolean show) {
@@ -345,6 +368,32 @@ public abstract class QSTileImpl<TState extends State> implements QSTile {
         handleRefreshState(null);
     }
 
+    private void handleSetListeningInternal(Object listener, boolean listening) {
+        if (listening) {
+            if (mListeners.add(listener) && mListeners.size() == 1) {
+                if (DEBUG) Log.d(TAG, "handleSetListening true");
+                handleSetListening(listening);
+                refreshState(); // Ensure we get at least one refresh after listening.
+            }
+        } else {
+            if (mListeners.remove(listener) && mListeners.size() == 0) {
+                if (DEBUG) Log.d(TAG, "handleSetListening false");
+                handleSetListening(listening);
+            }
+        }
+        updateIsFullQs();
+    }
+
+    private void updateIsFullQs() {
+        for (Object listener : mListeners) {
+            if (TilePage.class.equals(listener.getClass())) {
+                mIsFullQs = 1;
+                return;
+            }
+        }
+        mIsFullQs = 0;
+    }
+
     protected abstract void handleSetListening(boolean listening);
 
     protected void handleDestroy() {
@@ -373,11 +422,11 @@ public abstract class QSTileImpl<TState extends State> implements QSTile {
         switch (state) {
             case Tile.STATE_UNAVAILABLE:
                 return Utils.getDisabled(context,
-                        Utils.getColorAttr(context, android.R.attr.colorForeground));
+                        Utils.getColorAttr(context, android.R.attr.textColorSecondary));
             case Tile.STATE_INACTIVE:
-                return Utils.getColorAttr(context, android.R.attr.textColorHint);
+                return Utils.getColorAttr(context, android.R.attr.textColorSecondary);
             case Tile.STATE_ACTIVE:
-                return Utils.getColorAttr(context, android.R.attr.textColorPrimary);
+                return context.getResources().getColor(com.android.systemui.R.color.qs_icon_active_color);
             default:
                 Log.e("QSTile", "Invalid state " + state);
                 return 0;
@@ -457,8 +506,8 @@ public abstract class QSTileImpl<TState extends State> implements QSTile {
                     name = "handleClearState";
                     handleClearState();
                 } else if (msg.what == SET_LISTENING) {
-                    name = "handleSetListening";
-                    handleSetListening(msg.arg1 != 0);
+                    name = "handleSetListeningInternal";
+                    handleSetListeningInternal(msg.obj, msg.arg1 != 0);
                 } else if (msg.what == STALE) {
                     name = "handleStale";
                     handleStale();
@@ -475,14 +524,21 @@ public abstract class QSTileImpl<TState extends State> implements QSTile {
 
     public static class DrawableIcon extends Icon {
         protected final Drawable mDrawable;
+        protected final Drawable mInvisibleDrawable;
 
         public DrawableIcon(Drawable drawable) {
             mDrawable = drawable;
+            mInvisibleDrawable = drawable.getConstantState().newDrawable();
         }
 
         @Override
         public Drawable getDrawable(Context context) {
             return mDrawable;
+        }
+
+        @Override
+        public Drawable getInvisibleDrawable(Context context) {
+            return mInvisibleDrawable;
         }
     }
 

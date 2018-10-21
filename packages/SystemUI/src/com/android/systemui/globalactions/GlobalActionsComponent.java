@@ -14,6 +14,10 @@
 
 package com.android.systemui.globalactions;
 
+import android.content.Context;
+import android.os.RemoteException;
+import android.os.ServiceManager;
+
 import com.android.internal.statusbar.IStatusBarService;
 import com.android.systemui.Dependency;
 import com.android.systemui.SysUiServiceProvider;
@@ -25,12 +29,9 @@ import com.android.systemui.statusbar.CommandQueue.Callbacks;
 import com.android.systemui.statusbar.policy.ExtensionController;
 import com.android.systemui.statusbar.policy.ExtensionController.Extension;
 
-import android.content.Context;
-import android.os.RemoteException;
-import android.os.ServiceManager;
-
 public class GlobalActionsComponent extends SystemUI implements Callbacks, GlobalActionsManager {
 
+    private GlobalActions mPlugin;
     private Extension<GlobalActions> mExtension;
     private IStatusBarService mBarService;
 
@@ -41,13 +42,22 @@ public class GlobalActionsComponent extends SystemUI implements Callbacks, Globa
         mExtension = Dependency.get(ExtensionController.class).newExtension(GlobalActions.class)
                 .withPlugin(GlobalActions.class)
                 .withDefault(() -> new GlobalActionsImpl(mContext))
+                .withCallback(this::onExtensionCallback)
                 .build();
+        mPlugin = mExtension.get();
         SysUiServiceProvider.getComponent(mContext, CommandQueue.class).addCallbacks(this);
     }
 
+    private void onExtensionCallback(GlobalActions newPlugin) {
+        if (mPlugin != null) {
+            mPlugin.destroy();
+        }
+        mPlugin = newPlugin;
+    }
+
     @Override
-    public void handleShowShutdownUi(boolean isReboot, String reason) {
-        mExtension.get().showShutdownUi(isReboot, reason);
+    public void handleShowShutdownUi(boolean isReboot, String reason, boolean rebootCustom) {
+        mExtension.get().showShutdownUi(isReboot, reason, rebootCustom);
     }
 
     @Override
@@ -80,9 +90,9 @@ public class GlobalActionsComponent extends SystemUI implements Callbacks, Globa
     }
 
     @Override
-    public void reboot(boolean safeMode) {
+    public void reboot(boolean safeMode, String reason) {
         try {
-            mBarService.reboot(safeMode);
+            mBarService.reboot(safeMode, reason);
         } catch (RemoteException e) {
         }
     }

@@ -16,15 +16,22 @@
 
 package com.android.systemui.statusbar.phone;
 
+import static android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
+
+import static com.android.systemui.statusbar.NotificationRemoteInputManager.ENABLE_REMOTE_INPUT;
+
 import android.app.ActivityManager;
 import android.app.IActivityManager;
 import android.content.Context;
 import android.content.pm.ActivityInfo;
 import android.content.res.Resources;
+import android.database.ContentObserver;
 import android.graphics.PixelFormat;
 import android.os.Binder;
+import android.os.Handler;
 import android.os.RemoteException;
 import android.os.SystemProperties;
+import android.provider.Settings;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
@@ -37,6 +44,8 @@ import com.android.systemui.Dumpable;
 import com.android.systemui.keyguard.KeyguardViewMediator;
 import com.android.systemui.statusbar.RemoteInputController;
 import com.android.systemui.statusbar.StatusBarState;
+
+import lineageos.providers.LineageSettings;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
@@ -52,13 +61,14 @@ public class StatusBarWindowManager implements RemoteInputController.Callback, D
     private final Context mContext;
     private final WindowManager mWindowManager;
     private final IActivityManager mActivityManager;
+    private final DozeParameters mDozeParameters;
     private View mStatusBarView;
     private WindowManager.LayoutParams mLp;
     private WindowManager.LayoutParams mLpChanged;
     private boolean mHasTopUi;
     private boolean mHasTopUiChanged;
     private int mBarHeight;
-    private final boolean mKeyguardScreenRotation;
+    private boolean mKeyguardScreenRotation;
     private float mScreenBrightnessDoze;
     private final State mCurrentState = new State();
     private OtherwisedCollapsedListener mListener;
@@ -68,14 +78,21 @@ public class StatusBarWindowManager implements RemoteInputController.Callback, D
         mWindowManager = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
         mActivityManager = ActivityManager.getService();
         mKeyguardScreenRotation = shouldEnableKeyguardScreenRotation();
-        mScreenBrightnessDoze = mContext.getResources().getInteger(
-                com.android.internal.R.integer.config_screenBrightnessDoze) / 255f;
+        mDozeParameters = DozeParameters.getInstance(mContext);
+        mScreenBrightnessDoze = mDozeParameters.getScreenBrightnessDoze();
     }
 
     private boolean shouldEnableKeyguardScreenRotation() {
         Resources res = mContext.getResources();
+        boolean enableAccelerometerRotation =
+                Settings.System.getInt(mContext.getContentResolver(),
+                Settings.System.ACCELEROMETER_ROTATION, 1) != 0;
+        boolean enableLockScreenRotation =
+                LineageSettings.System.getInt(mContext.getContentResolver(),
+                LineageSettings.System.LOCKSCREEN_ROTATION, 0) != 0;
         return SystemProperties.getBoolean("lockscreen.rot_override", false)
-                || res.getBoolean(R.bool.config_enableLockScreenRotation);
+                || (res.getBoolean(R.bool.config_enableLockScreenRotation)
+                && (enableLockScreenRotation && enableAccelerometerRotation));
     }
 
     /**
@@ -104,11 +121,15 @@ public class StatusBarWindowManager implements RemoteInputController.Callback, D
         mLp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE;
         mLp.setTitle("StatusBar");
         mLp.packageName = mContext.getPackageName();
+        mLp.layoutInDisplayCutoutMode = LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
         mStatusBarView = statusBarView;
         mBarHeight = barHeight;
         mWindowManager.addView(mStatusBarView, mLp);
         mLpChanged = new WindowManager.LayoutParams();
         mLpChanged.copyFrom(mLp);
+
+        SettingsObserver observer = new SettingsObserver(new Handler());
+        observer.observe(mContext);
     }
 
     public void setDozeScreenBrightness(int value) {
@@ -134,7 +155,11 @@ public class StatusBarWindowManager implements RemoteInputController.Callback, D
             mLpChanged.privateFlags &= ~WindowManager.LayoutParams.PRIVATE_FLAG_KEYGUARD;
         }
 
-        if (state.keyguardShowing && !state.backdropShowing && !state.dozing) {
+        final boolean scrimsOccludingWallpaper =
+                state.scrimsVisibility == ScrimController.VISIBILITY_FULLY_OPAQUE;
+        final boolean keyguardOrAod = state.keyguardShowing
+                || (state.dozing && mDozeParameters.getAlwaysOn());
+        if (keyguardOrAod && !state.backdropShowing && !scrimsOccludingWallpaper) {
             mLpChanged.flags |= WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER;
         } else {
             mLpChanged.flags &= ~WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER;
@@ -156,7 +181,7 @@ public class StatusBarWindowManager implements RemoteInputController.Callback, D
     private void applyFocusableFlag(State state) {
         boolean panelFocusable = state.statusBarFocusable && state.panelExpanded;
         if (state.bouncerShowing && (state.keyguardOccluded || state.keyguardNeedsInput)
-                || StatusBar.ENABLE_REMOTE_INPUT && state.remoteInputActive) {
+                || ENABLE_REMOTE_INPUT && state.remoteInputActive) {
             mLpChanged.flags &= ~WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
             mLpChanged.flags &= ~WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM;
         } else if (state.isKeyguardShowingAndNotOccluded() || panelFocusable) {
@@ -186,7 +211,8 @@ public class StatusBarWindowManager implements RemoteInputController.Callback, D
     private boolean isExpanded(State state) {
         return !state.forceCollapsed && (state.isKeyguardShowingAndNotOccluded()
                 || state.panelVisible || state.keyguardFadingAway || state.bouncerShowing
-                || state.headsUpShowing || state.scrimsVisible);
+                || state.headsUpShowing
+                || state.scrimsVisibility != ScrimController.VISIBILITY_FULLY_TRANSPARENT);
     }
 
     private void applyFitsSystemWindows(State state) {
@@ -334,13 +360,18 @@ public class StatusBarWindowManager implements RemoteInputController.Callback, D
         apply(mCurrentState);
     }
 
-    public void setScrimsVisible(boolean scrimsVisible) {
-        mCurrentState.scrimsVisible = scrimsVisible;
+    public void setScrimsVisibility(int scrimsVisibility) {
+        mCurrentState.scrimsVisibility = scrimsVisibility;
         apply(mCurrentState);
     }
 
     public void setHeadsUpShowing(boolean showing) {
         mCurrentState.headsUpShowing = showing;
+        apply(mCurrentState);
+    }
+
+    public void setWallpaperSupportsAmbientMode(boolean supportsAmbientMode) {
+        mCurrentState.wallpaperSupportsAmbientMode = supportsAmbientMode;
         apply(mCurrentState);
     }
 
@@ -431,6 +462,7 @@ public class StatusBarWindowManager implements RemoteInputController.Callback, D
         boolean forceDozeBrightness;
         boolean forceUserActivity;
         boolean backdropShowing;
+        boolean wallpaperSupportsAmbientMode;
 
         /**
          * The {@link StatusBar} state from the status bar.
@@ -440,7 +472,7 @@ public class StatusBarWindowManager implements RemoteInputController.Callback, D
         boolean remoteInputActive;
         boolean forcePluginOpen;
         boolean dozing;
-        boolean scrimsVisible;
+        int scrimsVisibility;
 
         private boolean isKeyguardShowingAndNotOccluded() {
             return keyguardShowing && !keyguardOccluded;
@@ -480,5 +512,31 @@ public class StatusBarWindowManager implements RemoteInputController.Callback, D
      */
     public interface OtherwisedCollapsedListener {
         void setWouldOtherwiseCollapse(boolean otherwiseCollapse);
+    }
+
+    private class SettingsObserver extends ContentObserver {
+        public SettingsObserver(Handler handler) {
+            super(handler);
+        }
+
+        public void observe(Context context) {
+            context.getContentResolver().registerContentObserver(
+                    Settings.System.getUriFor(Settings.System.ACCELEROMETER_ROTATION),
+                    false, this);
+            context.getContentResolver().registerContentObserver(
+                    LineageSettings.System.getUriFor(LineageSettings.System.LOCKSCREEN_ROTATION),
+                    false, this);
+        }
+
+        public void unobserve(Context context) {
+            context.getContentResolver().unregisterContentObserver(this);
+        }
+
+        @Override
+        public void onChange(boolean selfChange) {
+            mKeyguardScreenRotation = shouldEnableKeyguardScreenRotation();
+            // update the state
+            apply(mCurrentState);
+        }
     }
 }

@@ -15,6 +15,13 @@
  */
 package com.android.settingslib.bluetooth;
 
+import static com.google.common.truth.Truth.assertThat;
+import static org.mockito.Matchers.any;
+import static org.mockito.Matchers.eq;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
 import android.bluetooth.BluetoothA2dp;
 import android.bluetooth.BluetoothCodecConfig;
 import android.bluetooth.BluetoothCodecStatus;
@@ -24,29 +31,15 @@ import android.content.Context;
 import android.content.res.Resources;
 
 import com.android.settingslib.R;
-import com.android.settingslib.TestConfig;
 
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
-import org.mockito.invocation.InvocationOnMock;
-import org.mockito.stubbing.Answer;
 import org.robolectric.RobolectricTestRunner;
-import org.robolectric.annotation.Config;
-
-import static com.google.common.truth.Truth.assertThat;
-
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.eq;
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 @RunWith(RobolectricTestRunner.class)
-@Config(manifest = TestConfig.MANIFEST_PATH, sdk = TestConfig.SDK_VERSION)
 public class A2dpProfileTest {
 
     @Mock Context mContext;
@@ -55,7 +48,6 @@ public class A2dpProfileTest {
     @Mock LocalBluetoothProfileManager mProfileManager;
     @Mock BluetoothDevice mDevice;
     @Mock BluetoothA2dp mBluetoothA2dp;
-    @Mock BluetoothA2dpWrapper mBluetoothA2dpWrapper;
     BluetoothProfile.ServiceListener mServiceListener;
 
     A2dpProfile mProfile;
@@ -73,32 +65,31 @@ public class A2dpProfileTest {
         }).when(mAdapter).getProfileProxy(any(Context.class), any(), eq(BluetoothProfile.A2DP));
 
         mProfile = new A2dpProfile(mContext, mAdapter, mDeviceManager, mProfileManager);
-        mProfile.setWrapperFactory((service) -> { return mBluetoothA2dpWrapper; });
         mServiceListener.onServiceConnected(BluetoothProfile.A2DP, mBluetoothA2dp);
     }
 
     @Test
     public void supportsHighQualityAudio() {
-        when(mBluetoothA2dpWrapper.supportsOptionalCodecs(any())).thenReturn(
+        when(mBluetoothA2dp.supportsOptionalCodecs(any())).thenReturn(
                 BluetoothA2dp.OPTIONAL_CODECS_SUPPORTED);
         assertThat(mProfile.supportsHighQualityAudio(mDevice)).isTrue();
 
-        when(mBluetoothA2dpWrapper.supportsOptionalCodecs(any())).thenReturn(
+        when(mBluetoothA2dp.supportsOptionalCodecs(any())).thenReturn(
                 BluetoothA2dp.OPTIONAL_CODECS_NOT_SUPPORTED);
         assertThat(mProfile.supportsHighQualityAudio(mDevice)).isFalse();
 
-        when(mBluetoothA2dpWrapper.supportsOptionalCodecs(any())).thenReturn(
+        when(mBluetoothA2dp.supportsOptionalCodecs(any())).thenReturn(
                 BluetoothA2dp.OPTIONAL_CODECS_SUPPORT_UNKNOWN);
         assertThat(mProfile.supportsHighQualityAudio(mDevice)).isFalse();
     }
 
     @Test
     public void isHighQualityAudioEnabled() {
-        when(mBluetoothA2dpWrapper.getOptionalCodecsEnabled(any())).thenReturn(
+        when(mBluetoothA2dp.getOptionalCodecsEnabled(any())).thenReturn(
                 BluetoothA2dp.OPTIONAL_CODECS_PREF_ENABLED);
         assertThat(mProfile.isHighQualityAudioEnabled(mDevice)).isTrue();
 
-        when(mBluetoothA2dpWrapper.getOptionalCodecsEnabled(any())).thenReturn(
+        when(mBluetoothA2dp.getOptionalCodecsEnabled(any())).thenReturn(
                 BluetoothA2dp.OPTIONAL_CODECS_PREF_DISABLED);
         assertThat(mProfile.isHighQualityAudioEnabled(mDevice)).isFalse();
 
@@ -106,23 +97,23 @@ public class A2dpProfileTest {
         // then isHighQualityAudioEnabled() should return true or false based on whether optional
         // codecs are supported. If the device is connected then we should ask it directly, but if
         // the device isn't connected then rely on the stored pref about such support.
-        when(mBluetoothA2dpWrapper.getOptionalCodecsEnabled(any())).thenReturn(
+        when(mBluetoothA2dp.getOptionalCodecsEnabled(any())).thenReturn(
                 BluetoothA2dp.OPTIONAL_CODECS_PREF_UNKNOWN);
         when(mBluetoothA2dp.getConnectionState(any())).thenReturn(
                 BluetoothProfile.STATE_DISCONNECTED);
 
-        when(mBluetoothA2dpWrapper.supportsOptionalCodecs(any())).thenReturn(
+        when(mBluetoothA2dp.supportsOptionalCodecs(any())).thenReturn(
                 BluetoothA2dp.OPTIONAL_CODECS_NOT_SUPPORTED);
         assertThat(mProfile.isHighQualityAudioEnabled(mDevice)).isFalse();
 
-        when(mBluetoothA2dpWrapper.supportsOptionalCodecs(any())).thenReturn(
+        when(mBluetoothA2dp.supportsOptionalCodecs(any())).thenReturn(
                 BluetoothA2dp.OPTIONAL_CODECS_SUPPORTED);
         assertThat(mProfile.isHighQualityAudioEnabled(mDevice)).isTrue();
 
         when(mBluetoothA2dp.getConnectionState(any())).thenReturn(
                 BluetoothProfile.STATE_CONNECTED);
         BluetoothCodecStatus status = mock(BluetoothCodecStatus.class);
-        when(mBluetoothA2dpWrapper.getCodecStatus()).thenReturn(status);
+        when(mBluetoothA2dp.getCodecStatus(mDevice)).thenReturn(status);
         BluetoothCodecConfig config = mock(BluetoothCodecConfig.class);
         when(status.getCodecConfig()).thenReturn(config);
         when(config.isMandatoryCodec()).thenReturn(false);
@@ -157,14 +148,14 @@ public class A2dpProfileTest {
 
         // Most tests want to simulate optional codecs being supported by the device, so do that
         // by default here.
-        when(mBluetoothA2dpWrapper.supportsOptionalCodecs(any())).thenReturn(
+        when(mBluetoothA2dp.supportsOptionalCodecs(any())).thenReturn(
                 BluetoothA2dp.OPTIONAL_CODECS_SUPPORTED);
     }
 
     @Test
     public void getLableCodecsNotSupported() {
         setupLabelTest();
-        when(mBluetoothA2dpWrapper.supportsOptionalCodecs(any())).thenReturn(
+        when(mBluetoothA2dp.supportsOptionalCodecs(any())).thenReturn(
                 BluetoothA2dp.OPTIONAL_CODECS_NOT_SUPPORTED);
         assertThat(mProfile.getHighQualityAudioOptionLabel(mDevice)).isEqualTo(UNKNOWN_CODEC_LABEL);
     }
@@ -185,7 +176,7 @@ public class A2dpProfileTest {
         BluetoothCodecStatus status = mock(BluetoothCodecStatus.class);
         BluetoothCodecConfig config = mock(BluetoothCodecConfig.class);
         BluetoothCodecConfig[] configs = {config};
-        when(mBluetoothA2dpWrapper.getCodecStatus()).thenReturn(status);
+        when(mBluetoothA2dp.getCodecStatus(mDevice)).thenReturn(status);
         when(status.getCodecsSelectableCapabilities()).thenReturn(configs);
 
         when(config.isMandatoryCodec()).thenReturn(true);
@@ -200,7 +191,7 @@ public class A2dpProfileTest {
         BluetoothCodecStatus status = mock(BluetoothCodecStatus.class);
         BluetoothCodecConfig config = mock(BluetoothCodecConfig.class);
         BluetoothCodecConfig[] configs = {config};
-        when(mBluetoothA2dpWrapper.getCodecStatus()).thenReturn(status);
+        when(mBluetoothA2dp.getCodecStatus(mDevice)).thenReturn(status);
         when(status.getCodecsSelectableCapabilities()).thenReturn(configs);
 
         when(config.isMandatoryCodec()).thenReturn(false);

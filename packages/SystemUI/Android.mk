@@ -27,10 +27,17 @@ LOCAL_USE_AAPT2 := true
 
 LOCAL_MODULE_TAGS := optional
 
-LOCAL_SRC_FILES := $(call all-java-files-under, src) $(call all-Iaidl-files-under, src)
+RELATIVE_FINGERPRINT_PATH := ../../core/java/android/hardware/fingerprint
+
+LOCAL_SRC_FILES := \
+    $(call all-java-files-under, src) \
+    $(call all-Iaidl-files-under, src) \
+    $(call all-Iaidl-files-under, $(RELATIVE_FINGERPRINT_PATH))
 
 LOCAL_STATIC_ANDROID_LIBRARIES := \
     SystemUIPluginLib \
+    SystemUISharedLib \
+    android-support-car \
     android-support-v4 \
     android-support-v7-recyclerview \
     android-support-v7-preference \
@@ -38,18 +45,27 @@ LOCAL_STATIC_ANDROID_LIBRARIES := \
     android-support-v7-mediarouter \
     android-support-v7-palette \
     android-support-v14-preference \
-    android-support-v17-leanback
+    android-support-v17-leanback \
+    android-slices-core \
+    android-slices-view \
+    android-slices-builders \
+    android-arch-core-runtime \
+    android-arch-lifecycle-extensions \
 
 LOCAL_STATIC_JAVA_LIBRARIES := \
     SystemUI-tags \
-    SystemUI-proto
+    SystemUI-proto \
+    org.lineageos.platform.internal
 
-LOCAL_JAVA_LIBRARIES := telephony-common
-LOCAL_JAVA_LIBRARIES += android.car
+LOCAL_JAVA_LIBRARIES := telephony-common \
+    android.car
 
 LOCAL_PACKAGE_NAME := SystemUI
+LOCAL_PRIVATE_PLATFORM_APIS := true
 LOCAL_CERTIFICATE := platform
 LOCAL_PRIVILEGED_MODULE := true
+
+LOCAL_FULL_LIBS_MANIFEST_FILES := $(LOCAL_PATH)/LineageManifest.xml
 
 LOCAL_PROGUARD_FLAG_FILES := proguard.flags
 LOCAL_RESOURCE_DIR := $(LOCAL_PATH)/res-keyguard $(LOCAL_PATH)/res

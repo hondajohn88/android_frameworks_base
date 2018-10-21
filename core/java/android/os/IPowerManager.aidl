@@ -42,6 +42,7 @@ interface IPowerManager
 
     void userActivity(long time, int event, int flags);
     void wakeUp(long time, String reason, String opPackageName);
+    void wakeUpWithProximityCheck(long time, String reason, String opPackageName);
     void goToSleep(long time, int reason, int flags);
     void nap(long time);
     boolean isInteractive();
@@ -52,6 +53,7 @@ interface IPowerManager
     boolean isLightDeviceIdleMode();
 
     void reboot(boolean confirm, String reason, boolean wait);
+    void rebootCustom(boolean confirm, String reason, boolean wait);
     void rebootSafeMode(boolean confirm, boolean wait);
     void shutdown(boolean confirm, String reason, boolean wait);
     void crash(String message);
@@ -63,11 +65,15 @@ interface IPowerManager
     // --- deprecated ---
     boolean isScreenBrightnessBoosted();
 
-    // temporarily overrides the screen brightness settings to allow the user to
-    // see the effect of a settings change without applying it immediately
-    void setTemporaryScreenBrightnessSettingOverride(int brightness);
-    void setTemporaryScreenAutoBrightnessAdjustmentSettingOverride(float adj);
-
     // sets the attention light (used by phone app only)
     void setAttentionLight(boolean on, int color);
+
+    // controls whether PowerManager should doze after the screen turns off or not
+    void setDozeAfterScreenOff(boolean on);
+
+    // update the uids being synchronized by network socket request manager
+    void updateBlockedUids(int uid, boolean isBlocked);
+
+    // blocked wakelock support
+    String getSeenWakeLocks();
 }
