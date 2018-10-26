@@ -16,6 +16,7 @@
 
 package android.telephony;
 
+import android.content.res.Resources;
 import android.os.Bundle;
 import android.os.Parcel;
 import android.os.Parcelable;
